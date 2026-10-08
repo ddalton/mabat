@@ -1,0 +1,5 @@
+error: a tuple field needs `#[view(column = "...")]` or `#[view(embed)]`
+ --> tests/ui/tuple_field_without_column.rs:5:13
+  |
+5 |     Blocked(String),
+  |             ^^^^^^

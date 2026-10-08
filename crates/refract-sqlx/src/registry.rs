@@ -447,30 +447,7 @@ impl Refract {
     pub fn explain<T: View>(&self) -> Option<String> {
         let checked = self.checked::<T>()?;
         let mut out = String::new();
-        let mut queries = Vec::new();
-        checked.plan.walk(&mut |plan| queries.push(plan));
-        for plan in queries {
-            let depth = plan.path.matches('.').count() + usize::from(!plan.path.is_empty());
-            let indent = "  ".repeat(depth);
-            let link = match &plan.link {
-                Link::Root => String::new(),
-                Link::Child { fk } => format!(" (to-many by {fk})"),
-                Link::ToOne { ref_alias } => format!(" (to-one by {ref_alias})"),
-            };
-            let _ = writeln!(out, "{indent}{}: {}{link}", plan.query_name(), plan.shape.name);
-            match checked.overrides.get(plan.query_name()) {
-                Some(active) => {
-                    let shadow = if active.shadow { ", shadowed" } else { "" };
-                    let _ = writeln!(out, "{indent}  override ({}{shadow}):", active.origin);
-                    for line in active.sql.trim().lines() {
-                        let _ = writeln!(out, "{indent}    {}", line.trim_end());
-                    }
-                }
-                None => {
-                    let _ = writeln!(out, "{indent}  {}", sql::select(plan, &RootOptions::default()));
-                }
-            }
-        }
+        explain_query(&mut out, &checked.plan, &checked.overrides, 0);
         Some(out)
     }
 
@@ -497,6 +474,32 @@ impl Refract {
         }
         summaries.sort_by(|a, b| (a.view, &a.query).cmp(&(b.view, &b.query)));
         summaries
+    }
+}
+
+fn explain_query(out: &mut String, plan: &QueryPlan, overrides: &Overrides, depth: usize) {
+    let indent = "  ".repeat(depth);
+    let link = match &plan.link {
+        Link::Root => String::new(),
+        Link::Child { fk } => format!(" (to-many by {fk})"),
+        Link::ToOne { ref_alias } => format!(" (to-one by {ref_alias})"),
+        Link::Variant { tag_alias, tag_value } => format!(" (variant where {tag_alias} = '{tag_value}')"),
+    };
+    let _ = writeln!(out, "{indent}{}: {}{link}", plan.query_name(), plan.shape.name);
+    match overrides.get(plan.query_name()) {
+        Some(active) => {
+            let shadow = if active.shadow { ", shadowed" } else { "" };
+            let _ = writeln!(out, "{indent}  override ({}{shadow}):", active.origin);
+            for line in active.sql.trim().lines() {
+                let _ = writeln!(out, "{indent}    {}", line.trim_end());
+            }
+        }
+        None => {
+            let _ = writeln!(out, "{indent}  {}", sql::select(plan, &RootOptions::default()));
+        }
+    }
+    for child in &plan.children {
+        explain_query(out, &child.plan, overrides, depth + 1);
     }
 }
 

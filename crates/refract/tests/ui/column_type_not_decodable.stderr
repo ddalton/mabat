@@ -11,13 +11,13 @@ help: the trait `for<'r> sqlx_core::decode::Decode<'r, sqlx_postgres::database::
   | ^^^^^^^^^^^^^^^^^
   = help: the following other types implement trait `sqlx_core::decode::Decode<'r, DB>`:
             `&'r [u8]` implements `sqlx_core::decode::Decode<'r, sqlx_postgres::database::Postgres>`
+            `&'r serde_json::raw::RawValue` implements `sqlx_core::decode::Decode<'r, DB>`
             `&'r str` implements `sqlx_core::decode::Decode<'r, sqlx_postgres::database::Postgres>`
             `()` implements `sqlx_core::decode::Decode<'r, sqlx_postgres::database::Postgres>`
             `(T1, T2)` implements `sqlx_core::decode::Decode<'r, sqlx_postgres::database::Postgres>`
             `(T1, T2, T3)` implements `sqlx_core::decode::Decode<'r, sqlx_postgres::database::Postgres>`
             `(T1, T2, T3, T4)` implements `sqlx_core::decode::Decode<'r, sqlx_postgres::database::Postgres>`
             `(T1, T2, T3, T4, T5)` implements `sqlx_core::decode::Decode<'r, sqlx_postgres::database::Postgres>`
-            `(T1, T2, T3, T4, T5, T6)` implements `sqlx_core::decode::Decode<'r, sqlx_postgres::database::Postgres>`
           and $N others
 note: required by a bound in `refract::__private::column`
  --> $WORKSPACE/crates/refract-sqlx/src/node.rs

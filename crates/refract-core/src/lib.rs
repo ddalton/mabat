@@ -9,7 +9,10 @@ pub mod shape;
 pub mod sql;
 
 pub use plan::{ChildPlan, Link, PlanError, QueryPlan, SelectColumn};
-pub use shape::{EmbeddedShape, Field, FieldKind, OrderBy, ViewShape};
+pub use plan::{SumPlan, VariantPlan};
+pub use shape::{
+    EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, SumShape, SumStrategy, Variant, VariantData, ViewShape,
+};
 
 /// Alias of the key column of the entity selected by a query.
 pub const KEY_ALIAS: &str = "$key";
@@ -19,6 +22,9 @@ pub const PARENT_ALIAS: &str = "$parent";
 
 /// Name of the root query of a plan, see [`QueryPlan::query_name`].
 pub const ROOT_QUERY: &str = "$root";
+
+/// Last segment of the alias of the tag column of an enum, e.g. `status.$tag`.
+pub const TAG_ALIAS: &str = "$tag";
 
 /// Prefix of the alias of a to-one foreign key column, followed by the field name.
 pub const REF_ALIAS_PREFIX: &str = "$ref.";

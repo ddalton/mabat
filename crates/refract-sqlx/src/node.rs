@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use refract_core::sql::{self, RootOptions};
-use refract_core::{KEY_ALIAS, Link, PARENT_ALIAS, QueryPlan};
+use refract_core::{KEY_ALIAS, Link, PARENT_ALIAS, QueryPlan, TAG_ALIAS};
 use sqlx::postgres::PgRow;
-use sqlx::{AssertSqlSafe, Decode, PgConnection, Postgres, Row, Type, ValueRef};
+use sqlx::{AssertSqlSafe, Column, Decode, PgConnection, Postgres, Row, Type, ValueRef};
 
 use crate::key::{Key, KeyArray, KeyColumn};
 use crate::registry::{ActiveOverride, Overrides};
@@ -26,8 +26,27 @@ pub struct Node {
     /// The key columns of the rows by alias, resolved from the first row. The key column
     /// is stored as [`KEY_ALIAS`].
     key_columns: Vec<(String, KeyColumn)>,
-    /// Indexed by field index of the view; `Some` for child and to-one fields.
-    children: Vec<Option<ChildNode>>,
+    /// The child queries: child and to-one fields, and variant tables.
+    children: Vec<ChildEntry>,
+    /// The enums stored in the rows, for strict decoding.
+    sums: Vec<SumColumns>,
+}
+
+#[derive(Debug)]
+struct ChildEntry {
+    field_index: usize,
+    variant: Option<&'static str>,
+    child: ChildNode,
+}
+
+/// The columns that must be NULL for each variant of an enum, see
+/// [`refract_core::VariantPlan::exclusive`], resolved from the first row. Columns that a
+/// query does not select are left out.
+#[derive(Debug)]
+struct SumColumns {
+    alias_prefix: String,
+    /// `(variant, [(ordinal, alias)])`
+    variants: Vec<(&'static str, Vec<(usize, String)>)>,
 }
 
 #[derive(Debug)]
@@ -43,7 +62,19 @@ impl Node {
     }
 
     fn child(&self, field_index: usize) -> &ChildNode {
-        self.children[field_index].as_ref().expect("plan and decoder disagree on the fields of a view")
+        self.children
+            .iter()
+            .find(|c| c.field_index == field_index && c.variant.is_none())
+            .map(|c| &c.child)
+            .expect("plan and decoder disagree on the fields of a view")
+    }
+
+    fn variant_child(&self, field_index: usize, variant: &str) -> &ChildNode {
+        self.children
+            .iter()
+            .find(|c| c.field_index == field_index && c.variant == Some(variant))
+            .map(|c| &c.child)
+            .expect("plan and decoder disagree on the variants of an enum")
     }
 
     fn path_of(&self, alias: &str) -> String {
@@ -52,7 +83,25 @@ impl Node {
 
     fn new(view: &'static str, path: String, rows: Vec<PgRow>, plan: &QueryPlan) -> Result<Node, Error> {
         let mut key_columns = Vec::new();
+        let mut sums = Vec::new();
         if let Some(row) = rows.first() {
+            for sum in &plan.sums {
+                let variants = sum
+                    .variants
+                    .iter()
+                    .map(|variant| {
+                        let columns = variant
+                            .exclusive
+                            .iter()
+                            .filter_map(|alias| {
+                                row.try_column(alias.as_str()).ok().map(|c| (c.ordinal(), alias.clone()))
+                            })
+                            .collect();
+                        (variant.name, columns)
+                    })
+                    .collect();
+                sums.push(SumColumns { alias_prefix: sum.alias_prefix.clone(), variants });
+            }
             // (name in key_columns, alias in the result)
             let mut aliases = vec![(KEY_ALIAS.to_string(), plan.key_alias.clone())];
             if let Link::Child { .. } = plan.link {
@@ -72,14 +121,7 @@ impl Node {
                 key_columns.push((name, column));
             }
         }
-        Ok(Node {
-            view,
-            path,
-            rows,
-            key_alias: plan.key_alias.clone(),
-            key_columns,
-            children: (0..plan.shape.fields.len()).map(|_| None).collect(),
-        })
+        Ok(Node { view, path, rows, key_alias: plan.key_alias.clone(), key_columns, children: Vec::new(), sums })
     }
 
     fn key(&self, row: &PgRow, alias: &str) -> Result<Option<Key>, Error> {
@@ -129,6 +171,65 @@ where
         Ok(value) => Ok(value),
         Err(sqlx::Error::ColumnNotFound(_)) => Ok(None),
         Err(source) => Err(Error::Decode { view: node.view, path: node.path_of(alias), source }),
+    }
+}
+
+/// Read the tag of the enum whose aliases start with `prefix`.
+#[doc(hidden)]
+pub fn tag(row: &PgRow, node: &Node, prefix: &str) -> Result<String, Error> {
+    let alias = format!("{prefix}{TAG_ALIAS}");
+    match row.try_get::<Option<String>, _>(alias.as_str()) {
+        Ok(Some(tag)) => Ok(tag),
+        Ok(None) => Err(Error::NullTag { view: node.view, path: node.path_of(&alias) }),
+        Err(source) => Err(Error::Decode { view: node.view, path: node.path_of(&alias), source }),
+    }
+}
+
+/// Check that the columns of the other variants than `variant` are NULL, for the enum
+/// whose aliases start with `prefix`.
+#[doc(hidden)]
+pub fn strict(row: &PgRow, node: &Node, prefix: &str, variant: &str, tag: &str) -> Result<(), Error> {
+    let Some(sum) = node.sums.iter().find(|s| s.alias_prefix == prefix) else { return Ok(()) };
+    let Some((_, columns)) = sum.variants.iter().find(|(name, _)| *name == variant) else { return Ok(()) };
+    for (ordinal, alias) in columns {
+        let raw = row.try_get_raw(*ordinal).map_err(|source| Error::Decode {
+            view: node.view,
+            path: node.path_of(alias),
+            source,
+        })?;
+        if !raw.is_null() {
+            return Err(Error::OtherVariantColumn { view: node.view, path: node.path_of(alias), tag: tag.to_string() });
+        }
+    }
+    Ok(())
+}
+
+/// The error for a tag that names no variant.
+#[doc(hidden)]
+pub fn unknown_tag(node: &Node, prefix: &str, tag: &str, expected: &[&'static str]) -> Error {
+    Error::UnknownTag {
+        view: node.view,
+        path: node.path_of(&format!("{prefix}{TAG_ALIAS}")),
+        tag: tag.to_string(),
+        expected: expected.to_vec(),
+    }
+}
+
+/// The row of the variant table of `variant` for the row, and its node, for an enum stored
+/// in a table per variant in the field `field_index` of the view.
+#[doc(hidden)]
+pub fn variant<'a>(
+    row: &PgRow,
+    node: &'a Node,
+    field_index: usize,
+    variant: &str,
+) -> Result<(&'a PgRow, &'a Node), Error> {
+    let child = node.variant_child(field_index, variant);
+    let missing = || Error::MissingVariant { view: node.view, path: child.node.path.clone() };
+    let key = node.key(row, KEY_ALIAS)?.ok_or_else(missing)?;
+    match child.by_key.get(&key).and_then(|indices| indices.first()) {
+        Some(&i) => Ok((&child.node.rows[i], &child.node)),
+        None => Err(missing()),
     }
 }
 
@@ -206,14 +307,26 @@ pub(crate) fn load<'a>(
 
         for child in &plan.children {
             // The keys the child rows are selected by
-            let parent_alias = match &child.plan.link {
-                Link::Child { .. } => KEY_ALIAS,
-                Link::ToOne { ref_alias } => ref_alias.as_str(),
+            let (parent_alias, tag) = match &child.plan.link {
+                Link::Child { .. } => (KEY_ALIAS, None),
+                Link::ToOne { ref_alias } => (ref_alias.as_str(), None),
+                Link::Variant { tag_alias, tag_value } => (KEY_ALIAS, Some((tag_alias.as_str(), *tag_value))),
                 Link::Root => unreachable!("a child query is never a root query"),
             };
             let mut seen = HashSet::new();
             let mut keys = Vec::new();
             for row in &node.rows {
+                // A variant table is only queried for the rows of the variant
+                if let Some((tag_alias, tag_value)) = tag {
+                    let tag = row.try_get::<Option<&str>, _>(tag_alias).map_err(|source| Error::Decode {
+                        view,
+                        path: node.path_of(tag_alias),
+                        source,
+                    })?;
+                    if tag != Some(tag_value) {
+                        continue;
+                    }
+                }
                 if let Some(key) = node.key(row, parent_alias)?
                     && seen.insert(key.clone())
                 {
@@ -229,7 +342,11 @@ pub(crate) fn load<'a>(
             };
 
             let by_key = child_node.group(attach_alias(&child.plan.link))?;
-            node.children[child.field_index] = Some(ChildNode { node: child_node, by_key });
+            node.children.push(ChildEntry {
+                field_index: child.field_index,
+                variant: child.variant,
+                child: ChildNode { node: child_node, by_key },
+            });
         }
 
         Ok(node)

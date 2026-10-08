@@ -1,0 +1,5 @@
+error: missing `#[view(table = "...")]` for the variant's data
+ --> tests/ui/variant_without_table.rs:5:5
+  |
+5 |     Card { last4: String },
+  |     ^^^^

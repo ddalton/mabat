@@ -204,13 +204,15 @@ fn check_query<'a>(
 
         for child in &plan.children {
             let child_class = classes.as_ref().and_then(|classes| match &child.plan.link {
-                Link::Child { .. } => classes.get(&plan.key_alias).copied(),
+                Link::Child { .. } | Link::Variant { .. } => classes.get(&plan.key_alias).copied(),
                 Link::ToOne { ref_alias } => classes.get(ref_alias).copied(),
                 Link::Root => None,
             });
-            let describe = description
-                .child(child.field_index)
-                .expect("the description and the shape of a view have the same fields");
+            let describe = match child.variant {
+                None => description.child(child.field_index),
+                Some(variant) => description.variant(child.field_index, variant),
+            }
+            .expect("the description and the shape of a view have the same fields");
             check_query(conn, context, &child.plan, describe, child_class, overrides, report).await?;
         }
         Ok(())
@@ -349,6 +351,7 @@ impl Query<'_> {
             let (alias, what) = match &self.plan.link {
                 Link::Child { .. } => (PARENT_ALIAS, "the key of the parent query".to_string()),
                 Link::ToOne { ref_alias } => (self.plan.key_alias.as_str(), format!("the parent's \"{ref_alias}\"")),
+                Link::Variant { .. } => (self.plan.key_alias.as_str(), "the key of the parent query".to_string()),
                 Link::Root => unreachable!("the root query has no parent"),
             };
             if let Some(class) = classes.get(alias)
@@ -420,7 +423,7 @@ impl Query<'_> {
         let root = matches!(self.plan.link, Link::Root);
         let (keys, of) = match &self.plan.link {
             Link::Root => (classes.get(&self.plan.key_alias).copied(), "root keys"),
-            Link::Child { .. } => (self.link_class, "parent keys"),
+            Link::Child { .. } | Link::Variant { .. } => (self.link_class, "parent keys"),
             Link::ToOne { .. } => (self.link_class, "referenced keys"),
         };
         match types.as_slice() {

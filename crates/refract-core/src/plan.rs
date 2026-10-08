@@ -1,25 +1,30 @@
 //! Planning the queries that fill a view.
 //!
 //! A view is filled by a tree of queries. The root query selects the view's table,
-//! including embedded structs and the foreign keys of to-one references. Each to-many
-//! collection and each to-one reference is loaded by a child query keyed by the keys
-//! collected from its parent query, which avoids both N+1 queries and the cartesian
-//! product of joining collections.
+//! including embedded structs, enums stored in the row, and the foreign keys of to-one
+//! references. Each to-many collection and each to-one reference is loaded by a child query
+//! keyed by the keys collected from its parent query, which avoids both N+1 queries and the
+//! cartesian product of joining collections. So is each variant of an enum stored in a table
+//! per variant.
 //!
 //! Every selected column is aliased with its path relative to the query's view, e.g.
-//! `name` or `address.city`, plus the system aliases [`KEY_ALIAS`], [`PARENT_ALIAS`] and
-//! [`REF_ALIAS_PREFIX`]. Results are decoded by alias, never by position.
+//! `name`, `address.city` or `status.Blocked.reason`, plus the system aliases [`KEY_ALIAS`],
+//! [`PARENT_ALIAS`], [`REF_ALIAS_PREFIX`] and [`TAG_ALIAS`]. Results are decoded by alias,
+//! never by position.
 
+use std::collections::HashSet;
 use std::fmt::Write;
 
-use crate::shape::{EmbeddedShape, Field, FieldKind, OrderBy, ViewShape};
-use crate::{KEY_ALIAS, PARENT_ALIAS, REF_ALIAS_PREFIX, ROOT_QUERY};
+use crate::shape::{
+    EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, SumShape, SumStrategy, VariantData, ViewShape,
+};
+use crate::{KEY_ALIAS, PARENT_ALIAS, REF_ALIAS_PREFIX, ROOT_QUERY, TAG_ALIAS};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlanError {
     #[error("{view} at `{path}` refers back to {view}; recursive views are not supported yet")]
     Recursive { view: &'static str, path: String },
-    #[error("{view}: field `{field}` is an embedded struct that contains a {kind}, which is not supported")]
+    #[error("{view}: field `{field}` is an embedded value that contains a {kind}, which is not supported")]
     UnsupportedEmbedded { view: &'static str, field: String, kind: &'static str },
 }
 
@@ -36,6 +41,8 @@ pub struct QueryPlan {
     pub columns: Vec<SelectColumn>,
     /// Ordering of the rows of a child query.
     pub order_by: Vec<OrderBy>,
+    /// The enums stored in the rows of this query, for strict decoding.
+    pub sums: Vec<SumPlan>,
     pub children: Vec<ChildPlan>,
 }
 
@@ -49,12 +56,17 @@ pub enum Link {
     /// A to-one reference: rows whose key is one of the values of the parent's
     /// `ref_alias` column.
     ToOne { ref_alias: String },
+    /// A variant of an enum stored in a table per variant: rows whose key is the key of a
+    /// parent row whose `tag_alias` column is `tag_value`.
+    Variant { tag_alias: String, tag_value: &'static str },
 }
 
 #[derive(Debug)]
 pub struct ChildPlan {
     /// Index of the field in the parent's [`ViewShape::fields`].
     pub field_index: usize,
+    /// The variant, for a query of a variant table.
+    pub variant: Option<&'static str>,
     pub plan: QueryPlan,
 }
 
@@ -63,6 +75,48 @@ pub struct ChildPlan {
 pub struct SelectColumn {
     pub column: String,
     pub alias: String,
+    /// Select the column as `text`, for tag columns of any type, e.g. a PostgreSQL enum.
+    pub as_text: bool,
+}
+
+/// An enum stored in the rows of a query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SumPlan {
+    /// Prefix of the aliases of the enum, e.g. `status.`.
+    pub alias_prefix: String,
+    pub variants: Vec<VariantPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantPlan {
+    pub name: &'static str,
+    /// Aliases that must be NULL in a row of this variant: the columns of the other
+    /// variants that this variant does not use. Empty for a lenient enum.
+    pub exclusive: Vec<String>,
+}
+
+impl SelectColumn {
+    fn new(column: impl Into<String>, alias: impl Into<String>) -> SelectColumn {
+        SelectColumn { column: column.into(), alias: alias.into(), as_text: false }
+    }
+}
+
+/// A query of a variant table found while adding the columns of a view.
+struct VariantQuery {
+    field_index: usize,
+    path: String,
+    tag_alias: String,
+    variant: &'static str,
+    tag_value: &'static str,
+    shape: &'static ViewShape,
+}
+
+/// Collects the columns of the row of a query.
+struct Row<'a> {
+    view: &'static ViewShape,
+    columns: &'a mut Vec<SelectColumn>,
+    sums: &'a mut Vec<SumPlan>,
+    variants: &'a mut Vec<VariantQuery>,
 }
 
 impl QueryPlan {
@@ -84,32 +138,40 @@ impl QueryPlan {
         }
         stack.push(shape);
 
-        let mut columns = vec![SelectColumn { column: shape.key_column.to_string(), alias: KEY_ALIAS.to_string() }];
+        let mut columns = vec![SelectColumn::new(shape.key_column, KEY_ALIAS)];
         if let Link::Child { fk } = &link {
-            columns.push(SelectColumn { column: fk.to_string(), alias: PARENT_ALIAS.to_string() });
+            columns.push(SelectColumn::new(*fk, PARENT_ALIAS));
         }
 
+        let mut sums = Vec::new();
+        let mut variants = Vec::new();
         let mut children = Vec::new();
         for (field_index, field) in shape.fields.iter().enumerate() {
             let field_path = join_path(&path, field.name);
             match &field.kind {
-                FieldKind::Column { column } => {
-                    columns.push(SelectColumn { column: column.to_string(), alias: field.name.to_string() });
-                }
+                FieldKind::Column { column } => columns.push(SelectColumn::new(*column, field.name)),
                 FieldKind::Embedded { column_prefix, shape: embedded } => {
-                    add_embedded_columns(shape, &mut columns, embedded(), column_prefix, &format!("{}.", field.name))?;
+                    let mut row = Row { view: shape, columns: &mut columns, sums: &mut sums, variants: &mut variants };
+                    let top = Some((field_index, field_path.as_str()));
+                    row.add_embedded(embedded(), column_prefix, &format!("{}.", field.name), top)?;
                 }
                 FieldKind::Child { fk, order_by, shape: child } => {
                     let plan = Self::build_inner(child(), field_path, Link::Child { fk }, order_by.to_vec(), stack)?;
-                    children.push(ChildPlan { field_index, plan });
+                    children.push(ChildPlan { field_index, variant: None, plan });
                 }
                 FieldKind::ToOne { fk, shape: target, .. } => {
                     let ref_alias = format!("{REF_ALIAS_PREFIX}{}", field.name);
-                    columns.push(SelectColumn { column: fk.to_string(), alias: ref_alias.clone() });
+                    columns.push(SelectColumn::new(*fk, ref_alias.clone()));
                     let plan = Self::build_inner(target(), field_path, Link::ToOne { ref_alias }, Vec::new(), stack)?;
-                    children.push(ChildPlan { field_index, plan });
+                    children.push(ChildPlan { field_index, variant: None, plan });
                 }
             }
+        }
+
+        for query in variants {
+            let link = Link::Variant { tag_alias: query.tag_alias, tag_value: query.tag_value };
+            let plan = Self::build_inner(query.shape, query.path, link, Vec::new(), stack)?;
+            children.push(ChildPlan { field_index: query.field_index, variant: Some(query.variant), plan });
         }
 
         // Select the key column only once when a field holds it
@@ -122,7 +184,7 @@ impl QueryPlan {
         }
 
         stack.pop();
-        Ok(QueryPlan { shape, path, link, key_alias, columns, order_by, children })
+        Ok(QueryPlan { shape, path, link, key_alias, columns, order_by, sums, children })
     }
 
     /// Name of the query in its plan: its path, or `$root` for the root query. Overrides
@@ -158,6 +220,7 @@ impl QueryPlan {
             Link::Root => String::new(),
             Link::Child { fk } => format!(" (to-many by {fk})"),
             Link::ToOne { ref_alias } => format!(" (to-one by {ref_alias})"),
+            Link::Variant { tag_alias, tag_value } => format!(" (variant where {tag_alias} = '{tag_value}')"),
         };
         let _ = writeln!(out, "{indent}{name}: {}{link}", self.shape.name);
         let _ = writeln!(out, "{indent}  {}", crate::sql::select(self, &crate::sql::RootOptions::default()));
@@ -167,51 +230,136 @@ impl QueryPlan {
     }
 }
 
-fn add_embedded_columns(
-    view: &'static ViewShape,
-    columns: &mut Vec<SelectColumn>,
-    shape: &'static EmbeddedShape,
-    column_prefix: &str,
-    alias_prefix: &str,
-) -> Result<(), PlanError> {
-    for field in shape.fields {
-        add_embedded_field(view, columns, field, column_prefix, alias_prefix)?;
-    }
-    Ok(())
-}
-
-fn add_embedded_field(
-    view: &'static ViewShape,
-    columns: &mut Vec<SelectColumn>,
-    field: &Field,
-    column_prefix: &str,
-    alias_prefix: &str,
-) -> Result<(), PlanError> {
-    match &field.kind {
-        FieldKind::Column { column } => {
-            columns.push(SelectColumn {
-                column: format!("{column_prefix}{column}"),
-                alias: format!("{alias_prefix}{}", field.name),
-            });
-            Ok(())
+impl Row<'_> {
+    /// Add the columns of an embedded struct or enum. `top` is the field index and path of
+    /// the view's field when the value is not nested in another embedded value.
+    fn add_embedded(
+        &mut self,
+        shape: &'static EmbeddedShape,
+        column_prefix: &str,
+        alias_prefix: &str,
+        top: Option<(usize, &str)>,
+    ) -> Result<(), PlanError> {
+        match &shape.kind {
+            EmbeddedKind::Product { fields } => {
+                for field in *fields {
+                    self.add_field(field, column_prefix, alias_prefix)?;
+                }
+                Ok(())
+            }
+            EmbeddedKind::Sum(sum) => self.add_sum(sum, column_prefix, alias_prefix, top),
         }
-        FieldKind::Embedded { column_prefix: inner, shape } => add_embedded_columns(
-            view,
-            columns,
-            shape(),
-            &format!("{column_prefix}{inner}"),
-            &format!("{alias_prefix}{}.", field.name),
-        ),
-        FieldKind::Child { .. } => Err(PlanError::UnsupportedEmbedded {
-            view: view.name,
-            field: format!("{alias_prefix}{}", field.name),
-            kind: "child collection",
-        }),
-        FieldKind::ToOne { .. } => Err(PlanError::UnsupportedEmbedded {
-            view: view.name,
-            field: format!("{alias_prefix}{}", field.name),
-            kind: "to-one reference",
-        }),
+    }
+
+    fn add_sum(
+        &mut self,
+        sum: &'static SumShape,
+        column_prefix: &str,
+        alias_prefix: &str,
+        top: Option<(usize, &str)>,
+    ) -> Result<(), PlanError> {
+        let tag_alias = format!("{alias_prefix}{TAG_ALIAS}");
+        self.columns.push(SelectColumn {
+            column: format!("{column_prefix}{}", sum.tag_column),
+            alias: tag_alias.clone(),
+            as_text: true,
+        });
+
+        if sum.strategy == SumStrategy::TablePerVariant {
+            let Some((field_index, path)) = top else {
+                return Err(PlanError::UnsupportedEmbedded {
+                    view: self.view.name,
+                    field: alias_prefix.trim_end_matches('.').to_string(),
+                    kind: "enum stored in a table per variant",
+                });
+            };
+            for variant in sum.variants {
+                if let VariantData::Table { shape } = &variant.data {
+                    self.variants.push(VariantQuery {
+                        field_index,
+                        path: format!("{path}.{}", variant.name),
+                        tag_alias: tag_alias.clone(),
+                        variant: variant.name,
+                        tag_value: variant.tag_value,
+                        shape: shape(),
+                    });
+                }
+            }
+            return Ok(());
+        }
+
+        // The columns of each variant, to find the columns that must be NULL for the others
+        let mut ranges = Vec::new();
+        for variant in sum.variants {
+            let start = self.columns.len();
+            match &variant.data {
+                VariantData::Unit => {}
+                VariantData::Columns { fields } => {
+                    let prefix = format!("{alias_prefix}{}.", variant.name);
+                    for field in *fields {
+                        self.add_field(field, column_prefix, &prefix)?;
+                    }
+                }
+                VariantData::Table { .. } => {
+                    return Err(PlanError::UnsupportedEmbedded {
+                        view: self.view.name,
+                        field: format!("{alias_prefix}{}", variant.name),
+                        kind: "variant table in an enum stored in columns",
+                    });
+                }
+            }
+            ranges.push(start..self.columns.len());
+        }
+
+        let variants = sum
+            .variants
+            .iter()
+            .zip(&ranges)
+            .map(|(variant, own)| {
+                let mut exclusive = Vec::new();
+                if !sum.lenient {
+                    let used: HashSet<&str> = self.columns[own.clone()].iter().map(|c| c.column.as_str()).collect();
+                    for other in ranges.iter().filter(|r| *r != own) {
+                        for column in &self.columns[other.clone()] {
+                            if !used.contains(column.column.as_str()) && !exclusive.contains(&column.alias) {
+                                exclusive.push(column.alias.clone());
+                            }
+                        }
+                    }
+                }
+                VariantPlan { name: variant.name, exclusive }
+            })
+            .collect();
+        self.sums.push(SumPlan { alias_prefix: alias_prefix.to_string(), variants });
+        Ok(())
+    }
+
+    fn add_field(&mut self, field: &Field, column_prefix: &str, alias_prefix: &str) -> Result<(), PlanError> {
+        match &field.kind {
+            FieldKind::Column { column } => {
+                self.columns.push(SelectColumn::new(
+                    format!("{column_prefix}{column}"),
+                    format!("{alias_prefix}{}", field.name),
+                ));
+                Ok(())
+            }
+            FieldKind::Embedded { column_prefix: inner, shape } => self.add_embedded(
+                shape(),
+                &format!("{column_prefix}{inner}"),
+                &format!("{alias_prefix}{}.", field.name),
+                None,
+            ),
+            FieldKind::Child { .. } => Err(PlanError::UnsupportedEmbedded {
+                view: self.view.name,
+                field: format!("{alias_prefix}{}", field.name),
+                kind: "child collection",
+            }),
+            FieldKind::ToOne { .. } => Err(PlanError::UnsupportedEmbedded {
+                view: self.view.name,
+                field: format!("{alias_prefix}{}", field.name),
+                kind: "to-one reference",
+            }),
+        }
     }
 }
 
@@ -222,6 +370,7 @@ fn join_path(parent: &str, field: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shape::{SumShape, Variant};
 
     static PERSON_FIELDS: [Field; 1] = [Field { name: "name", kind: FieldKind::Column { column: "full_name" } }];
     static PERSON: ViewShape = ViewShape { name: "Person", table: "person", key_column: "id", fields: &PERSON_FIELDS };
@@ -230,7 +379,8 @@ mod tests {
         Field { name: "street", kind: FieldKind::Column { column: "street" } },
         Field { name: "city", kind: FieldKind::Column { column: "city" } },
     ];
-    static ADDRESS: EmbeddedShape = EmbeddedShape { name: "Address", fields: &ADDRESS_FIELDS };
+    static ADDRESS: EmbeddedShape =
+        EmbeddedShape { name: "Address", kind: EmbeddedKind::Product { fields: &ADDRESS_FIELDS } };
 
     static CHILD_ORDER: [OrderBy; 1] = [OrderBy::desc("name")];
     static TASK_FIELDS: [Field; 4] = [
@@ -316,5 +466,167 @@ mod tests {
         let mut names = Vec::new();
         plan.walk(&mut |p| names.push(p.query_name().to_string()));
         assert_eq!(names, ["$root", "assignee", "children"]);
+    }
+    // enum Status { Open, Assigned { assignee: String }, Reassigned { assignee: String, by: String },
+    //               Blocked { reason: Reason } } with a nested enum Reason { Waiting { on: String }, Other }
+    static ASSIGNED_FIELDS: [Field; 1] = [Field { name: "assignee", kind: FieldKind::Column { column: "assignee" } }];
+    static REASSIGNED_FIELDS: [Field; 2] = [
+        Field { name: "assignee", kind: FieldKind::Column { column: "assignee" } },
+        Field { name: "by", kind: FieldKind::Column { column: "reassigned_by" } },
+    ];
+    static WAITING_FIELDS: [Field; 1] = [Field { name: "on", kind: FieldKind::Column { column: "waiting_on" } }];
+    static REASON_VARIANTS: [Variant; 2] = [
+        Variant { name: "Waiting", tag_value: "waiting", data: VariantData::Columns { fields: &WAITING_FIELDS } },
+        Variant { name: "Other", tag_value: "other", data: VariantData::Unit },
+    ];
+    static REASON: EmbeddedShape = EmbeddedShape {
+        name: "Reason",
+        kind: EmbeddedKind::Sum(SumShape {
+            tag_column: "reason",
+            strategy: SumStrategy::Tag,
+            lenient: false,
+            variants: &REASON_VARIANTS,
+        }),
+    };
+    static BLOCKED_FIELDS: [Field; 1] =
+        [Field { name: "reason", kind: FieldKind::Embedded { column_prefix: "", shape: || &REASON } }];
+    static STATUS_VARIANTS: [Variant; 4] = [
+        Variant { name: "Open", tag_value: "open", data: VariantData::Unit },
+        Variant { name: "Assigned", tag_value: "assigned", data: VariantData::Columns { fields: &ASSIGNED_FIELDS } },
+        Variant {
+            name: "Reassigned",
+            tag_value: "reassigned",
+            data: VariantData::Columns { fields: &REASSIGNED_FIELDS },
+        },
+        Variant { name: "Blocked", tag_value: "blocked", data: VariantData::Columns { fields: &BLOCKED_FIELDS } },
+    ];
+    static STATUS: EmbeddedShape = EmbeddedShape {
+        name: "Status",
+        kind: EmbeddedKind::Sum(SumShape {
+            tag_column: "kind",
+            strategy: SumStrategy::Tag,
+            lenient: false,
+            variants: &STATUS_VARIANTS,
+        }),
+    };
+    static ISSUE_FIELDS: [Field; 1] =
+        [Field { name: "status", kind: FieldKind::Embedded { column_prefix: "status_", shape: || &STATUS } }];
+    static ISSUE: ViewShape = ViewShape { name: "Issue", table: "issue", key_column: "id", fields: &ISSUE_FIELDS };
+
+    #[test]
+    fn enums_in_the_row() {
+        let plan = QueryPlan::build(&ISSUE).unwrap();
+        assert_eq!(
+            aliases(&plan),
+            [
+                "$key",
+                "status.$tag",
+                "status.Assigned.assignee",
+                "status.Reassigned.assignee",
+                "status.Reassigned.by",
+                "status.Blocked.reason.$tag",
+                "status.Blocked.reason.Waiting.on",
+            ]
+        );
+        let tag = &plan.columns[1];
+        assert_eq!((tag.column.as_str(), tag.as_text), ("status_kind", true));
+        assert_eq!(plan.columns[6].column, "status_waiting_on");
+        assert_eq!(plan.query_count(), 1);
+
+        let sql = crate::sql::select(&plan, &crate::sql::RootOptions::default());
+        assert!(sql.contains("t0.\"status_kind\"::text AS \"status.$tag\""), "{sql}");
+    }
+
+    #[test]
+    fn columns_of_other_variants_must_be_null() {
+        let plan = QueryPlan::build(&ISSUE).unwrap();
+        // Nested enums are planned before the enum that contains them
+        let [reason, status] = plan.sums.as_slice() else { panic!("{:?}", plan.sums) };
+        assert_eq!(reason.alias_prefix, "status.Blocked.reason.");
+        assert_eq!(reason.variants[1].exclusive, ["status.Blocked.reason.Waiting.on"]);
+
+        assert_eq!(status.alias_prefix, "status.");
+        let exclusive = |name: &str| &status.variants.iter().find(|v| v.name == name).unwrap().exclusive;
+        assert_eq!(
+            exclusive("Open"),
+            &[
+                "status.Assigned.assignee",
+                "status.Reassigned.assignee",
+                "status.Reassigned.by",
+                "status.Blocked.reason.$tag",
+                "status.Blocked.reason.Waiting.on",
+            ]
+        );
+        // The assignee column is shared by Assigned and Reassigned
+        assert_eq!(
+            exclusive("Assigned"),
+            &["status.Reassigned.by", "status.Blocked.reason.$tag", "status.Blocked.reason.Waiting.on"]
+        );
+        assert_eq!(
+            exclusive("Blocked"),
+            &["status.Assigned.assignee", "status.Reassigned.assignee", "status.Reassigned.by"]
+        );
+    }
+
+    // enum Payment { Card { last4 } in card_payment, Cash } stored in a table per variant
+    static CARD_FIELDS: [Field; 1] = [Field { name: "last4", kind: FieldKind::Column { column: "last4" } }];
+    static CARD: ViewShape =
+        ViewShape { name: "Payment::Card", table: "card_payment", key_column: "payment_id", fields: &CARD_FIELDS };
+    static PAYMENT_VARIANTS: [Variant; 2] = [
+        Variant { name: "Card", tag_value: "card", data: VariantData::Table { shape: || &CARD } },
+        Variant { name: "Cash", tag_value: "cash", data: VariantData::Unit },
+    ];
+    static PAYMENT: EmbeddedShape = EmbeddedShape {
+        name: "Payment",
+        kind: EmbeddedKind::Sum(SumShape {
+            tag_column: "kind",
+            strategy: SumStrategy::TablePerVariant,
+            lenient: false,
+            variants: &PAYMENT_VARIANTS,
+        }),
+    };
+    static ORDER_FIELDS: [Field; 1] =
+        [Field { name: "payment", kind: FieldKind::Embedded { column_prefix: "payment_", shape: || &PAYMENT } }];
+    static ORDER_VIEW: ViewShape =
+        ViewShape { name: "Order", table: "orders", key_column: "id", fields: &ORDER_FIELDS };
+
+    #[test]
+    fn variant_tables_are_child_queries() {
+        let plan = QueryPlan::build(&ORDER_VIEW).unwrap();
+        assert_eq!(aliases(&plan), ["$key", "payment.$tag"]);
+        assert!(plan.sums.is_empty());
+        let [card] = plan.children.as_slice() else { panic!() };
+        assert_eq!((card.field_index, card.variant), (0, Some("Card")));
+        assert_eq!(card.plan.query_name(), "payment.Card");
+        assert_eq!(card.plan.link, Link::Variant { tag_alias: "payment.$tag".into(), tag_value: "card" });
+        assert_eq!(aliases(&card.plan), ["$key", "last4"]);
+        assert_eq!(
+            crate::sql::select(&card.plan, &crate::sql::RootOptions::default()),
+            "SELECT t0.\"payment_id\" AS \"$key\", t0.\"last4\" AS \"last4\" FROM \"card_payment\" AS t0 \
+             WHERE t0.\"payment_id\" = ANY($1) ORDER BY t0.\"payment_id\""
+        );
+        assert!(plan.explain().contains("payment.Card: Payment::Card (variant where payment.$tag = 'card')"));
+    }
+
+    static WRAPPER_FIELDS: [Field; 1] =
+        [Field { name: "payment", kind: FieldKind::Embedded { column_prefix: "", shape: || &PAYMENT } }];
+    static WRAPPER: EmbeddedShape =
+        EmbeddedShape { name: "Wrapper", kind: EmbeddedKind::Product { fields: &WRAPPER_FIELDS } };
+    static WRAPPED_FIELDS: [Field; 1] =
+        [Field { name: "wrapper", kind: FieldKind::Embedded { column_prefix: "", shape: || &WRAPPER } }];
+    static WRAPPED: ViewShape =
+        ViewShape { name: "Wrapped", table: "orders", key_column: "id", fields: &WRAPPED_FIELDS };
+
+    #[test]
+    fn variant_tables_need_to_be_fields_of_a_view() {
+        let err = QueryPlan::build(&WRAPPED).unwrap_err();
+        assert_eq!(
+            err,
+            PlanError::UnsupportedEmbedded {
+                view: "Wrapped",
+                field: "wrapper.payment".into(),
+                kind: "enum stored in a table per variant"
+            }
+        );
     }
 }
