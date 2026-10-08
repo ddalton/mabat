@@ -27,8 +27,11 @@ jobs:
       REFRACT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: the compile error snapshots in crates/refract/tests/ui depend on the
+      # compiler version. Bless them again (TRYBUILD=overwrite) when moving the pin.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.96.0"
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
