@@ -1,7 +1,7 @@
 // Writes the pages of the site that come from the repository: the MPA specification, the design
 // document and the changelog from their Markdown, and the reference pages from docs/mpa.json.
 // The repository files stay the source of truth; the written pages are not committed.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,8 +23,9 @@ function write(slug, frontmatter, body) {
 
 /** The relative URL from the page at `from` to the page at `to`, both slugs. */
 function relative(from, to) {
-  const depth = from === 'index' ? 0 : from.split('/').length;
-  return `${'../'.repeat(depth)}${to === 'index' ? '' : `${to}/`}`;
+  const page = (slug) => slug.replace(/(^|\/)index$/, '');
+  const depth = page(from) === '' ? 0 : page(from).split('/').length;
+  return `${'../'.repeat(depth)}${page(to) === '' ? '' : `${page(to)}/`}`;
 }
 
 /** The anchor of a rule, such as `mpa-write-9`. */
@@ -172,4 +173,106 @@ ${index.diagnostics.map((d) => `| \`${d.code}\` | ${d.severity} | ${cell(d.summa
 `,
 );
 
-console.log(`synced: spec (${index.rules.length} rules), design, changelog, reference`);
+// The architecture document: a page for its cover and one for each of its pages, from the HTML that
+// docs/architecture/overview/build.sh renders to a PDF, with its figures and the PDF beside them
+const architecture = (() => {
+  const dir = 'docs/architecture/overview';
+  const html = read(`${dir}/mabat-architecture.html`);
+  const inner = (source, pattern) => source.match(pattern)?.[1].trim() ?? '';
+  const sections = html.split('<section class="page').slice(1);
+  const slugOf = (title) =>
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+
+  // Rule citations become links to the specification, from a page at `from`
+  const cite = (text, from) =>
+    text.replace(/<span class="r">(MPA-[A-Z]+-\d+)<\/span>/g, (_, id) => {
+      return `<a class="rule-ref" href="${relative(from, 'spec/mpa')}#${anchor(id)}">${id}</a>`;
+    });
+  // One HTML block per line, so Markdown leaves each alone
+  const block = (text) => text.replace(/\s*\n\s*/g, ' ').trim();
+
+  const outPublic = join(site, 'public', 'architecture');
+  rmSync(outPublic, { recursive: true, force: true });
+  mkdirSync(join(outPublic, 'diagrams'), { recursive: true });
+  for (const file of readdirSync(join(repo, dir, 'diagrams'))) {
+    copyFileSync(join(repo, dir, 'diagrams', file), join(outPublic, 'diagrams', file));
+  }
+  copyFileSync(join(repo, dir, 'mabat-architecture.pdf'), join(outPublic, 'mabat-architecture.pdf'));
+
+  const pages = sections.slice(1).map((section, i) => {
+    const title = inner(section, /<h1>([\s\S]*?)<\/h1>/);
+    return { section, title, slug: `architecture/${String(i + 1).padStart(2, '0')}-${slugOf(title)}` };
+  });
+
+  // The cover
+  const cover = sections[0];
+  const from = 'architecture/index';
+  const toc = [...cover.matchAll(/<div><b>(\d+) · ([\s\S]*?)<\/b> — ([\s\S]*?)<\/div>/g)].map(
+    ([, n, title, text]) => `| ${n} | [${title}](${relative(from, pages[n - 1].slug)}) | ${block(text).replace(/\|/g, '\\|')} |`,
+  );
+  write(
+    from,
+    {
+      title: 'Architecture',
+      description: 'How Mabat loads, serves and saves typed aggregates, in ten figures and a table.',
+      sidebar: { label: 'Overview', order: 0 },
+      tableOfContents: false,
+    },
+    `<p class="arch-lead">${block(cite(inner(cover, /<p class="sub">([\s\S]*?)<\/p>/), from))}</p>
+
+<div class="arch-download"><a href="mabat-architecture.pdf">Download the PDF</a> <span>A3 landscape, ${sections.length} pages, for print and for review</span></div>
+
+<div class="arch-notice">${block(cite(inner(cover, /<div class="notice">([\s\S]*?)<\/div>/), from))}</div>
+
+${[...inner(cover, /<div class="meta">([\s\S]*?)<\/div>/).matchAll(/<p>([\s\S]*?)<\/p>/g)]
+  .map(([, p]) => `<p>${block(cite(p, from))}</p>`)
+  .join('\n\n')}
+
+## Contents
+
+| | Page | What it shows |
+| --- | --- | --- |
+${toc.join('\n')}
+`,
+  );
+
+  // The pages
+  pages.forEach(({ section, title, slug }, i) => {
+    const kicker = inner(section, /<span class="kicker">([\s\S]*?)<\/span>/);
+    const dek = inner(section, /<p class="dek">([\s\S]*?)<\/p>/);
+    const img = section.match(/<img src="([^"]+)" alt="([^"]*)">/);
+    const caption = inner(section, /<figcaption>([\s\S]*?)<\/figcaption>/);
+    const table = inner(section, /(<table class="m">[\s\S]*?<\/table>)/);
+    const after = inner(section, /<div class="after">([\s\S]*?)<\/div>/);
+    const paragraphs = (text) =>
+      [...text.matchAll(/<p>([\s\S]*?)<\/p>/g)].map(([, p]) => `<p>${block(cite(p, slug))}</p>`).join('\n\n');
+    const svg = img && `${relative(slug, 'architecture')}${img[1]}`;
+    const body = [
+      `<p class="arch-kicker">${block(kicker)}</p>`,
+      `<p class="arch-lead">${block(cite(dek, slug))}</p>`,
+      img &&
+        `<figure class="arch-figure"><a href="${svg}" title="Open the figure on its own"><img src="${svg}" alt="${img[2]}" /></a></figure>`,
+      table && `<div class="arch-table">${block(cite(table, slug))}</div>`,
+      paragraphs(caption || after),
+    ].filter(Boolean);
+    write(
+      slug,
+      {
+        title,
+        description: block(dek.replace(/<[^>]+>/g, '')).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'),
+        sidebar: { label: `${i + 1} · ${title}`, order: i + 1 },
+        tableOfContents: false,
+        pagefind: true,
+      },
+      body.join('\n\n'),
+    );
+  });
+  return pages.length;
+})();
+
+console.log(
+  `synced: spec (${index.rules.length} rules), design, changelog, reference, architecture (${architecture} pages)`,
+);

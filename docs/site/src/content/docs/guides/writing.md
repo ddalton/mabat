@@ -39,6 +39,11 @@ elements are saved, removed ones deleted, and unchanged rows produce no statemen
 ([MPA-WRITE-8](../../spec/mpa/#mpa-write-8)). It also updates views of some of a table's columns, which a whole
 `save` cannot insert ([MPA-WRITE-12](../../spec/mpa/#mpa-write-12)).
 
+There is no session watching your values, so nothing is tracked behind your back: `before` is the snapshot, and
+the comparison runs when you call `save_changes`. [Change tracking, against an
+ORM](../../architecture/09-change-tracking-against-an-orm/) sets this beside the proxies, snapshots and flushes
+of an ORM's session.
+
 ## Optimistic locking
 
 ```rust
