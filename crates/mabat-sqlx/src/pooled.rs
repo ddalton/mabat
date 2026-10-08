@@ -54,7 +54,8 @@ impl<B: Backend> Pooled<B> {
 impl Pooled<sqlx::Postgres> {
     /// Every query of a load sees the same snapshot of the database, as one query would:
     /// the first connection begins a `REPEATABLE READ READ ONLY` transaction and exports
-    /// its snapshot, which the other connections import. At least one connection is used.
+    /// its snapshot, which the other connections import when the load starts, so a load
+    /// opens all of its connections at once. At least one connection is used.
     pub fn snapshot(pool: &Pool<sqlx::Postgres>, connections: usize) -> Self {
         Pooled { pool: pool.clone(), connections: connections.max(1), snapshot: true }
     }
@@ -184,6 +185,11 @@ impl<B: Backend> Workers<B> {
             // The first connection exports the snapshot and keeps it alive until the end
             let (tx, id) = B::begin_snapshot(&pooled.pool, None).await.map_err(Error::Connection)?;
             idle.push(Worker::Snapshot(tx));
+            // The others import it before any query runs: once a query fails on the first
+            // connection, its transaction is aborted and the snapshot can no longer be imported
+            let imports = (1..connections).map(|_| B::begin_snapshot(&pooled.pool, Some(id.clone())));
+            let imported = futures_util::future::try_join_all(imports).await.map_err(Error::Connection)?;
+            idle.extend(imported.into_iter().map(|(tx, _)| Worker::Snapshot(tx)));
             snapshot = Some(id);
         }
         Ok(Workers {
