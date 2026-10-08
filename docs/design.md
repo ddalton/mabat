@@ -187,8 +187,12 @@ pub struct TaskSummary {
 ### 5.2 Loading
 
 > **M1:** loading is the free function `refract::load::<T>()`, with `by_key`, `by_keys`, `order_by`,
-> `order_by_desc`, `limit` and `offset`, run with `all`, `one` or `optional` on a `&mut PgConnection`. The
-> registry below arrives with overrides in M3, and filters with SeaQuery expressions in M2.
+> `order_by_desc`, `limit` and `offset`, run with `all`, `one` or `optional` on a `&mut PgConnection`.
+> Filters with SeaQuery expressions arrive in M2.
+>
+> **M3:** the registry takes no pool. `build(&mut conn)` checks the views on the connection it is given and
+> returns an immutable `Refract`; every load still takes its own connection or transaction. The free function
+> `refract::load` remains for loading with the generated queries only.
 
 ```rust
 let refract = Refract::builder()
@@ -474,6 +478,10 @@ System columns:
 | `$key` | Map key |
 | `<path>.$tag` | Sum type discriminator |
 
+> **M3:** only the TOML format is implemented. A query is addressed as `[query."<name>"]`, where the name is
+> `$root` or the path of the field the query fills, e.g. `children.notes`. `refract::scaffold::<T>()` writes
+> a file with the generated SQL of every query.
+
 ### 9.2 Contract
 
 - Parameter `$1` is always the array of parent keys (or root keys). Named filters from the call site are
@@ -481,6 +489,20 @@ System columns:
 - Every column must have an alias that is a path in the shape, or a system column.
 - Every non-optional path in the subtree must be covered.
 - Column types must be compatible with the Rust field types.
+
+> **M3:** as implemented:
+>
+> - **Root query:** it takes either no parameter or the array of root keys as `$1`. Without a parameter, it is
+>   used as a subquery, which `by_keys`, `order_by`, `limit` and `offset` filter, order and page. `order_by`
+>   then refers to columns the view selects. With `$1`, the load needs `by_key` or `by_keys`. Named filters
+>   arrive with filters in M2.
+> - **Other queries:** they take the array of the keys they are selected by as `$1`.
+> - **Key columns:** they must hold integer, text or uuid values. A `$parent` column must hold the same kind of
+>   key as its parent, and a referenced view's key the same kind as the reference.
+> - **`Option` fields:** an `Option` path may be left out. It is then always `None`, and the check warns
+>   (`R0105`).
+> - **Nullability:** it is not checked, because a prepared statement does not report it. A `NULL` in a
+>   non-`Option` field fails when it is decoded, with the path of the field.
 
 ### 9.3 Validation
 
@@ -502,11 +524,44 @@ error[R0102]: override for TaskView.$root does not match the view
 The failure policy is configurable per environment: refuse to start (the default), or log the error and fall
 back to the generated query.
 
+> **M3:**
+>
+> - **Generated queries:** they are checked as well, so schema drift is found at startup. A problem with a
+>   generated query that a valid override replaces is only a warning.
+> - **Fallback:** `OnInvalid::UseGenerated` falls back only for invalid overrides. A broken generated query or
+>   a view that cannot be planned always fails.
+> - **Transactions:** each statement is prepared in a transaction, or a savepoint inside the caller's, that is
+>   rolled back, so checking does not abort a transaction.
+> - **CI:** `refract check` is a test in the application, `Refract::builder()...check(&mut conn)`, rather than
+>   a separate binary. A binary cannot know the application's view types.
+>
+> Diagnostic codes:
+>
+> | Code | Problem |
+> | --- | --- |
+> | `R0100` | An override file could not be read or parsed |
+> | `R0101` | A file or query does not address a registered view or query |
+> | `R0102` | Columns do not match the view |
+> | `R0103` | The statement does not prepare |
+> | `R0104` | Wrong parameters |
+> | `R0105` | An optional path is not selected (warning) |
+
 ### 9.4 Shadow mode
 
 `shadow = true` on an override runs both the override and the generated query, compares the decoded results,
 and records timings and mismatches as `tracing` events and metrics. This lets a DBA prove a tuned query is
 equivalent before switching to it.
+
+> **M3:**
+>
+> - **How rows are compared:** the comparison works on rows, not decoded values, using the encoded value of
+>   every column the override selects:
+>   - to-many rows in order per parent,
+>   - other rows by key.
+> - **Where results go:** a mismatch is a `tracing` warning, and `Refract::shadow_stats()` returns runs,
+>   mismatches and the total time of each query. The override's rows are used.
+> - **Known gap:** shadow mode is the only check that catches two columns of the same type swapped in an
+>   override.
 
 ### 9.5 Reloading
 
@@ -628,7 +683,7 @@ database.
 | --- | --- | --- | --- |
 | M1 | Core reads (**done**) | Structs, `Option`, `Vec`, embedded structs, generated SQL, name-based decoding, PostgreSQL | Integration tests; parity benchmark |
 | M2 | Sum types | `tag`, `table_per_variant`, `json`; nested sums; strict decoding | Every strategy tested with generated SQL |
-| M3 | Overrides | Override files, startup validation, `refract check`, shadow mode | Mutation-style checks pass |
+| M3 | Overrides (**mostly done**; reloading remains) | Override files, startup validation, `refract check`, shadow mode | Mutation-style checks pass |
 | M4 | Collections and recursion | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
 | M5 | Shared and graph | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
 | M6 | More databases, concurrency | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |

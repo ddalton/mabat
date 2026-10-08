@@ -1,6 +1,6 @@
 //! Entity keys.
 
-use sqlx::postgres::{PgArguments, PgRow};
+use sqlx::postgres::{PgArguments, PgRow, PgTypeInfo, PgTypeKind};
 use sqlx::query::Query;
 use sqlx::{Column, Postgres, Row, TypeInfo};
 use uuid::Uuid;
@@ -26,6 +26,57 @@ enum KeyKind {
     Text,
 }
 
+impl KeyKind {
+    fn from_type_name(name: &str) -> Option<KeyKind> {
+        Some(match name {
+            "INT2" => KeyKind::Int2,
+            "INT4" => KeyKind::Int4,
+            "INT8" => KeyKind::Int8,
+            "UUID" => KeyKind::Uuid,
+            "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" => KeyKind::Text,
+            _ => return None,
+        })
+    }
+}
+
+/// The kind of value a key column holds. Keys of the same class compare equal across
+/// column types, e.g. an `INT4` foreign key referencing an `INT8` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyClass {
+    Int,
+    Text,
+    Uuid,
+}
+
+impl KeyClass {
+    /// The class of a column type, `None` if it cannot hold a key.
+    pub(crate) fn of(ty: &PgTypeInfo) -> Option<KeyClass> {
+        KeyKind::from_type_name(ty.name()).map(|kind| match kind {
+            KeyKind::Int2 | KeyKind::Int4 | KeyKind::Int8 => KeyClass::Int,
+            KeyKind::Uuid => KeyClass::Uuid,
+            KeyKind::Text => KeyClass::Text,
+        })
+    }
+
+    /// The class of the elements of an array type, `None` if it is not an array of keys.
+    pub(crate) fn of_array(ty: &PgTypeInfo) -> Option<KeyClass> {
+        match ty.kind() {
+            PgTypeKind::Array(element) => KeyClass::of(element),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for KeyClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            KeyClass::Int => "an integer",
+            KeyClass::Text => "a text",
+            KeyClass::Uuid => "a uuid",
+        })
+    }
+}
+
 /// A key column of a query result, resolved once so that reading keys does not look up
 /// the column by name for every row. All rows of a result share the same columns.
 #[derive(Debug, Clone, Copy)]
@@ -38,18 +89,12 @@ impl KeyColumn {
     /// Resolve the key column with the given alias from a row of the result.
     pub(crate) fn resolve(row: &PgRow, alias: &str) -> Result<KeyColumn, sqlx::Error> {
         let column = row.try_column(alias)?;
-        let kind = match column.type_info().name() {
-            "INT2" => KeyKind::Int2,
-            "INT4" => KeyKind::Int4,
-            "INT8" => KeyKind::Int8,
-            "UUID" => KeyKind::Uuid,
-            "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" => KeyKind::Text,
-            other => {
-                return Err(sqlx::Error::ColumnDecode {
-                    index: alias.to_string(),
-                    source: format!("unsupported key type {other}, expected an integer, text or uuid column").into(),
-                });
-            }
+        let name = column.type_info().name();
+        let Some(kind) = KeyKind::from_type_name(name) else {
+            return Err(sqlx::Error::ColumnDecode {
+                index: alias.to_string(),
+                source: format!("unsupported key type {name}, expected an integer, text or uuid column").into(),
+            });
         };
         Ok(KeyColumn { ordinal: column.ordinal(), kind })
     }

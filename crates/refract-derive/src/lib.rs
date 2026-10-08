@@ -265,7 +265,10 @@ fn expand_view(ident: &Ident, table: &str, key: &str, fields: &[ViewField]) -> s
         let ty = &field.ty;
         let name = &field.name;
         let value = match &field.spec {
-            FieldSpec::Column { .. } => quote! { ::refract::__private::column::<#ty>(row, node, #name)? },
+            FieldSpec::Column { .. } => match generic_argument(ty, "Option") {
+                Some(inner) => quote! { ::refract::__private::optional_column::<#inner>(row, node, #name)? },
+                None => quote! { ::refract::__private::column::<#ty>(row, node, #name)? },
+            },
             FieldSpec::Embed { ty, .. } => {
                 let prefix = format!("{name}.");
                 quote! { <#ty as ::refract::Embedded>::decode_embedded(row, node, #prefix)? }
@@ -283,6 +286,24 @@ fn expand_view(ident: &Ident, table: &str, key: &str, fields: &[ViewField]) -> s
             }
         };
         quote! { #ident: #value }
+    });
+
+    let describers = fields.iter().enumerate().map(|(index, field)| {
+        let ty = &field.ty;
+        let name = &field.name;
+        match &field.spec {
+            FieldSpec::Column { .. } => {
+                let optional = generic_argument(ty, "Option").is_some();
+                quote! { description.column::<#ty>(#name, #optional); }
+            }
+            FieldSpec::Embed { ty, .. } => {
+                let prefix = format!("{name}.");
+                quote! { <#ty as ::refract::Embedded>::describe_embedded(description, #prefix); }
+            }
+            FieldSpec::Child { element: target, .. } | FieldSpec::ToOne { target, .. } => {
+                quote! { description.view::<#target>(#index); }
+            }
+        }
     });
 
     Ok(quote! {
@@ -303,6 +324,11 @@ fn expand_view(ident: &Ident, table: &str, key: &str, fields: &[ViewField]) -> s
                 node: &::refract::Node,
             ) -> ::core::result::Result<Self, ::refract::Error> {
                 ::core::result::Result::Ok(Self { #(#decoders),* })
+            }
+
+            #[allow(unused_variables)]
+            fn describe(description: &mut ::refract::__private::Description) {
+                #(#describers)*
             }
         }
     })
@@ -326,8 +352,13 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField]) -> syn::Result<TokenStre
         let ty = &field.ty;
         let name = &field.name;
         let value = match &field.spec {
-            FieldSpec::Column { .. } => quote! {
-                ::refract::__private::column::<#ty>(row, node, &::std::format!("{}{}", prefix, #name))?
+            FieldSpec::Column { .. } => match generic_argument(ty, "Option") {
+                Some(inner) => quote! {
+                    ::refract::__private::optional_column::<#inner>(row, node, &::std::format!("{}{}", prefix, #name))?
+                },
+                None => quote! {
+                    ::refract::__private::column::<#ty>(row, node, &::std::format!("{}{}", prefix, #name))?
+                },
             },
             FieldSpec::Embed { ty, .. } => quote! {
                 <#ty as ::refract::Embedded>::decode_embedded(row, node, &::std::format!("{}{}.", prefix, #name))?
@@ -335,6 +366,20 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField]) -> syn::Result<TokenStre
             FieldSpec::Child { .. } | FieldSpec::ToOne { .. } => unreachable!("rejected above"),
         };
         quote! { #ident: #value }
+    });
+    let describers = fields.iter().map(|field| {
+        let ty = &field.ty;
+        let name = &field.name;
+        match &field.spec {
+            FieldSpec::Column { .. } => {
+                let optional = generic_argument(ty, "Option").is_some();
+                quote! { description.column::<#ty>(::std::format!("{}{}", prefix, #name), #optional); }
+            }
+            FieldSpec::Embed { ty, .. } => quote! {
+                <#ty as ::refract::Embedded>::describe_embedded(description, &::std::format!("{}{}.", prefix, #name));
+            },
+            FieldSpec::Child { .. } | FieldSpec::ToOne { .. } => unreachable!("rejected above"),
+        }
     });
 
     Ok(quote! {
@@ -354,6 +399,11 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField]) -> syn::Result<TokenStre
                 prefix: &str,
             ) -> ::core::result::Result<Self, ::refract::Error> {
                 ::core::result::Result::Ok(Self { #(#decoders),* })
+            }
+
+            #[allow(unused_variables)]
+            fn describe_embedded(description: &mut ::refract::__private::Description, prefix: &str) {
+                #(#describers)*
             }
         }
     })

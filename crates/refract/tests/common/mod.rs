@@ -4,6 +4,10 @@
 //! Use `scripts/with-postgres.sh` to run them against a throwaway PostgreSQL cluster.
 //! Without the variable, database tests are skipped.
 
+#![allow(dead_code)]
+
+pub mod fixture;
+
 use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection};
 
 pub struct TestDb {

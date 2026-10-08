@@ -13,7 +13,7 @@
 use std::fmt::Write;
 
 use crate::shape::{EmbeddedShape, Field, FieldKind, OrderBy, ViewShape};
-use crate::{KEY_ALIAS, PARENT_ALIAS, REF_ALIAS_PREFIX};
+use crate::{KEY_ALIAS, PARENT_ALIAS, REF_ALIAS_PREFIX, ROOT_QUERY};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlanError {
@@ -125,6 +125,20 @@ impl QueryPlan {
         Ok(QueryPlan { shape, path, link, key_alias, columns, order_by, children })
     }
 
+    /// Name of the query in its plan: its path, or `$root` for the root query. Overrides
+    /// address queries by this name.
+    pub fn query_name(&self) -> &str {
+        if self.path.is_empty() { ROOT_QUERY } else { &self.path }
+    }
+
+    /// Visit this query and all queries below it, parents before children.
+    pub fn walk<'a>(&'a self, visit: &mut impl FnMut(&'a QueryPlan)) {
+        visit(self);
+        for child in &self.children {
+            child.plan.walk(visit);
+        }
+    }
+
     /// Number of queries in the plan, including this one.
     pub fn query_count(&self) -> usize {
         1 + self.children.iter().map(|c| c.plan.query_count()).sum::<usize>()
@@ -139,7 +153,7 @@ impl QueryPlan {
 
     fn explain_inner(&self, out: &mut String, depth: usize) {
         let indent = "  ".repeat(depth);
-        let name = if self.path.is_empty() { "$root" } else { &self.path };
+        let name = self.query_name();
         let link = match &self.link {
             Link::Root => String::new(),
             Link::Child { fk } => format!(" (to-many by {fk})"),
@@ -294,5 +308,13 @@ mod tests {
         assert!(explain.contains("$root: Task"), "{explain}");
         assert!(explain.contains("assignee: Person (to-one by $ref.assignee)"), "{explain}");
         assert!(explain.contains("children: Subtask (to-many by parent_id)"), "{explain}");
+    }
+
+    #[test]
+    fn query_names() {
+        let plan = QueryPlan::build(&TASK).unwrap();
+        let mut names = Vec::new();
+        plan.walk(&mut |p| names.push(p.query_name().to_string()));
+        assert_eq!(names, ["$root", "assignee", "children"]);
     }
 }

@@ -2,9 +2,14 @@
 //!
 //! Use the `refract` crate, which re-exports this crate together with the derive macro.
 
+mod check;
+mod describe;
 mod error;
 mod key;
 mod node;
+mod overrides;
+mod registry;
+mod report;
 
 use std::marker::PhantomData;
 
@@ -13,9 +18,14 @@ use refract_core::{EmbeddedShape, OrderBy, QueryPlan, ViewShape};
 use sqlx::PgConnection;
 use sqlx::postgres::PgRow;
 
+use check::Checked;
+pub use describe::Description;
 pub use error::Error;
 pub use key::Key;
 pub use node::Node;
+pub use overrides::Origin;
+pub use registry::{Builder, OnInvalid, Refract, ShadowSummary, scaffold};
+pub use report::{Diagnostic, Report, Severity};
 
 /// A view: a type whose values are loaded from a table, together with their embedded
 /// structs, to-one references and to-many collections.
@@ -27,6 +37,9 @@ pub trait View: Sized + Send {
 
     /// Decode a value from a row of the view's query and the rows of its child queries.
     fn decode(row: &PgRow, node: &Node) -> Result<Self, Error>;
+
+    /// Describe the Rust types of the view's columns, to check queries against them.
+    fn describe(description: &mut Description);
 }
 
 /// A struct stored in columns of the table of the view that contains it.
@@ -37,6 +50,9 @@ pub trait Embedded: Sized + Send {
 
     /// Decode a value from the columns whose aliases start with `prefix`.
     fn decode_embedded(row: &PgRow, node: &Node, prefix: &str) -> Result<Self, Error>;
+
+    /// Describe the Rust types of the columns, whose aliases start with `prefix`.
+    fn describe_embedded(description: &mut Description, prefix: &str);
 }
 
 /// The query plan of a view.
@@ -44,14 +60,16 @@ pub fn plan<T: View>() -> Result<QueryPlan, Error> {
     Ok(QueryPlan::build(T::shape())?)
 }
 
-/// Start loading values of a view.
+/// Start loading values of a view with the generated queries, without overrides.
 ///
 /// ```ignore
 /// let task: TaskView = refract::load::<TaskView>().by_key(id).one(&mut *tx).await?;
 /// let all: Vec<TaskView> = refract::load::<TaskView>().order_by("name").limit(50).all(&mut *conn).await?;
 /// ```
-pub fn load<T: View>() -> Load<T> {
-    Load { keys: None, options: RootOptions::default(), _view: PhantomData }
+///
+/// Use [`Refract::load`] to load with overrides.
+pub fn load<T: View>() -> Load<'static, T> {
+    Load::new(Source::Generated)
 }
 
 /// A load of a view, configured with the builder methods and run with [`Load::all`],
@@ -60,13 +78,31 @@ pub fn load<T: View>() -> Load<T> {
 /// All queries run on the given connection, so they see the uncommitted changes of its
 /// transaction.
 #[must_use = "a load does nothing until it is run with all, one or optional"]
-pub struct Load<T> {
+pub struct Load<'r, T> {
+    source: Source<'r>,
     keys: Option<Vec<Key>>,
     options: RootOptions,
     _view: PhantomData<fn() -> T>,
 }
 
-impl<T: View> Load<T> {
+enum Source<'r> {
+    /// [`load`]: plan the view and run the generated queries.
+    Generated,
+    /// [`Refract::load`] of a registered view.
+    Registered(&'r Checked),
+    /// [`Refract::load`] of a view that is not registered.
+    NotRegistered,
+}
+
+impl<'r, T: View> Load<'r, T> {
+    fn new(source: Source<'r>) -> Self {
+        Load { source, keys: None, options: RootOptions::default(), _view: PhantomData }
+    }
+
+    pub(crate) fn registered(checked: Option<&'r Checked>) -> Self {
+        Load::new(checked.map_or(Source::NotRegistered, Source::Registered))
+    }
+
     /// Load the value with the given key.
     pub fn by_key(mut self, key: impl Into<Key>) -> Self {
         self.keys.get_or_insert_with(Vec::new).push(key.into());
@@ -79,7 +115,8 @@ impl<T: View> Load<T> {
         self
     }
 
-    /// Order the values by a column of the view's table, ascending.
+    /// Order the values by a column of the view's table, ascending. With an override of
+    /// the root query, the column needs to be selected by the view.
     pub fn order_by(mut self, column: &'static str) -> Self {
         self.options.order_by.push(OrderBy::asc(column));
         self
@@ -106,14 +143,22 @@ impl<T: View> Load<T> {
     /// Load all matching values.
     pub async fn all(self, conn: &mut PgConnection) -> Result<Vec<T>, Error> {
         let view = T::shape().name;
-        let plan = plan::<T>()?;
+        let generated;
+        let (plan, overrides) = match self.source {
+            Source::Generated => {
+                generated = plan::<T>()?;
+                (&generated, None)
+            }
+            Source::Registered(checked) => (&checked.plan, Some(&checked.overrides)),
+            Source::NotRegistered => return Err(Error::NotRegistered { view }),
+        };
         let keys = match self.keys {
             Some(keys) if keys.is_empty() => return Ok(Vec::new()),
             Some(keys) => Some(key::KeyArray::new(keys).map_err(|_| Error::MixedKeys { view })?),
             None => None,
         };
         let options = RootOptions { by_keys: keys.is_some(), ..self.options };
-        let node = node::load(conn, &plan, &options, keys).await?;
+        let node = node::load(conn, plan, &options, keys, overrides).await?;
         node.rows().iter().map(|row| T::decode(row, &node)).collect()
     }
 
@@ -139,7 +184,8 @@ impl<T: View> Load<T> {
 /// Used by the code generated by `#[derive(View)]`.
 #[doc(hidden)]
 pub mod __private {
-    pub use crate::node::{children, column, to_one, to_one_required};
+    pub use crate::describe::Description;
+    pub use crate::node::{children, column, optional_column, to_one, to_one_required};
     pub use refract_core::{EmbeddedShape, Field, FieldKind, OrderBy, ViewShape};
     pub use sqlx::postgres::PgRow;
 }
