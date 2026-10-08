@@ -2,6 +2,10 @@
 
 Typed aggregate reads for Rust, with SQL you can tune without changing code.
 
+**Documentation: [ddalton.github.io/mabat](https://ddalton.github.io/mabat/)** — guides, the
+[MPA specification](https://ddalton.github.io/mabat/spec/mpa/) and the
+[architecture](https://ddalton.github.io/mabat/architecture/).
+
 *Mabat* (מבט) is Hebrew for "view": you declare the view of the data you want, and the queries that fill it
 can be tuned separately.
 
