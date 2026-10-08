@@ -212,7 +212,7 @@ async fn the_schema_describes_the_views() {
     let (_pool, schema) = setup().await;
     let sdl = schema.sdl();
     for expected in [
-        "type Project {\n\tid: BigInt!\n\tname: String!\n\tlead: Person\n\tpriority: Priority!\n\tstate: State!\n\tbudget: Budget!\n\tsubprojects: [Project!]!\n\tsettings: [SettingEntry!]!\n}",
+        "type Project {\n\tid: BigInt!\n\tname: String!\n\tlead: Person\n\tpriority: Priority!\n\tstate: State!\n\tbudget: Budget!\n\tsubprojects(where: ProjectWhere, orderBy: [ProjectOrderBy!], limit: Int, offset: Int): [Project!]!\n\tsettings: [SettingEntry!]!\n}",
         "enum Priority {\n\tLow\n\tHigh\n}",
         "union State = StateActive | StateBlocked | StateDone",
         "type StateBlocked {\n\t_variant: String!\n\treason: String!\n}",
@@ -224,6 +224,62 @@ async fn the_schema_describes_the_views() {
     ] {
         assert!(sdl.contains(expected), "missing:\n{expected}\n\nin:\n{sdl}");
     }
+}
+
+#[tokio::test]
+async fn nested_collections_take_arguments() {
+    let (_pool, schema) = setup().await;
+
+    // Compiler has Parser and Linker; Parser has Lexer
+    let data = query(
+        &schema,
+        r#"{
+            projects(where: { id: { in: [1, 2] } }, orderBy: [{ id: ASC }]) {
+                name
+                last: subprojects(orderBy: [{ name: DESC }], limit: 1) { name }
+            }
+        }"#,
+    )
+    .await;
+    assert_eq!(
+        data,
+        json!({ "projects": [
+            { "name": "Compiler", "last": [{ "name": "Parser" }] },
+            { "name": "Parser", "last": [{ "name": "Lexer" }] },
+        ] })
+    );
+
+    // Two levels, with a filter and an offset, and variables
+    let request = async_graphql::Request::new(
+        r#"query($pattern: String!) {
+            project(key: 1) {
+                subprojects(where: { name: { like: $pattern } }) {
+                    name
+                    subprojects(offset: 1) { name }
+                }
+            }
+        }"#,
+    )
+    .variables(async_graphql::Variables::from_json(json!({ "pattern": "P%" })));
+    let response = schema.execute(request).await;
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(
+        response.data.into_json().unwrap(),
+        json!({ "project": { "subprojects": [{ "name": "Parser", "subprojects": [] }] } })
+    );
+
+    // The same collection twice with different arguments is one query: an error
+    let response =
+        schema.execute("{ project(key: 1) { a: subprojects(limit: 1) { name } b: subprojects { name } } }").await;
+    assert_eq!(response.errors[0].message, "`subprojects` is selected twice with different arguments");
+
+    let sdl = schema.sdl();
+    assert!(
+        sdl.contains(
+            "subprojects(where: ProjectWhere, orderBy: [ProjectOrderBy!], limit: Int, offset: Int): [Project!]!"
+        ),
+        "{sdl}"
+    );
 }
 
 #[tokio::test]

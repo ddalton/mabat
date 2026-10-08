@@ -169,7 +169,22 @@ impl Types {
                     let target = self.view((child.shape)());
                     match child.map_key {
                         Some(_) => (TypeRef::named_nn_list_nn(self.entry(&target)), Resolve::Entries),
-                        None => (TypeRef::named_nn_list_nn(target), Resolve::List),
+                        None => {
+                            // A list takes the arguments of a root list, for the elements of each parent
+                            let (where_name, order_name) =
+                                (self.where_input((child.shape)()), self.order_input((child.shape)()));
+                            let field = Field::new(
+                                name.clone(),
+                                TypeRef::named_nn_list_nn(target),
+                                Resolve::List.resolver(name.clone()),
+                            )
+                            .argument(InputValue::new("where", TypeRef::named(where_name)))
+                            .argument(InputValue::new("orderBy", TypeRef::named_nn_list(order_name)))
+                            .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+                            .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)));
+                            object = object.field(field);
+                            continue;
+                        }
                     }
                 }
                 FieldKind::ToOne { shape, optional, .. } => {

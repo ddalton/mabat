@@ -546,10 +546,9 @@ type NodeFuture<'a, B> = Pin<Box<dyn Future<Output = Result<Node<B>, Error>> + S
 pub(crate) fn load<'a, 'c: 'a, B: Backend>(
     runner: &'a Runner<'c, B>,
     plan: &'a QueryPlan,
-    options: &'a RootOptions,
+    args: &'a QueryArgs,
     keys: Option<KeyList>,
     overrides: Option<&'a Overrides>,
-    values: &'a [Bound],
     path: String,
     ancestors: Vec<&'a QueryPlan>,
     identity: Arc<Identity>,
@@ -562,6 +561,7 @@ where
     Box::pin(async move {
         let view = plan.shape.name;
         let active = overrides.and_then(|o| o.get(plan.query_name()));
+        let (options, values) = args.of(plan);
 
         // The connection is held for this query only, not while the children load
         let rows = {
@@ -616,7 +616,7 @@ where
                 let child_node = load_child(
                     runner,
                     next.target,
-                    options,
+                    args,
                     next.keys,
                     overrides,
                     next.path,
@@ -632,7 +632,7 @@ where
             let loads = pending.iter_mut().map(|next| {
                 let keys = next.keys.take();
                 let path = std::mem::take(&mut next.path);
-                load_child(runner, next.target, options, keys, overrides, path, &chain, &identity, next.graph_edge)
+                load_child(runner, next.target, args, keys, overrides, path, &chain, &identity, next.graph_edge)
             });
             let child_nodes = futures_util::future::try_join_all(loads).await?;
             for (next, child_node) in pending.into_iter().zip(child_nodes) {
@@ -642,6 +642,36 @@ where
 
         Ok(node)
     })
+}
+
+/// The arguments of the queries of a load: the options of the root query and of to-many
+/// child queries by name, with their filter values.
+#[derive(Debug, Default)]
+pub(crate) struct QueryArgs {
+    root: (RootOptions, Vec<Bound>),
+    nested: HashMap<String, (RootOptions, Vec<Bound>)>,
+    /// For the other child queries.
+    none: (RootOptions, Vec<Bound>),
+}
+
+impl QueryArgs {
+    pub(crate) fn new(options: RootOptions, values: Vec<Bound>) -> QueryArgs {
+        QueryArgs { root: (options, values), ..QueryArgs::default() }
+    }
+
+    /// Set the options of the child query named `name`.
+    pub(crate) fn nest(&mut self, name: String, options: RootOptions, values: Vec<Bound>) {
+        self.nested.insert(name, (RootOptions { by_keys: true, ..options }, values));
+    }
+
+    /// The options and filter values of a query.
+    fn of(&self, plan: &QueryPlan) -> (&RootOptions, &[Bound]) {
+        let (options, values) = match plan.link {
+            Link::Root => &self.root,
+            _ => self.nested.get(plan.query_name()).unwrap_or(&self.none),
+        };
+        (options, values)
+    }
 }
 
 /// A child query to run: its plan, the keys of the rows above, and the path of its rows.
@@ -740,7 +770,7 @@ fn next_child<'a, B: Backend>(
 async fn load_child<'a, 'c: 'a, B: Backend>(
     runner: &'a Runner<'c, B>,
     target: &'a QueryPlan,
-    options: &'a RootOptions,
+    args: &'a QueryArgs,
     keys: Option<KeyList>,
     overrides: Option<&'a Overrides>,
     path: String,
@@ -756,19 +786,7 @@ where
         None => Node::new(path, Vec::new(), target, identity),
         Some(keys) => {
             let ancestors = chain.to_vec();
-            load::<B>(
-                runner,
-                target,
-                options,
-                Some(keys),
-                overrides,
-                &[],
-                path,
-                ancestors,
-                identity.clone(),
-                graph_edge,
-            )
-            .await
+            load::<B>(runner, target, args, Some(keys), overrides, path, ancestors, identity.clone(), graph_edge).await
         }
     }
 }
@@ -931,6 +949,12 @@ fn statement(
                 .map_err(|column| Error::ColumnNotSelected { view, column: column.to_string() })?;
             Ok(sql.into())
         }
+        (Some(active), Link::Child { .. }) => {
+            let own = sql::expand_keys(&active.sql, dialect, render.keys);
+            let sql = sql::wrap_child(&own, plan, options, render)
+                .map_err(|column| Error::ColumnNotSelected { view, column: column.to_string() })?;
+            Ok(sql.into())
+        }
         (Some(active), _) => Ok(sql::expand_keys(&active.sql, dialect, render.keys).into()),
     }
 }
@@ -1000,8 +1024,7 @@ async fn fetch<B: Backend>(
 ) -> Result<Vec<B::Row>, Error> {
     let has_keys = keys.is_some();
     let root = matches!(plan.link, Link::Root);
-    // Filter values are bound to the root query only
-    let values: Vec<Bound> = if root { values.to_vec() } else { Vec::new() };
+    let values = values.to_vec();
     let options = RootOptions { filter_lists: values.iter().map(Bound::list_len).collect(), ..options.clone() };
 
     // MySQL and SQLite bind each key: child queries split many keys into several statements,

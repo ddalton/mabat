@@ -21,6 +21,12 @@ const LINK_ALIAS: &str = "j";
 const TREE: &str = "$tree";
 const TREE_ALIAS: &str = "r";
 
+/// Table alias of a child query whose rows are numbered per parent, for paging.
+const RANKED_ALIAS: &str = "p";
+
+/// Alias of the number of a child row among the rows of its parent, for paging.
+pub const ROW_ALIAS: &str = "$row";
+
 /// The SQL dialect of a database.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Dialect {
@@ -155,12 +161,15 @@ impl Default for Render {
     }
 }
 
-/// Options of the root query.
+/// Options of a query: of the root query, or of a to-many child query.
+///
+/// For a child query, the filter applies to the rows of each parent, `order_by` replaces the
+/// order of the collection, and `limit` and `offset` page the rows of each parent.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RootOptions {
-    /// Restrict the root rows to the bound keys.
+    /// Restrict the root rows to the bound keys. Always set for a child query.
     pub by_keys: bool,
-    /// Restrict the root rows to the rows that match. Its values are bound after the keys.
+    /// Restrict the rows to the rows that match. Its values are bound after the keys.
     pub filter: Option<Filter>,
     /// The number of values of each list parameter slot of the filter (0 for other slots),
     /// for MySQL and SQLite, which bind each value of a list.
@@ -171,6 +180,20 @@ pub struct RootOptions {
 }
 
 impl RootOptions {
+    /// `true` if the rows are paged.
+    pub fn paged(&self) -> bool {
+        self.limit.is_some() || self.offset.is_some()
+    }
+
+    /// The condition on the number of a row among the rows of its parent, for paging.
+    fn row_range(&self, row: &str) -> String {
+        let offset = self.offset.unwrap_or(0);
+        match self.limit {
+            Some(limit) => format!("{row} > {offset} AND {row} <= {}", offset.saturating_add(limit)),
+            None => format!("{row} > {offset}"),
+        }
+    }
+
     /// The placeholder number of the first filter value on PostgreSQL: `$2` after the keys,
     /// else `$1`.
     pub fn first_filter_param(&self) -> usize {
@@ -260,6 +283,30 @@ pub fn render(plan: &QueryPlan, root: &RootOptions, render: &Render) -> String {
              WHERE {not_on_path}{limit}{clause}){clause}"
         );
     }
+    // The order of the rows, and for a child query its key column and whether it is paged
+    let child = match &plan.link {
+        Link::Child { fk, through } if plan.cte.is_none() => {
+            let source = if through.is_some() { LINK_ALIAS } else { TABLE_ALIAS };
+            Some(format!("{source}.{}", q(fk)))
+        }
+        _ => None,
+    };
+    let order_by: &[OrderBy] = match &plan.link {
+        Link::Root => &root.order_by,
+        Link::Child { .. } if child.is_some() && !root.order_by.is_empty() => &root.order_by,
+        Link::Child { .. } => &plan.order_by,
+        Link::ToOne { .. } | Link::Variant { .. } => &[],
+    };
+    let mut terms: Vec<String> = order_by
+        .iter()
+        .map(|o| format!("{TABLE_ALIAS}.{}{}", q(o.column), if o.descending { " DESC" } else { "" }))
+        .collect();
+    // Child rows are ordered deterministically, ending with the key
+    if !matches!(plan.link, Link::Root) && !order_by.iter().any(|o| o.column == plan.shape.key_column) {
+        terms.push(format!("{TABLE_ALIAS}.{key}"));
+    }
+    let paged = child.is_some() && root.paged();
+
     sql.push_str("SELECT ");
     for (i, column) in plan.columns.iter().enumerate() {
         if i > 0 {
@@ -269,6 +316,15 @@ pub fn render(plan: &QueryPlan, root: &RootOptions, render: &Render) -> String {
         let expr = format!("{source}.{}", q(&column.column));
         let expr = if column.as_text { dialect.text(&expr) } else { expr };
         let _ = write!(sql, "{expr} AS {}", q(&column.alias));
+    }
+    if let (true, Some(fk)) = (paged, &child) {
+        // The number of each row among the rows of its parent
+        let _ = write!(
+            sql,
+            "{column_separator}ROW_NUMBER() OVER (PARTITION BY {fk} ORDER BY {}) AS {}",
+            terms.join(", "),
+            q(ROW_ALIAS)
+        );
     }
     if plan.cte.is_some() {
         let _ = write!(
@@ -290,41 +346,39 @@ pub fn render(plan: &QueryPlan, root: &RootOptions, render: &Render) -> String {
         );
     }
 
-    let order_by: &[OrderBy] = match &plan.link {
+    let column = |name: &str| Some(format!("{TABLE_ALIAS}.{}", q(name)));
+    match &plan.link {
         Link::Root => {
             let key = format!("{TABLE_ALIAS}.{key}");
-            let column = |name: &str| Some(format!("{TABLE_ALIAS}.{}", q(name)));
             if let Ok(Some(conditions)) = root.conditions(render, &key, root.by_keys, &column) {
                 let _ = write!(sql, "{clause}WHERE {conditions}");
             }
-            &root.order_by
         }
-        Link::Child { .. } if plan.cte.is_some() => &plan.order_by,
-        Link::Child { fk, through } => {
-            let source = if through.is_some() { LINK_ALIAS } else { TABLE_ALIAS };
-            let condition = render.keys_condition(&format!("{source}.{}", q(fk)));
-            let _ = write!(sql, "{clause}WHERE {condition}");
-            &plan.order_by
+        Link::Child { .. } if plan.cte.is_some() => {}
+        Link::Child { .. } => {
+            // The keys of the parents, and the filter of the collection
+            let fk = child.as_deref().unwrap_or_default();
+            if let Ok(Some(conditions)) = root.conditions(render, fk, true, &column) {
+                let _ = write!(sql, "{clause}WHERE {conditions}");
+            }
         }
         Link::ToOne { .. } | Link::Variant { .. } => {
             let condition = render.keys_condition(&format!("{TABLE_ALIAS}.{key}"));
             let _ = write!(sql, "{clause}WHERE {condition}");
-            &[]
         }
-    };
+    }
 
-    let mut terms: Vec<String> = order_by
-        .iter()
-        .map(|o| format!("{TABLE_ALIAS}.{}{}", q(o.column), if o.descending { " DESC" } else { "" }))
-        .collect();
-    // Child rows are ordered deterministically, ending with the key
-    if !matches!(plan.link, Link::Root) && !order_by.iter().any(|o| o.column == plan.shape.key_column) {
-        terms.push(format!("{TABLE_ALIAS}.{key}"));
+    if paged {
+        // The page of the rows of each parent, in order
+        let row = format!("{RANKED_ALIAS}.{}", q(ROW_ALIAS));
+        return format!(
+            "SELECT * FROM ({sql}){clause}AS {RANKED_ALIAS} WHERE {}{clause}ORDER BY {row}",
+            root.row_range(&row)
+        );
     }
     if !terms.is_empty() {
         let _ = write!(sql, "{clause}ORDER BY {}", terms.join(", "));
     }
-
     if let Link::Root = plan.link {
         paging(&mut sql, clause, root, dialect);
     }
@@ -428,6 +482,56 @@ pub fn wrap_root<'a>(
         let _ = write!(wrapped, " ORDER BY {}", terms.join(", "));
     }
     paging(&mut wrapped, " ", root, render.dialect);
+    Ok(wrapped)
+}
+
+/// Apply the options of a to-many child query to its override, used as a subquery: the
+/// filter, the order and the page of the rows of each parent. Columns are referred to by the
+/// alias they are selected as. The override is returned as is without options.
+///
+/// Returns a column that cannot be referred to as the error.
+pub fn wrap_child<'a>(
+    sql: &str,
+    plan: &QueryPlan,
+    options: &'a RootOptions,
+    render: &Render,
+) -> Result<String, &'a str> {
+    let sql = trim_statement(sql);
+    if options.filter.is_none() && options.order_by.is_empty() && !options.paged() {
+        return Ok(sql.to_string());
+    }
+    let column = |name: &str| override_column(plan, name, render.dialect);
+    let mut terms = Vec::new();
+    let order_by = if options.order_by.is_empty() { &plan.order_by } else { &options.order_by };
+    for order in order_by {
+        let column = column(order.column).ok_or(order.column)?;
+        terms.push(format!("{column}{}", if order.descending { " DESC" } else { "" }));
+    }
+    terms.push(format!("{OVERRIDE_ALIAS}.{}", render.quote(&plan.key_alias)));
+    let parent = format!("{OVERRIDE_ALIAS}.{}", render.quote(crate::PARENT_ALIAS));
+
+    let mut wrapped = String::from("SELECT *");
+    if options.paged() {
+        let _ = write!(
+            wrapped,
+            ", ROW_NUMBER() OVER (PARTITION BY {parent} ORDER BY {}) AS {}",
+            terms.join(", "),
+            render.quote(ROW_ALIAS)
+        );
+    }
+    let _ = write!(wrapped, " FROM ({sql}\n) AS {OVERRIDE_ALIAS}");
+    // The keys are in the override; only the filter is added
+    if let Some(conditions) = options.conditions(render, "", false, &column)? {
+        let _ = write!(wrapped, " WHERE {conditions}");
+    }
+    if options.paged() {
+        let row = format!("{RANKED_ALIAS}.{}", render.quote(ROW_ALIAS));
+        return Ok(format!(
+            "SELECT * FROM ({wrapped}) AS {RANKED_ALIAS} WHERE {} ORDER BY {row}",
+            options.row_range(&row)
+        ));
+    }
+    let _ = write!(wrapped, " ORDER BY {}", terms.join(", "));
     Ok(wrapped)
 }
 
@@ -603,14 +707,89 @@ mod tests {
     fn child_select() {
         let plan = QueryPlan::build(&LIST).unwrap();
         let child = plan.children[0].plan().unwrap();
-        // root options do not apply to child queries
-        let options = RootOptions { limit: Some(1), ..RootOptions::default() };
         assert_eq!(
-            select(child, &options),
+            select(child, &RootOptions::default()),
             "SELECT t0.\"id\" AS \"$key\", t0.\"list_id\" AS \"$parent\", t0.\"my \"\"label\"\"\" AS \"label\" \
              FROM \"item\" AS t0 WHERE t0.\"list_id\" = ANY($1) ORDER BY t0.\"position\", t0.\"id\""
         );
     }
+
+    #[test]
+    fn child_options_filter_order_and_page_each_parent() {
+        use crate::filter::{CompareOp, Filter};
+        let plan = QueryPlan::build(&LIST).unwrap();
+        let child = plan.children[0].plan().unwrap();
+        let filter = Filter::Compare { column: "my \"label\"".into(), op: CompareOp::Ne, param: 0 };
+        let options = RootOptions {
+            by_keys: true,
+            filter: Some(filter),
+            order_by: vec![OrderBy::desc("my \"label\"")],
+            limit: Some(2),
+            offset: Some(1),
+            ..RootOptions::default()
+        };
+        assert_eq!(
+            select(child, &options),
+            "SELECT * FROM (SELECT t0.\"id\" AS \"$key\", t0.\"list_id\" AS \"$parent\", \
+             t0.\"my \"\"label\"\"\" AS \"label\", ROW_NUMBER() OVER (PARTITION BY t0.\"list_id\" \
+             ORDER BY t0.\"my \"\"label\"\"\" DESC, t0.\"id\") AS \"$row\" FROM \"item\" AS t0 \
+             WHERE t0.\"list_id\" = ANY($1) AND (t0.\"my \"\"label\"\"\" <> $2)) AS p \
+             WHERE p.\"$row\" > 1 AND p.\"$row\" <= 3 ORDER BY p.\"$row\""
+        );
+
+        // Without paging: the filter and the order only
+        let options = RootOptions { limit: None, offset: None, ..options };
+        let sql = render(child, &options, &Render::new(Dialect::Sqlite).with_keys(2));
+        assert_eq!(
+            sql,
+            "SELECT t0.\"id\" AS \"$key\", t0.\"list_id\" AS \"$parent\", t0.\"my \"\"label\"\"\" AS \"label\" \
+             FROM \"item\" AS t0 WHERE t0.\"list_id\" IN (?, ?) AND (t0.\"my \"\"label\"\"\" <> ?) \
+             ORDER BY t0.\"my \"\"label\"\"\" DESC, t0.\"id\""
+        );
+    }
+    #[test]
+    fn child_options_wrap_overrides() {
+        use crate::filter::{CompareOp, Filter};
+        let plan = QueryPlan::build(&LIST).unwrap();
+        let child = plan.children[0].plan().unwrap();
+        let sql = "SELECT i.id AS \"$key\", i.list_id AS \"$parent\", i.\"my \"\"label\"\"\" AS \"label\" FROM item i \
+                   WHERE i.list_id = ANY($1);";
+        assert_eq!(
+            wrap_child(sql, child, &RootOptions::default(), &Render::default()).unwrap(),
+            sql.trim_end_matches(';')
+        );
+
+        let filter = Filter::Compare { column: "my \"label\"".into(), op: CompareOp::Ne, param: 0 };
+        let options = RootOptions {
+            by_keys: true,
+            filter: Some(filter),
+            order_by: vec![OrderBy::desc("my \"label\"")],
+            limit: Some(1),
+            ..RootOptions::default()
+        };
+        let wrapped = wrap_child(sql, child, &options, &Render::default()).unwrap();
+        assert!(
+            wrapped.starts_with(
+                "SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY o.\"$parent\" \
+                 ORDER BY o.\"label\" DESC, o.\"$key\") AS \"$row\" FROM (SELECT i.id"
+            ),
+            "{wrapped}"
+        );
+        assert!(
+            wrapped.ends_with(
+                ") AS o WHERE o.\"label\" <> $2) AS p WHERE p.\"$row\" > 0 AND p.\"$row\" <= 1 ORDER BY p.\"$row\""
+            ),
+            "{wrapped}"
+        );
+
+        // A column the view does not select cannot be referred to: of the options, or of the
+        // collection's order, which the options use when they have none
+        let options = RootOptions { order_by: vec![OrderBy::asc("secret")], ..RootOptions::default() };
+        assert_eq!(wrap_child(sql, child, &options, &Render::default()), Err("secret"));
+        let options = RootOptions { limit: Some(1), ..RootOptions::default() };
+        assert_eq!(wrap_child(sql, child, &options, &Render::default()), Err("position"));
+    }
+
     #[test]
     fn mysql_and_sqlite_bind_keys_as_lists() {
         let plan = QueryPlan::build(&LIST).unwrap();
