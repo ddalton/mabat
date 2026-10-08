@@ -21,8 +21,9 @@ check     Prepare every query, generated and overridden, on the database without
           and compare its columns and parameters with the views. The database URL defaults to
           $DATABASE_URL. With --schema, the schema file is created in a temporary schema inside
           a transaction that is rolled back, so any database with no access to the
-          application's data will do, and nothing is left behind. On SQLite, --schema without
-          a database URL checks against a new in-memory database.
+          application's data will do, and nothing is left behind. On MySQL, which cannot roll
+          back DDL, the schema is created in a temporary database that is dropped afterwards.
+          On SQLite, --schema without a database URL checks against a new in-memory database.
 explain   Show the queries of the views and the SQL that runs for each.
 scaffold  Write an override file with the generated SQL of every query of a view.
 
@@ -120,6 +121,8 @@ async fn check(args: &Args, manifest: &Manifest) -> Result<ExitCode, String> {
     let report = match manifest.backend.as_str() {
         #[cfg(feature = "postgres")]
         "PostgreSQL" => check_postgres(args, manifest, &url.ok_or(URL_REQUIRED)?).await?,
+        #[cfg(feature = "mysql")]
+        "MySQL" => check_mysql(args, manifest, &url.ok_or(URL_REQUIRED)?).await?,
         #[cfg(feature = "sqlite")]
         "SQLite" => check_sqlite(args, manifest, url).await?,
         other => return Err(format!("the manifest is for {other}, which this build of mabat does not support")),
@@ -153,6 +156,25 @@ async fn check_postgres(args: &Args, manifest: &Manifest, url: &str) -> Result<m
         }
     };
     Ok(report)
+}
+
+#[cfg(feature = "mysql")]
+async fn check_mysql(args: &Args, manifest: &Manifest, url: &str) -> Result<mabat_sqlx::Report, String> {
+    let mut conn = sqlx::MySqlConnection::connect(url).await.map_err(|e| format!("cannot connect: {e}"))?;
+    let Some(schema) = &args.schema else {
+        return manifest.check(&mut conn, &args.overrides).await.map_err(|e| e.to_string());
+    };
+    let ddl = read_schema(schema)?;
+    // MySQL commits DDL, so the schema goes in a database of its own, dropped afterwards
+    let name = format!("mabat_check_{}", std::process::id());
+    let setup = format!("CREATE DATABASE `{name}`; USE `{name}`");
+    conn.execute(AssertSqlSafe(setup)).await.map_err(|e| e.to_string())?;
+    let report = match conn.execute(AssertSqlSafe(ddl)).await {
+        Ok(_) => manifest.check(&mut conn, &args.overrides).await.map_err(|e| e.to_string()),
+        Err(e) => Err(format!("the schema file failed: {e}")),
+    };
+    conn.execute(AssertSqlSafe(format!("DROP DATABASE `{name}`"))).await.map_err(|e| e.to_string())?;
+    report
 }
 
 #[cfg(feature = "sqlite")]

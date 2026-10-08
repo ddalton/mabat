@@ -18,6 +18,7 @@ chrono.workspace = true
 mabat-core.workspace = true
 sqlx.workspace = true
 sqlx-postgres = { workspace = true, optional = true }
+sqlx-mysql = { workspace = true, optional = true }
 sqlx-sqlite = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -29,4 +30,5 @@ uuid.workspace = true
 [features]
 default = ["postgres"]
 postgres = ["sqlx/postgres", "dep:sqlx-postgres"]
+mysql = ["sqlx/mysql", "dep:sqlx-mysql"]
 sqlite = ["sqlx/sqlite", "dep:sqlx-sqlite"]

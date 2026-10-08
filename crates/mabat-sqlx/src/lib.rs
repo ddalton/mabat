@@ -310,6 +310,8 @@ pub mod __private {
         Variant, VariantData, ViewShape,
     };
     pub use sqlx::Database;
+    #[cfg(feature = "mysql")]
+    pub use sqlx::MySql;
     #[cfg(feature = "postgres")]
     pub use sqlx::Postgres;
     #[cfg(feature = "sqlite")]

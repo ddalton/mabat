@@ -343,6 +343,8 @@ macro_rules! bind_each {
 #[allow(unused_imports)]
 pub(crate) use {bind_each, common_methods, connection};
 
+#[cfg(feature = "mysql")]
+mod mysql;
 #[cfg(feature = "postgres")]
 mod postgres;
 #[cfg(feature = "sqlite")]

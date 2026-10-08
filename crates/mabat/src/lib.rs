@@ -1,9 +1,9 @@
 //! Typed aggregate reads for Rust, with SQL you can tune without changing code.
 //!
-//! Mabat loads nested, typed data from PostgreSQL or SQLite. The shape of the result is
-//! declared with Rust types deriving [`View`], and Mabat plans and runs the queries that
+//! Mabat loads nested, typed data from PostgreSQL, MySQL or SQLite. The shape of the result
+//! is declared with Rust types deriving [`View`], and Mabat plans and runs the queries that
 //! fill it: one query for the root rows, plus one batched query (`WHERE fk = ANY($1)` on
-//! PostgreSQL, `WHERE fk IN (?, …)` on SQLite) per collection and per reference, so loading
+//! PostgreSQL, `WHERE fk IN (?, …)` elsewhere) per collection and per reference, so loading
 //! never runs one query per row. Any of those queries can be replaced with hand-tuned SQL
 //! from a file, checked against the views and the database at startup.
 //!
@@ -49,7 +49,8 @@
 //! }
 //!
 //! # #[cfg(feature = "postgres")] type Conn = sqlx::PgConnection;
-//! # #[cfg(not(feature = "postgres"))] type Conn = sqlx::SqliteConnection;
+//! # #[cfg(all(feature = "mysql", not(feature = "postgres")))] type Conn = sqlx::MySqlConnection;
+//! # #[cfg(not(any(feature = "postgres", feature = "mysql")))] type Conn = sqlx::SqliteConnection;
 //! # async fn example(conn: &mut Conn, id: Uuid) -> Result<(), mabat::Error> {
 //! use mabat::filter::col;
 //!
@@ -72,15 +73,15 @@
 //!
 //! # Databases
 //!
-//! The features `postgres` (the default) and `sqlite` enable the databases. A view is
+//! The features `postgres` (the default), `mysql` and `sqlite` enable the databases. A view is
 //! decoded on each enabled database, and a load runs on the database of the connection it
 //! is given. When a view has field types that not every enabled database decodes, such as
 //! a PostgreSQL array or `rust_decimal::Decimal` on SQLite, `#[view(databases = "postgres")]`
 //! limits it to the databases listed.
 //!
 //! In override SQL, `:keys` stands for the keys of a batched query on any database: it
-//! becomes `$1` on PostgreSQL, to use as `= ANY(:keys)`, and a list of parameters on SQLite,
-//! to use as `IN (:keys)`.
+//! becomes `$1` on PostgreSQL, to use as `= ANY(:keys)`, and a list of parameters on MySQL
+//! and SQLite, to use as `IN (:keys)`.
 //!
 //! # Collections, recursion and enums
 //!
@@ -152,7 +153,8 @@
 //! }
 //!
 //! # #[cfg(feature = "postgres")] type Conn = sqlx::PgConnection;
-//! # #[cfg(not(feature = "postgres"))] type Conn = sqlx::SqliteConnection;
+//! # #[cfg(all(feature = "mysql", not(feature = "postgres")))] type Conn = sqlx::MySqlConnection;
+//! # #[cfg(not(any(feature = "postgres", feature = "mysql")))] type Conn = sqlx::SqliteConnection;
 //! # async fn example(conn: &mut Conn) -> Result<(), mabat::Error> {
 //! let graph = mabat::load::<Employee>().by_key(4_i64).graph(conn).await?;
 //! let me = graph.root().unwrap();
@@ -176,7 +178,8 @@
 //! # #[view(table = "task")]
 //! # struct TaskView { name: String }
 //! # #[cfg(feature = "postgres")] type Conn = sqlx::PgConnection;
-//! # #[cfg(not(feature = "postgres"))] type Conn = sqlx::SqliteConnection;
+//! # #[cfg(all(feature = "mysql", not(feature = "postgres")))] type Conn = sqlx::MySqlConnection;
+//! # #[cfg(not(any(feature = "postgres", feature = "mysql")))] type Conn = sqlx::SqliteConnection;
 //! # async fn example(conn: &mut Conn) -> Result<(), mabat::Error> {
 //! use mabat::Mabat;
 //!
@@ -234,7 +237,14 @@ macro_rules! __if_postgres {
     ($($item:item)*) => {};
 }
 
-// MySQL is not supported yet
+#[cfg(feature = "mysql")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __if_mysql {
+    ($($item:item)*) => { $($item)* };
+}
+
+#[cfg(not(feature = "mysql"))]
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __if_mysql {

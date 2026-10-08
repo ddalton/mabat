@@ -8,7 +8,7 @@ All notable changes to Mabat are listed here. The format follows
 
 ### Added
 
-The first release, with milestones 1 to 5 of the [design](docs/design.md), the DBA tooling and SQLite.
+The first release, with milestones 1 to 5 of the [design](docs/design.md), the DBA tooling, MySQL and SQLite.
 
 - **Views (M1).**
   - `#[derive(View)]` on structs: columns, `Option` columns, embedded structs with column prefixes,
@@ -48,12 +48,14 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
   - `Builder::manifest` writes the views' queries, aliases and accepted types as JSON.
   - The `mabat` command line tool (crate `mabat-cli`) runs `check` (against a database or a schema file,
     in a transaction that is rolled back), `explain` and `scaffold`, with no Rust toolchain.
-- **SQLite (M6).**
-  - The `postgres` (default) and `sqlite` features. A view is decoded on each enabled database, and a load
+- **MySQL and SQLite (M6).**
+  - The `postgres` (default), `mysql` and `sqlite` features. A view is decoded on each enabled database, and a load
     runs on the database of its connection; `#[view(databases = "...")]` limits a view to some of them.
   - Keys bound as `IN (?, …)` lists, padded to a power of two so statements are reused, and split into
     statements of at most 1,000 keys for child queries.
   - `:keys` in override SQL for the keys of a batched query on any database.
-  - Checks, manifests and `mabat check` on SQLite, including `--schema` in an in-memory database.
-- **Platform.** PostgreSQL or SQLite with SQLx 0.9, and Rust 1.94 or later.
-- **End-to-end tests** against the Pagila and Chinook sample databases, and Chinook on SQLite.
+  - Checks, manifests and `mabat check` on both. With `--schema`, MySQL checks in a temporary database that
+    is dropped afterwards, and SQLite in an in-memory database.
+  - On MySQL: unsigned integer keys, `BINARY(16)` UUID keys and `ENUM` tags.
+- **Platform.** PostgreSQL, MySQL 8 or later, or SQLite, with SQLx 0.9, and Rust 1.94 or later.
+- **End-to-end tests** against the Pagila and Chinook sample databases, and Chinook on MySQL and SQLite.
