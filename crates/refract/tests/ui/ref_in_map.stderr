@@ -1,5 +1,0 @@
-error: the values of a map collection need to be owned views
-  --> tests/ui/ref_in_map.rs:13:15
-   |
-13 |     settings: BTreeMap<String, refract::Ref<Setting>>,
-   |               ^^^^^^^^

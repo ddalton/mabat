@@ -1,0 +1,51 @@
+# Changelog
+
+All notable changes to Mabat are listed here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
+[Semantic Versioning](https://semver.org/). Until 1.0, minor versions may change the API.
+
+## [Unreleased]
+
+### Added
+
+The first release, with milestones 1 to 5 of the [design](docs/design.md) and the DBA tooling.
+
+- **Views (M1).**
+  - `#[derive(View)]` on structs: columns, `Option` columns, embedded structs with column prefixes,
+    to-many collections and to-one references.
+  - Loading with one root query plus one batched `WHERE fk = ANY($1)` query per relationship.
+  - Results decoded by column alias.
+  - Errors that name the view and the field path.
+- **Enums with data (M2).**
+  - The `tag` strategy: variant columns in the row.
+  - The `table_per_variant` strategy: a batched query per variant table, sent only the keys of rows of that
+    variant.
+  - Nested enums, tuple variants and PostgreSQL enum tags.
+  - Strict decoding of unknown and NULL tags, columns of other variants and missing variant rows, with
+    `lenient`.
+  - `#[view(json)]` fields decoded with `serde`.
+- **Filters and counting.** `mabat::filter::col(..)` conditions (`eq` … `ilike`, `is_in`, groups and `!`)
+  on the root query, and `Load::count`.
+- **Overrides (M3).**
+  - Override files (TOML or `.sql`) replace any query by name, with no code changes.
+  - Every generated and overridden query is checked against the views and the database at startup:
+    aliases, types, keys and parameters, reported like compiler errors (`M0100`–`M0105`).
+  - Schema drift in generated queries is reported too.
+  - `OnInvalid::UseGenerated`, shadow mode with mismatch and timing statistics, runtime reloading with
+    `Mabat::reload`, and `mabat::scaffold`.
+- **Collections and recursion (M4).**
+  - Ordered lists placed by an `index` column.
+  - `BTreeMap`/`HashMap` collections keyed by a column.
+  - Many-to-many collections `through` a link table.
+  - Recursive views loaded level by level (`depth = n`) or with one `WITH RECURSIVE` query
+    (`recursive = "cte"`), with cycle detection.
+- **Shared values and graphs (M5).**
+  - `Arc<T>` fields shared per entity.
+  - `Ref<T>` fields loaded with `Load::graph` into a `Graph` of arenas, with generated navigation methods.
+  - Cycles without `Rc`, `Weak` or `RefCell`. Each entity is fetched once and each relationship is loaded
+    once.
+- **DBA tooling.**
+  - `Builder::manifest` writes the views' queries, aliases and accepted types as JSON.
+  - The `mabat` command line tool (crate `mabat-cli`) runs `check` (against a database or a schema file,
+    in a transaction that is rolled back), `explain` and `scaffold`, with no Rust toolchain.
+- **Platform.** PostgreSQL with SQLx 0.9 and Rust 1.94 or later.

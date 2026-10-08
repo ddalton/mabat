@@ -1,18 +1,21 @@
-# Refract
+# Mabat
 
 Typed aggregate reads for Rust, with SQL you can tune without changing code.
+
+*Mabat* (מבט) is Hebrew for "view": you declare the view of the data you want, and the queries that fill it
+can be tuned separately.
 
 > **Status:** early development, not published yet. Milestones 1 to 5 are implemented: struct views on
 > PostgreSQL, enums with data, overrides checked at startup, collections and recursive views, and shared and
 > cyclic graphs. See the [design document](docs/design.md) for the
 > plan.
 
-Refract loads nested, typed data from PostgreSQL. The shape of the result is declared with ordinary Rust structs,
-and Refract plans and runs the queries that fill it: one query for the root rows, plus one batched query
+Mabat loads nested, typed data from PostgreSQL. The shape of the result is declared with ordinary Rust structs,
+and Mabat plans and runs the queries that fill it: one query for the root rows, plus one batched query
 (`WHERE fk = ANY($1)`) per collection and per reference. It never runs one query per row.
 
 ```rust
-use refract::View;
+use mabat::View;
 use uuid::Uuid;
 
 #[derive(View)]
@@ -59,21 +62,21 @@ struct NoteView {
 }
 
 // One aggregate, on a pooled connection or inside a transaction
-let task = refract::load::<TaskView>().by_key(id).one(&mut *conn).await?;
+let task = mabat::load::<TaskView>().by_key(id).one(&mut *conn).await?;
 
 // Many, filtered, ordered and paged
-use refract::filter::col;
-let page = refract::load::<TaskView>()
+use mabat::filter::col;
+let page = mabat::load::<TaskView>()
     .filter(col("status").eq("open") & col("assignee_id").is_in([1_i64, 2, 3]))
     .order_by("name")
     .limit(20)
     .offset(40)
     .all(&mut *conn)
     .await?;
-let total = refract::load::<TaskView>().filter(col("status").eq("open")).count(&mut *conn).await?;
+let total = mabat::load::<TaskView>().filter(col("status").eq("open")).count(&mut *conn).await?;
 
-// The queries Refract runs
-println!("{}", refract::plan::<TaskView>()?.explain());
+// The queries Mabat runs
+println!("{}", mabat::plan::<TaskView>()?.explain());
 ```
 
 ## Collections and recursive views
@@ -140,7 +143,7 @@ pub struct Employee {
     pub team: Ref<Team>,
 }
 
-let graph = refract::load::<Employee>().by_key(id).graph(&mut *conn).await?;
+let graph = mabat::load::<Employee>().by_key(id).graph(&mut *conn).await?;
 let me = graph.root().unwrap();
 for colleague in me.manager(&graph).unwrap().reports(&graph) {
     println!("{} in {}", colleague.name, colleague.team(&graph).name);
@@ -179,7 +182,7 @@ enum State {
 ```
 
 With `strategy = "table_per_variant"`, each variant's data is in its own table, keyed by the key of the
-containing view. Refract loads each variant table with one batched query, using only the keys whose tag
+containing view. Mabat loads each variant table with one batched query, using only the keys whose tag
 names that variant:
 
 ```rust
@@ -219,7 +222,7 @@ the tables themselves, and can read from a materialized view, without touching t
 decoded by column alias, so the override only has to keep the aliases:
 
 ```toml
-# refract/overrides/TaskView.toml
+# mabat/overrides/TaskView.toml
 [query."children.notes"]
 sql = '''
 SELECT n.task_id AS "$parent", n.id AS "$key", n.body AS "body", n.tag_code AS "$ref.tag"
@@ -230,13 +233,13 @@ ORDER BY n.id
 ```
 
 ```rust
-let refract = Refract::builder()
+let mabat = Mabat::builder()
     .register::<TaskView>()
-    .overrides_dir("refract/overrides")
+    .overrides_dir("mabat/overrides")
     .build(&mut conn)                       // checks every query against the database
     .await?;
 
-let task = refract.load::<TaskView>().by_key(id).one(&mut *tx).await?;
+let task = mabat.load::<TaskView>().by_key(id).one(&mut *tx).await?;
 ```
 
 At startup, every query, generated or overridden, is prepared on the database without being run. Its columns
@@ -244,20 +247,20 @@ and parameters are then compared with the view, so a broken override or a schema
 fails before any request is served:
 
 ```text
-error[R0102]: override for TaskView.children.notes does not match the view
-  --> refract/overrides/TaskView.toml:2
+error[M0102]: override for TaskView.children.notes does not match the view
+  --> mabat/overrides/TaskView.toml:2
    | column 3 "body" has type INT4, expected TEXT for String
    | column 4 "$ref.tga" is not a path of NoteView in this query (did you mean "$ref.tag"?)
 ```
 
-- `Refract::builder()...check(&mut conn)` returns the same report without building, for a test in CI.
-- `refract::scaffold::<TaskView>()` writes an override file with the generated SQL of every query, as a
+- `Mabat::builder()...check(&mut conn)` returns the same report without building, for a test in CI.
+- `mabat::scaffold::<TaskView>()` writes an override file with the generated SQL of every query, as a
   starting point for tuning.
 - `shadow = true` runs the override and the generated query, compares their rows, and counts mismatches and
   timings, so a tuned query can be shown to be equivalent before it is relied on.
 - `OnInvalid::UseGenerated` starts with the generated queries in place of invalid overrides instead of
   refusing to start.
-- `refract.reload(&mut conn)` reads the files again and, if they changed and pass the checks, puts them in use
+- `mabat.reload(&mut conn)` reads the files again and, if they changed and pass the checks, puts them in use
   atomically. An invalid change never replaces a working query.
 
 ### Checking overrides without the application
@@ -268,22 +271,22 @@ aliases and accepted column types. A test can write it and fail when the committ
 ```rust
 #[test]
 fn views_manifest_is_up_to_date() {
-    let manifest = Refract::builder().register::<TaskView>().manifest().unwrap();
-    assert!(!manifest.write("refract/views.json").unwrap(), "refract/views.json was out of date");
+    let manifest = Mabat::builder().register::<TaskView>().manifest().unwrap();
+    assert!(!manifest.write("mabat/views.json").unwrap(), "mabat/views.json was out of date");
 }
 ```
 
-The `refract` command line tool (crate `refract-cli`) reads the manifest:
+The `mabat` command line tool (crate `mabat-cli`) reads the manifest:
 
 ```sh
 # check every query, generated and overridden, against a database
-refract check --manifest refract/views.json --overrides refract/overrides --database-url postgres://...
+mabat check --manifest mabat/views.json --overrides mabat/overrides --database-url postgres://...
 
 # or against a schema file, in any scratch database: created in a transaction that is rolled back
-refract check --manifest refract/views.json --overrides refract/overrides --schema schema.sql
+mabat check --manifest mabat/views.json --overrides mabat/overrides --schema schema.sql
 
-refract explain  --manifest refract/views.json --overrides refract/overrides   # the SQL each query runs
-refract scaffold --manifest refract/views.json --view TaskView --format sql   # a starting override file
+mabat explain  --manifest mabat/views.json --overrides mabat/overrides   # the SQL each query runs
+mabat scaffold --manifest mabat/views.json --view TaskView --format sql   # a starting override file
 ```
 
 `check` prints the same report as the application's startup check. Its exit status is 0 when there are no
@@ -293,8 +296,8 @@ Override files can also be plain SQL, which SQL editors and `psql` understand, w
 query:
 
 ```sql
--- refract/overrides/TaskView.sql
--- refract: query children.notes, shadow
+-- mabat/overrides/TaskView.sql
+-- mabat: query children.notes, shadow
 SELECT n.task_id AS "$parent", n.id AS "$key", n.body AS "body", n.tag_code AS "$ref.tag"
 FROM task_note n
 WHERE n.task_id = ANY($1)
@@ -313,11 +316,28 @@ ORDER BY n.id;
 | SQL overrides checked at startup, shadow mode, scaffolding, reloading | Done (M3) |
 | Ordered lists, maps, many-to-many, recursive views | Done (M4) |
 | Shared (`Arc`) and graph (`Ref<T>`) representations for cyclic data | Done (M5) |
-| DBA tooling: view manifest and `refract check` / `explain` / `scaffold` CLI | Done |
+| DBA tooling: view manifest and `mabat check` / `explain` / `scaffold` CLI | Done |
 | GraphQL selection sets | Planned (M7) |
 
 Loading 1,000 tasks with 10 subtasks each takes about 8% longer than hand-written SQLx code running the same two
-queries (`crates/refract/examples/parity.rs`).
+queries (`crates/mabat/examples/parity.rs`).
+
+## Installation
+
+```toml
+[dependencies]
+mabat = "0.1"
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
+```
+
+The derive macro also works when the crate is renamed in `Cargo.toml`, for example
+`views = { package = "mabat", version = "0.1" }`.
+
+## Requirements
+
+- **Rust:** 1.94 or later.
+- **Database:** PostgreSQL, through SQLx 0.9 with the Tokio runtime.
+- **Changes:** see [CHANGELOG.md](CHANGELOG.md) for what each version adds.
 
 ## Development
 
@@ -326,12 +346,12 @@ against it, and removes it afterwards:
 
 ```sh
 scripts/with-postgres.sh                                                   # cargo test --workspace
-scripts/with-postgres.sh cargo run --release -p refract --example parity   # benchmark
+scripts/with-postgres.sh cargo run --release -p mabat --example parity   # benchmark
 ```
 
-Without a database (`REFRACT_TEST_DATABASE_URL` unset), the database tests are skipped.
+Without a database (`MABAT_TEST_DATABASE_URL` unset), the database tests are skipped.
 
-Refract carries forward the ideas of [XOR](https://github.com/ddalton/xor), a Java library built around the same
+Mabat carries forward the ideas of [XOR](https://github.com/ddalton/xor), a Java library built around the same
 "view as contract" concept, along with the lessons learned building it.
 
 ## License

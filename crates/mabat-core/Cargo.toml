@@ -1,0 +1,16 @@
+[package]
+name = "mabat-core"
+description = "Shape description and query planning for Mabat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+homepage.workspace = true
+keywords = ["sql", "postgres", "query-planner", "views"]
+categories = ["database"]
+readme = "README.md"
+
+[dependencies]
+thiserror.workspace = true

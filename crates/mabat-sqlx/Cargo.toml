@@ -1,0 +1,25 @@
+[package]
+name = "mabat-sqlx"
+description = "PostgreSQL executor for Mabat views, built on SQLx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+homepage.workspace = true
+keywords = ["sql", "postgres", "sqlx", "views", "orm"]
+categories = ["database", "asynchronous"]
+readme = "README.md"
+
+[dependencies]
+arc-swap.workspace = true
+chrono.workspace = true
+mabat-core.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+uuid.workspace = true
