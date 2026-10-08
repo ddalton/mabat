@@ -1,5 +1,14 @@
 # Architecture documents
 
+| Read it | Where |
+| --- | --- |
+| **On GitHub** | [`overview/mabat-architecture.pdf`](overview/mabat-architecture.pdf), which GitHub shows page by page |
+| **In the browser** | the [documentation site](https://ddalton.github.io/mabat/architecture/): a page per section, and the [whole document as HTML](https://ddalton.github.io/mabat/architecture/mabat-architecture.html) |
+| **To print or share** | the PDF, also offered for download on every architecture page of the site |
+
+GitHub shows `.html` files as source, so the HTML is read on the documentation site, which serves it as
+designed: each A3 page a sheet, with a link to the PDF.
+
 ## overview — how Mabat loads, serves and saves typed aggregates
 
 **`overview/mabat-architecture.pdf`** (12 pages, A3 landscape). Mabat at a glance; a view as a shape; the plan of

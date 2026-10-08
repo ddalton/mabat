@@ -200,7 +200,9 @@ const architecture = (() => {
   for (const file of readdirSync(join(repo, dir, 'diagrams'))) {
     copyFileSync(join(repo, dir, 'diagrams', file), join(outPublic, 'diagrams', file));
   }
-  copyFileSync(join(repo, dir, 'mabat-architecture.pdf'), join(outPublic, 'mabat-architecture.pdf'));
+  for (const file of ['mabat-architecture.html', 'mabat-architecture.pdf']) {
+    copyFileSync(join(repo, dir, file), join(outPublic, file));
+  }
 
   const pages = sections.slice(1).map((section, i) => {
     const title = inner(section, /<h1>([\s\S]*?)<\/h1>/);
@@ -223,7 +225,7 @@ const architecture = (() => {
     },
     `<p class="arch-lead">${block(cite(inner(cover, /<p class="sub">([\s\S]*?)<\/p>/), from))}</p>
 
-<div class="arch-download"><a href="mabat-architecture.pdf">Download the PDF</a> <span>A3 landscape, ${sections.length} pages, for print and for review</span></div>
+<div class="arch-download"><a href="mabat-architecture.html">Read the full document</a> <a class="secondary" href="mabat-architecture.pdf" download>Download the PDF</a> <span>A3 landscape, ${sections.length} pages: the document as designed, for reading on a large screen, printing or review</span></div>
 
 <div class="arch-notice">${block(cite(inner(cover, /<div class="notice">([\s\S]*?)<\/div>/), from))}</div>
 
@@ -250,8 +252,9 @@ ${toc.join('\n')}
     const paragraphs = (text) =>
       [...text.matchAll(/<p>([\s\S]*?)<\/p>/g)].map(([, p]) => `<p>${block(cite(p, slug))}</p>`).join('\n\n');
     const svg = img && `${relative(slug, 'architecture')}${img[1]}`;
+    const whole = `${relative(slug, 'architecture')}mabat-architecture`;
     const body = [
-      `<p class="arch-kicker">${block(kicker)}</p>`,
+      `<p class="arch-kicker">${block(kicker)} <span class="arch-whole"><a href="${whole}.html#page-${i + 1}">in the full document</a> · <a href="${whole}.pdf" download>PDF</a></span></p>`,
       `<p class="arch-lead">${block(cite(dek, slug))}</p>`,
       img &&
         `<figure class="arch-figure"><a href="${svg}" title="Open the figure on its own"><img src="${svg}" alt="${img[2]}" /></a></figure>`,

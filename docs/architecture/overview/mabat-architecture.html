@@ -53,12 +53,28 @@
   .after { font-size: 12.6px; line-height: 1.45; color: #475569; margin-top: 8px; column-count: 2; column-gap: 12mm; }
   .after p { margin: 0 0 5px; break-inside: avoid-column; }
   .after b { color: #0f172a; }
+
+  /* On screen: each page a sheet, with a toolbar to the PDF and the documentation site */
+  .toolbar { display: none; }
+  @media screen {
+    html, body { background: #e2e8f0; }
+    .toolbar { display: flex; gap: 18px; align-items: center; justify-content: center; position: sticky; top: 0; z-index: 1; padding: 10px 16px; background: #1e1b4b; font-size: 13px; }
+    .toolbar a { color: #e0e7ff; font-weight: 600; }
+    .toolbar span { color: #a5b4fc; }
+    .page { width: 420mm; min-height: 297mm; margin: 16px auto; padding: 8mm; background: #ffffff; box-shadow: 0 1px 4px rgba(15, 23, 42, .18); }
+    .cover { padding-top: 34mm; }
+  }
+  @media screen and (max-width: 440mm) {
+    .page { width: auto; min-height: 0; margin: 12px; }
+  }
 </style>
 </head>
 <body>
 
+<nav class="toolbar"><a href="./">Mabat documentation</a><span>·</span><a href="mabat-architecture.pdf">Download the PDF</a><span>·</span><a href="https://github.com/ddalton/mabat/tree/main/docs/architecture">Source</a></nav>
+
 <!-- ============================================================ COVER -->
-<section class="page cover">
+<section class="page cover" id="cover">
   <p class="eyebrow">Mabat · architecture</p>
   <h1>How Mabat loads, serves and saves typed aggregates</h1>
   <p class="sub">Mabat (Hebrew for “view”) loads nested, typed data from PostgreSQL, MySQL and SQLite. You declare the <b>view</b> of the data you want as Rust structs; Mabat plans the batched queries that fill it, lets a DBA replace any of them without touching your code, serves the view as JSON or GraphQL, and saves it back — without a session, proxies or lazy loading.</p>
@@ -84,7 +100,7 @@
 </section>
 
 <!-- ============================================================ PAGE 1 -->
-<section class="page">
+<section class="page" id="page-1">
   <header class="ph">
     <h1>The short answer</h1>
     <span class="kicker">1 / 11 · at a glance</span>
@@ -101,7 +117,7 @@
 </section>
 
 <!-- ============================================================ PAGE 2 -->
-<section class="page">
+<section class="page" id="page-2">
   <header class="ph">
     <h1>A view is a shape</h1>
     <span class="kicker">2 / 11 · declaring</span>
@@ -118,7 +134,7 @@
 </section>
 
 <!-- ============================================================ PAGE 3 -->
-<section class="page">
+<section class="page" id="page-3">
   <header class="ph">
     <h1>From shape to queries</h1>
     <span class="kicker">3 / 11 · planning</span>
@@ -135,7 +151,7 @@
 </section>
 
 <!-- ============================================================ PAGE 4 -->
-<section class="page">
+<section class="page" id="page-4">
   <header class="ph">
     <h1>Tuning without code</h1>
     <span class="kicker">4 / 11 · overrides</span>
@@ -152,7 +168,7 @@
 </section>
 
 <!-- ============================================================ PAGE 5 -->
-<section class="page">
+<section class="page" id="page-5">
   <header class="ph">
     <h1>Shapes of a result</h1>
     <span class="kicker">5 / 11 · trees, shared values, graphs</span>
@@ -169,7 +185,7 @@
 </section>
 
 <!-- ============================================================ PAGE 6 -->
-<section class="page">
+<section class="page" id="page-6">
   <header class="ph">
     <h1>Concurrency</h1>
     <span class="kicker">6 / 11 · connections and snapshots</span>
@@ -186,7 +202,7 @@
 </section>
 
 <!-- ============================================================ PAGE 7 -->
-<section class="page">
+<section class="page" id="page-7">
   <header class="ph">
     <h1>JSON and GraphQL</h1>
     <span class="kicker">7 / 11 · serving a view</span>
@@ -203,7 +219,7 @@
 </section>
 
 <!-- ============================================================ PAGE 8 -->
-<section class="page">
+<section class="page" id="page-8">
   <header class="ph">
     <h1>Writing an aggregate</h1>
     <span class="kicker">8 / 11 · save and delete</span>
@@ -220,7 +236,7 @@
 </section>
 
 <!-- ============================================================ PAGE 9 -->
-<section class="page">
+<section class="page" id="page-9">
   <header class="ph">
     <h1>Change tracking, against an ORM</h1>
     <span class="kicker">9 / 11 · save_changes</span>
@@ -237,7 +253,7 @@
 </section>
 
 <!-- ============================================================ PAGE 10 -->
-<section class="page">
+<section class="page" id="page-10">
   <header class="ph">
     <h1>Three databases</h1>
     <span class="kicker">10 / 11 · dialects</span>
@@ -267,7 +283,7 @@
 </section>
 
 <!-- ============================================================ PAGE 11 -->
-<section class="page">
+<section class="page" id="page-11">
   <header class="ph">
     <h1>The contract</h1>
     <span class="kicker">11 / 11 · from docs/mpa.json</span>

@@ -147,6 +147,20 @@ pre.mermaid {
 :root[data-theme='light'] .arch-download a {
   color: #ffffff;
 }
+.arch-download a.secondary {
+  background: transparent;
+  color: var(--sl-color-accent-high);
+  border: 1px solid var(--sl-color-accent);
+}
+:root[data-theme='light'] .arch-download a.secondary {
+  color: var(--sl-color-accent);
+}
+.arch-whole {
+  float: inline-end;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
 .arch-download span {
   color: var(--sl-color-gray-3);
   font-size: var(--sl-text-sm);
