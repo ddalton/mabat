@@ -12,6 +12,11 @@ keywords = ["sql", "postgres", "sqlx", "orm", "views"]
 categories = ["database", "asynchronous"]
 readme = "../../README.md"
 
+[features]
+default = ["postgres"]
+postgres = ["mabat-sqlx/postgres"]
+sqlite = ["mabat-sqlx/sqlite"]
+
 [dependencies]
 mabat-core.workspace = true
 mabat-derive.workspace = true
@@ -24,3 +29,37 @@ sqlx.workspace = true
 tokio.workspace = true
 trybuild.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+
+# The tests and the example run on PostgreSQL, except the SQLite tests
+
+[[test]]
+name = "collections"
+required-features = ["postgres"]
+
+[[test]]
+name = "filters"
+required-features = ["postgres"]
+
+[[test]]
+name = "graphs"
+required-features = ["postgres"]
+
+[[test]]
+name = "load"
+required-features = ["postgres"]
+
+[[test]]
+name = "manifest"
+required-features = ["postgres"]
+
+[[test]]
+name = "overrides"
+required-features = ["postgres"]
+
+[[test]]
+name = "sums"
+required-features = ["postgres"]
+
+[[example]]
+name = "parity"
+required-features = ["postgres"]

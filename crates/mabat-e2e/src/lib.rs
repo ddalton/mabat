@@ -6,14 +6,16 @@
 //! - [`chinook`]: Chinook, a digital music store. It has a reporting hierarchy, invoices
 //!   with lines, and playlists of tracks.
 //!
-//! Each dataset is loaded once per database into a schema named after a hash of its SQL,
-//! and the tests only read it.
+//! On PostgreSQL, each dataset is loaded once per database into a schema named after a hash
+//! of its SQL, and the tests only read it. Chinook also runs on SQLite, loaded into a new
+//! in-memory database per test: [`chinook_sqlite`] has its views.
 
 use std::hash::Hasher;
 
-use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection};
+use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection, SqliteConnection};
 
 pub mod chinook;
+pub mod chinook_sqlite;
 pub mod pagila;
 
 /// A sample database.
@@ -54,6 +56,30 @@ impl Dataset {
             // Skip the CREATE DATABASE and \c lines before the first table
             Dataset::Chinook => CHINOOK[CHINOOK.find("CREATE TABLE").expect("Chinook creates tables")..].to_string(),
         }
+    }
+
+    /// The SQL that creates and fills Chinook on SQLite, translated from the PostgreSQL
+    /// script: without the foreign keys added by `ALTER TABLE`, which SQLite does not
+    /// support, without the `N` of national string literals, with ISO dates, and with money
+    /// as `REAL`, since SQLite has no decimal type.
+    pub fn sqlite_sql(self) -> String {
+        assert_eq!(self, Dataset::Chinook, "only Chinook runs on SQLite");
+        let sql = Dataset::Chinook.sql();
+        let mut statements = Vec::new();
+        let mut skip = false;
+        for line in sql.lines() {
+            // An ALTER TABLE statement spans two lines, up to the semicolon
+            if line.starts_with("ALTER TABLE") {
+                skip = true;
+            }
+            if !skip {
+                statements.push(line);
+            }
+            if skip && line.trim_end().ends_with(';') {
+                skip = false;
+            }
+        }
+        translate_literals(&statements.join("\n")).replace("NUMERIC(10,2)", "REAL")
     }
 
     /// The schema the dataset is loaded into: its name and a hash of its SQL, so a changed
@@ -97,6 +123,57 @@ impl Dataset {
         }
         sqlx::query("SELECT pg_advisory_unlock(hashtext($1))").bind(schema).execute(&mut *conn).await.unwrap();
     }
+}
+
+impl Dataset {
+    /// A new in-memory SQLite database with the dataset loaded.
+    pub async fn connect_sqlite(self) -> SqliteConnection {
+        let mut conn = SqliteConnection::connect("sqlite::memory:").await.expect("open an in-memory SQLite database");
+        let mut tx = conn.begin().await.unwrap();
+        tx.execute(AssertSqlSafe(self.sqlite_sql())).await.unwrap_or_else(|e| panic!("load {}: {e}", self.name()));
+        tx.commit().await.unwrap();
+        conn
+    }
+}
+
+/// Drop the `N` prefix of string literals and write `2021/1/2` dates as `2021-01-02 00:00:00`.
+fn translate_literals(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == 'N' && chars.peek() == Some(&'\'') && !out.ends_with(|p: char| p.is_alphanumeric() || p == '_') {
+            continue;
+        }
+        if c != '\'' {
+            out.push(c);
+            continue;
+        }
+        // A literal, where '' is a quote
+        let mut literal = String::new();
+        while let Some(c) = chars.next() {
+            if c == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    chars.next();
+                    literal.push_str("''");
+                    continue;
+                }
+                break;
+            }
+            literal.push(c);
+        }
+        out.push('\'');
+        out.push_str(&iso_date(&literal).unwrap_or(literal));
+        out.push('\'');
+    }
+    out
+}
+
+fn iso_date(literal: &str) -> Option<String> {
+    let parts: Vec<&str> = literal.split('/').collect();
+    let [year, month, day] = parts[..] else { return None };
+    let number = |part: &str| part.parse::<u32>().ok().filter(|_| part.bytes().all(|b| b.is_ascii_digit()));
+    let (year, month, day) = (number(year)?, number(month)?, number(day)?);
+    (year >= 1000).then(|| format!("{year:04}-{month:02}-{day:02} 00:00:00"))
 }
 
 /// FNV-1a, a hash that is the same on every platform and Rust version.

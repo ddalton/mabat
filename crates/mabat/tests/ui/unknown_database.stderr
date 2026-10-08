@@ -1,0 +1,5 @@
+error: unknown database `oracle`, expected `postgres`, `mysql` or `sqlite`
+ --> tests/ui/unknown_database.rs:2:36
+  |
+2 | #[view(table = "task", databases = "postgres, oracle")]
+  |                                    ^^^^^^^^^^^^^^^^^^

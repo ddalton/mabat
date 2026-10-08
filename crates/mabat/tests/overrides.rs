@@ -403,7 +403,7 @@ async fn override_files_are_read_from_a_directory() {
     let Some(mut db) = setup("files").await else { return };
     let dir = std::env::temp_dir().join(format!("mabat-overrides-{}", uuid::Uuid::new_v4().simple()));
     std::fs::create_dir(&dir).unwrap();
-    std::fs::write(dir.join("TaskView.toml"), mabat::scaffold::<TaskView>().unwrap()).unwrap();
+    std::fs::write(dir.join("TaskView.toml"), mabat::scaffold::<TaskView, sqlx::Postgres>().unwrap()).unwrap();
     std::fs::write(dir.join("TaskVeiw.toml"), "").unwrap();
     std::fs::write(dir.join("PersonView.toml"), "[query.\"$root\"]\nsql = 42\n").unwrap();
     std::fs::write(dir.join("README.md"), "ignored").unwrap();
@@ -430,7 +430,7 @@ async fn override_files_are_read_from_a_directory() {
 #[tokio::test]
 async fn scaffold_is_a_valid_override_file() {
     let Some(mut db) = setup("scaffold").await else { return };
-    let scaffold = mabat::scaffold::<TaskView>().unwrap();
+    let scaffold = mabat::scaffold::<TaskView, sqlx::Postgres>().unwrap();
     assert!(
         scaffold.contains("[query.\"children.notes.tag\"]\nsql = '''\nSELECT t0.\"code\" AS \"code\",\n"),
         "{scaffold}"
@@ -509,7 +509,7 @@ fn children_ordered_by(order: &str) -> String {
     format!("{}\nORDER BY {order}", children.sql())
 }
 
-async fn child_names(mabat: &Mabat, db: &mut TestDb) -> Vec<String> {
+async fn child_names(mabat: &Mabat<sqlx::Postgres>, db: &mut TestDb) -> Vec<String> {
     let task = mabat.load::<TaskView>().by_key(id(1)).one(&mut db.conn).await.unwrap();
     task.children.into_iter().map(|c| c.name).collect()
 }

@@ -1,6 +1,6 @@
 [package]
 name = "mabat-sqlx"
-description = "PostgreSQL executor for Mabat views, built on SQLx"
+description = "The executor of Mabat views for PostgreSQL, MySQL and SQLite, built on SQLx"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -17,10 +17,16 @@ arc-swap.workspace = true
 chrono.workspace = true
 mabat-core.workspace = true
 sqlx.workspace = true
-sqlx-postgres.workspace = true
+sqlx-postgres = { workspace = true, optional = true }
+sqlx-sqlite = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[features]
+default = ["postgres"]
+postgres = ["sqlx/postgres", "dep:sqlx-postgres"]
+sqlite = ["sqlx/sqlite", "dep:sqlx-sqlite"]

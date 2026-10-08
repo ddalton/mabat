@@ -16,9 +16,6 @@
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use mabat_core::filter::{CompareOp, Filter};
-use sqlx::Postgres;
-use sqlx::postgres::PgArguments;
-use sqlx::query::Query;
 use uuid::Uuid;
 
 /// A value to compare a column with.
@@ -73,10 +70,11 @@ impl From<&String> for Value {
     }
 }
 
-/// The values of a list, bound as one array. All values of a list have the same Rust type,
+/// The values of a list, bound as one array on PostgreSQL and one by one elsewhere. All values of a list have the same Rust type,
 /// so they have the same variant.
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Values {
+pub enum Values {
     Bool(Vec<bool>),
     I16(Vec<i16>),
     I32(Vec<i32>),
@@ -91,6 +89,40 @@ pub(crate) enum Values {
 }
 
 impl Values {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Values::Bool(v) => v.len(),
+            Values::I16(v) => v.len(),
+            Values::I32(v) => v.len(),
+            Values::I64(v) => v.len(),
+            Values::F32(v) => v.len(),
+            Values::F64(v) => v.len(),
+            Values::Text(v) => v.len(),
+            Values::Uuid(v) => v.len(),
+            Values::Timestamptz(v) => v.len(),
+            Values::Timestamp(v) => v.len(),
+            Values::Date(v) => v.len(),
+        }
+    }
+
+    /// The values one by one, for drivers that bind each value of a list.
+    #[allow(dead_code)]
+    pub(crate) fn into_values(self) -> Vec<Value> {
+        match self {
+            Values::Bool(v) => v.into_iter().map(Value::Bool).collect(),
+            Values::I16(v) => v.into_iter().map(Value::I16).collect(),
+            Values::I32(v) => v.into_iter().map(Value::I32).collect(),
+            Values::I64(v) => v.into_iter().map(Value::I64).collect(),
+            Values::F32(v) => v.into_iter().map(Value::F32).collect(),
+            Values::F64(v) => v.into_iter().map(Value::F64).collect(),
+            Values::Text(v) => v.into_iter().map(Value::Text).collect(),
+            Values::Uuid(v) => v.into_iter().map(Value::Uuid).collect(),
+            Values::Timestamptz(v) => v.into_iter().map(Value::Timestamptz).collect(),
+            Values::Timestamp(v) => v.into_iter().map(Value::Timestamp).collect(),
+            Values::Date(v) => v.into_iter().map(Value::Date).collect(),
+        }
+    }
+
     /// `None` if the list is empty.
     fn new(values: Vec<Value>) -> Option<Values> {
         macro_rules! collect {
@@ -123,41 +155,19 @@ impl Values {
 }
 
 /// A value bound for a parameter slot of a filter.
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Bound {
+pub enum Bound {
     One(Value),
     List(Values),
 }
 
 impl Bound {
-    pub(crate) fn bind<'q>(self, query: Query<'q, Postgres, PgArguments>) -> Query<'q, Postgres, PgArguments> {
+    /// The number of values of a list, 0 for a single value.
+    pub(crate) fn list_len(&self) -> usize {
         match self {
-            Bound::One(value) => match value {
-                Value::Bool(v) => query.bind(v),
-                Value::I16(v) => query.bind(v),
-                Value::I32(v) => query.bind(v),
-                Value::I64(v) => query.bind(v),
-                Value::F32(v) => query.bind(v),
-                Value::F64(v) => query.bind(v),
-                Value::Text(v) => query.bind(v),
-                Value::Uuid(v) => query.bind(v),
-                Value::Timestamptz(v) => query.bind(v),
-                Value::Timestamp(v) => query.bind(v),
-                Value::Date(v) => query.bind(v),
-            },
-            Bound::List(values) => match values {
-                Values::Bool(v) => query.bind(v),
-                Values::I16(v) => query.bind(v),
-                Values::I32(v) => query.bind(v),
-                Values::I64(v) => query.bind(v),
-                Values::F32(v) => query.bind(v),
-                Values::F64(v) => query.bind(v),
-                Values::Text(v) => query.bind(v),
-                Values::Uuid(v) => query.bind(v),
-                Values::Timestamptz(v) => query.bind(v),
-                Values::Timestamp(v) => query.bind(v),
-                Values::Date(v) => query.bind(v),
-            },
+            Bound::One(_) => 0,
+            Bound::List(values) => values.len(),
         }
     }
 }
@@ -331,7 +341,10 @@ mod tests {
 
     fn render(condition: &Condition) -> String {
         let mut out = String::new();
-        condition.filter.render(&mut out, &|c| Some(c.to_string()), 1).unwrap();
+        let lists: Vec<usize> = condition.values.iter().map(Bound::list_len).collect();
+        let params =
+            mabat_core::filter::Params { dialect: mabat_core::sql::Dialect::Postgres, first: 1, lists: &lists };
+        condition.filter.render(&mut out, &|c| Some(c.to_string()), &params).unwrap();
         out
     }
 

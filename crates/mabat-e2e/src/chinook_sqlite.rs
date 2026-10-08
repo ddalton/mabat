@@ -1,23 +1,22 @@
-//! Views of Chinook, a digital music store, on PostgreSQL. [`crate::chinook_sqlite`] has
-//! the same views on SQLite.
+//! The views of [`crate::chinook`] on SQLite, where Chinook keeps money as `REAL`: the same
+//! views, with `f64` for `Decimal`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::NaiveDateTime;
 use mabat::{Ref, View};
-use rust_decimal::Decimal;
 
 // Invoices with lines, tracks, albums and artists
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "invoice", key = "invoice_id")]
 pub struct InvoiceView {
     pub invoice_id: i32,
     /// `timestamp` without time zone
     pub invoice_date: NaiveDateTime,
-    pub total: Decimal,
+    pub total: f64,
     #[view(embed(prefix = "billing_"))]
     pub billing: BillingAddress,
     #[view(to_one(fk = "customer_id"))]
@@ -27,7 +26,7 @@ pub struct InvoiceView {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(embedded)]
 pub struct BillingAddress {
     pub address: Option<String>,
@@ -38,7 +37,7 @@ pub struct BillingAddress {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "customer", key = "customer_id")]
 pub struct CustomerName {
     pub customer_id: i32,
@@ -48,25 +47,25 @@ pub struct CustomerName {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "invoice_line", key = "invoice_line_id")]
 pub struct InvoiceLine {
     pub invoice_line_id: i32,
-    pub unit_price: Decimal,
+    pub unit_price: f64,
     pub quantity: i32,
     #[view(to_one(fk = "track_id"))]
     pub track: Arc<TrackView>,
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "track", key = "track_id")]
 pub struct TrackView {
     pub track_id: i32,
     pub name: String,
     pub composer: Option<String>,
     pub milliseconds: i32,
-    pub unit_price: Decimal,
+    pub unit_price: f64,
     #[view(to_one(fk = "album_id"))]
     pub album: Option<Arc<AlbumView>>,
     #[view(to_one(fk = "genre_id"))]
@@ -76,7 +75,7 @@ pub struct TrackView {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "album", key = "album_id")]
 pub struct AlbumView {
     pub album_id: i32,
@@ -86,7 +85,7 @@ pub struct AlbumView {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "artist", key = "artist_id")]
 pub struct ArtistName {
     pub artist_id: i32,
@@ -94,7 +93,7 @@ pub struct ArtistName {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "genre", key = "genre_id")]
 pub struct GenreView {
     pub genre_id: i32,
@@ -102,7 +101,7 @@ pub struct GenreView {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "media_type", key = "media_type_id")]
 pub struct MediaTypeView {
     pub media_type_id: i32,
@@ -112,7 +111,7 @@ pub struct MediaTypeView {
 // Artists with their albums in a map keyed by title, and playlists of tracks
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "artist", key = "artist_id")]
 pub struct ArtistAlbums {
     pub artist_id: i32,
@@ -122,7 +121,7 @@ pub struct ArtistAlbums {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "album", key = "album_id")]
 pub struct AlbumTracks {
     pub album_id: i32,
@@ -131,7 +130,7 @@ pub struct AlbumTracks {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "track", key = "track_id")]
 pub struct TrackName {
     pub track_id: i32,
@@ -140,7 +139,7 @@ pub struct TrackName {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "playlist", key = "playlist_id")]
 pub struct PlaylistView {
     pub playlist_id: i32,
@@ -153,7 +152,7 @@ pub struct PlaylistView {
 
 /// Loaded with one `WITH RECURSIVE` query.
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "employee", key = "employee_id")]
 pub struct EmployeeTree {
     pub employee_id: i32,
@@ -164,7 +163,7 @@ pub struct EmployeeTree {
 
 /// Loaded level by level.
 #[derive(View, Debug, Clone, PartialEq)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "employee", key = "employee_id")]
 pub struct EmployeeLevels {
     pub employee_id: i32,
@@ -176,7 +175,7 @@ pub struct EmployeeLevels {
 // Employees, the customers they support and their invoices: a graph with cycles
 
 #[derive(View, Debug)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "employee", key = "employee_id")]
 pub struct Employee {
     pub employee_id: i32,
@@ -192,7 +191,7 @@ pub struct Employee {
 }
 
 #[derive(View, Debug)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "customer", key = "customer_id")]
 pub struct Customer {
     pub customer_id: i32,
@@ -206,11 +205,11 @@ pub struct Customer {
 }
 
 #[derive(View, Debug)]
-#[view(databases = "postgres")]
+#[view(databases = "sqlite")]
 #[view(table = "invoice", key = "invoice_id")]
 pub struct Invoice {
     pub invoice_id: i32,
-    pub total: Decimal,
+    pub total: f64,
     #[view(to_one(fk = "customer_id"))]
     pub customer: Ref<Customer>,
 }

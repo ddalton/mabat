@@ -12,13 +12,13 @@ use arc_swap::ArcSwap;
 
 use mabat_core::sql::{self, RootOptions};
 use mabat_core::{ChildQuery, QueryPlan, ViewShape};
-use sqlx::PgConnection;
 
+use crate::backend::{Backend, Conn};
 use crate::check::{self, Checked, ViewEntry};
 use crate::manifest::{self, Manifest, ScaffoldFormat};
 use crate::overrides::{self, Origin, OverrideFile};
 use crate::report::{Diagnostic, Report, Severity};
-use crate::{Error, Load, View};
+use crate::{Error, Load, View, ViewDecoder};
 
 /// A checked override, used instead of the generated SQL of its query.
 #[derive(Debug)]
@@ -84,14 +84,30 @@ pub enum OnInvalid {
     UseGenerated,
 }
 
-/// Builds a [`Mabat`] registry. Created by [`Mabat::builder`].
-#[derive(Clone, Default)]
+/// Builds a [`Mabat`] registry for database `B`. Created by [`Mabat::builder`].
 #[must_use = "a builder does nothing until it is built"]
-pub struct Builder {
-    views: Vec<ViewEntry>,
+pub struct Builder<B: Backend> {
+    views: Vec<ViewEntry<B>>,
     dirs: Vec<PathBuf>,
     inline: Vec<Source>,
     on_invalid: OnInvalid,
+}
+
+impl<B: Backend> Default for Builder<B> {
+    fn default() -> Self {
+        Builder { views: Vec::new(), dirs: Vec::new(), inline: Vec::new(), on_invalid: OnInvalid::default() }
+    }
+}
+
+impl<B: Backend> Clone for Builder<B> {
+    fn clone(&self) -> Self {
+        Builder {
+            views: self.views.clone(),
+            dirs: self.dirs.clone(),
+            inline: self.inline.clone(),
+            on_invalid: self.on_invalid,
+        }
+    }
 }
 
 /// The content of an override file, before it is parsed.
@@ -109,10 +125,10 @@ enum Format {
     Sql,
 }
 
-impl Builder {
+impl<B: Backend> Builder<B> {
     /// Register a view, so that it can be loaded with [`Mabat::load`] and overridden.
     /// The views it contains do not need to be registered.
-    pub fn register<T: View>(mut self) -> Self {
+    pub fn register<T: ViewDecoder<B>>(mut self) -> Self {
         let shape = T::shape();
         if !self.views.iter().any(|v| std::ptr::eq(v.shape, shape)) {
             self.views.push(ViewEntry { shape, describe: T::describe });
@@ -164,10 +180,10 @@ impl Builder {
     /// Every query, generated or overridden, is prepared on the database without running
     /// it. When the connection is in a transaction, each one is prepared in a savepoint
     /// that is rolled back, so a failing statement does not abort the transaction.
-    pub async fn check(&self, conn: &mut PgConnection) -> Result<Report, Error> {
+    pub async fn check<C: Conn<Backend = B>>(&self, conn: &mut C) -> Result<Report, Error> {
         let mut report = Report::default();
         let sources = self.read_sources(&mut report);
-        Ok(self.run_checks(conn, &sources, report).await?.1)
+        Ok(self.run_checks(conn.connection(), &sources, report).await?.1)
     }
 
     /// Check the views and the overrides against the database, as [`Builder::check`] does,
@@ -177,11 +193,11 @@ impl Builder {
     /// replaced by the generated queries with [`OnInvalid::UseGenerated`]. Errors that no
     /// override is involved in, such as a generated query that does not match the
     /// database, always fail.
-    pub async fn build(self, conn: &mut PgConnection) -> Result<Mabat, Error> {
+    pub async fn build<C: Conn<Backend = B>>(self, conn: &mut C) -> Result<Mabat<B>, Error> {
         let mut report = Report::default();
         let sources = self.read_sources(&mut report);
         let fingerprint = fingerprint(&sources, &report);
-        let (checked, report) = self.run_checks(conn, &sources, report).await?;
+        let (checked, report) = self.run_checks(conn.connection(), &sources, report).await?;
         let fails = match self.on_invalid {
             OnInvalid::Fail => !report.is_ok(),
             OnInvalid::UseGenerated => report.errors().any(|d| d.origin.is_none() || d.code == "M0301"),
@@ -198,7 +214,7 @@ impl Builder {
 
     async fn run_checks(
         &self,
-        conn: &mut PgConnection,
+        conn: &mut B::Connection,
         sources: &[Source],
         mut report: Report,
     ) -> Result<(Vec<Checked>, Report), Error> {
@@ -222,13 +238,14 @@ impl Builder {
 
         let (manifest, plans) = self.build_manifest(&mut report);
         let files = parse_sources(sources, &mut report);
-        let mut overrides = check::check(conn, &manifest, files, &mut report).await.map_err(Error::Check)?;
+        let mut overrides = check::check::<B>(conn, &manifest, files, &mut report).await.map_err(Error::Check)?;
         let checked = plans
             .into_iter()
             .map(|(shape, plan)| Checked {
                 shape,
                 plan: Arc::new(plan),
                 overrides: overrides.remove(shape.name).unwrap_or_default(),
+                backend: B::NAME,
             })
             .collect();
         Ok((checked, report))
@@ -240,7 +257,7 @@ impl Builder {
         let mut views = Vec::new();
         let mut plans = Vec::new();
         for view in &self.views {
-            match manifest::build(view) {
+            match manifest::build::<B>(view) {
                 Ok((manifest, plan)) => {
                     views.push(manifest);
                     plans.push((view.shape, plan));
@@ -256,7 +273,7 @@ impl Builder {
                 }),
             }
         }
-        (Manifest { format: manifest::FORMAT, views }, plans)
+        (Manifest { format: manifest::FORMAT, backend: B::NAME.to_string(), views }, plans)
     }
 
     /// The manifest of the registered views, for checking overrides without the
@@ -264,9 +281,9 @@ impl Builder {
     pub fn manifest(&self) -> Result<Manifest, Error> {
         let mut views = Vec::new();
         for view in &self.views {
-            views.push(manifest::build(view)?.0);
+            views.push(manifest::build::<B>(view)?.0);
         }
-        Ok(Manifest { format: manifest::FORMAT, views })
+        Ok(Manifest { format: manifest::FORMAT, backend: B::NAME.to_string(), views })
     }
 
     /// Read the override files of the directories, and the inline overrides.
@@ -382,8 +399,8 @@ fn shape_id(shape: &'static ViewShape) -> usize {
 ///
 /// let task = mabat.load::<TaskView>().by_key(id).one(&mut *tx).await?;
 /// ```
-pub struct Mabat {
-    builder: Builder,
+pub struct Mabat<B: Backend> {
+    builder: Builder<B>,
     state: ArcSwap<State>,
     files: Mutex<Fingerprints>,
 }
@@ -418,8 +435,10 @@ pub enum Reloaded {
     Updated(Report),
 }
 
-impl Mabat {
-    pub fn builder() -> Builder {
+impl<B: Backend> Mabat<B> {
+    /// A builder for a registry of database `B`, which the connection given to
+    /// [`Builder::build`] or [`Builder::check`] determines.
+    pub fn builder() -> Builder<B> {
         Builder::default()
     }
 
@@ -465,7 +484,8 @@ impl Mabat {
     /// ```
     ///
     /// Shadow statistics are kept for overrides whose SQL did not change.
-    pub async fn reload(&self, conn: &mut PgConnection) -> Result<Reloaded, Error> {
+    pub async fn reload<C: Conn<Backend = B>>(&self, conn: &mut C) -> Result<Reloaded, Error> {
+        let conn = conn.connection();
         let mut report = Report::default();
         let sources = self.builder.read_sources(&mut report);
         let fingerprint = fingerprint(&sources, &report);
@@ -566,7 +586,7 @@ fn explain_query(out: &mut String, plan: &QueryPlan, overrides: &Overrides, dept
 
 /// An override file for a view with the generated SQL of every query, as a starting point
 /// for tuning. Delete the queries you do not change.
-pub fn scaffold<T: View>() -> Result<String, Error> {
-    let manifest = Mabat::builder().register::<T>().manifest()?;
+pub fn scaffold<T: ViewDecoder<B>, B: Backend>() -> Result<String, Error> {
+    let manifest = Mabat::<B>::builder().register::<T>().manifest()?;
     Ok(manifest.scaffold(T::shape().name, ScaffoldFormat::Toml).expect("the view is in its manifest"))
 }

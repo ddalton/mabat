@@ -70,6 +70,12 @@ pub enum Error {
     #[error("checking the views failed: {0}")]
     Check(#[source] sqlx::Error),
 
+    #[error("the manifest describes views for {manifest}, but the connection is to {connection}")]
+    ManifestBackend { manifest: String, connection: &'static str },
+
+    #[error("{view}: the registry was built for {registry}, but the connection is to {connection}")]
+    WrongBackend { view: &'static str, registry: &'static str, connection: &'static str },
+
     #[error("{view} is not registered; register it with Mabat::builder().register::<{view}>()")]
     NotRegistered { view: &'static str },
 

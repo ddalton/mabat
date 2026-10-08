@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use mabat_sqlx::manifest::{Manifest, ScaffoldFormat};
-use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection};
+use sqlx::{AssertSqlSafe, Connection, Executor};
 
 const USAGE: &str = "\
 mabat: check, explain and scaffold Mabat override SQL
@@ -21,7 +21,8 @@ check     Prepare every query, generated and overridden, on the database without
           and compare its columns and parameters with the views. The database URL defaults to
           $DATABASE_URL. With --schema, the schema file is created in a temporary schema inside
           a transaction that is rolled back, so any database with no access to the
-          application's data will do, and nothing is left behind.
+          application's data will do, and nothing is left behind. On SQLite, --schema without
+          a database URL checks against a new in-memory database.
 explain   Show the queries of the views and the SQL that runs for each.
 scaffold  Write an override file with the generated SQL of every query of a view.
 
@@ -113,15 +114,33 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
 
 async fn check(args: &Args, manifest: &Manifest) -> Result<ExitCode, String> {
     let url = match &args.database_url {
-        Some(url) => url.clone(),
-        None => std::env::var("DATABASE_URL").map_err(|_| "--database-url or $DATABASE_URL is required")?,
+        Some(url) => Some(url.clone()),
+        None => std::env::var("DATABASE_URL").ok(),
     };
-    let mut conn = PgConnection::connect(&url).await.map_err(|e| format!("cannot connect: {e}"))?;
+    let report = match manifest.backend.as_str() {
+        #[cfg(feature = "postgres")]
+        "PostgreSQL" => check_postgres(args, manifest, &url.ok_or(URL_REQUIRED)?).await?,
+        #[cfg(feature = "sqlite")]
+        "SQLite" => check_sqlite(args, manifest, url).await?,
+        other => return Err(format!("the manifest is for {other}, which this build of mabat does not support")),
+    };
+    println!("{report}");
+    Ok(if report.is_ok() { ExitCode::SUCCESS } else { ExitCode::from(1) })
+}
 
+const URL_REQUIRED: &str = "--database-url or $DATABASE_URL is required";
+
+fn read_schema(schema: &std::path::Path) -> Result<String, String> {
+    std::fs::read_to_string(schema).map_err(|e| format!("cannot read {}: {e}", schema.display()))
+}
+
+#[cfg(feature = "postgres")]
+async fn check_postgres(args: &Args, manifest: &Manifest, url: &str) -> Result<mabat_sqlx::Report, String> {
+    let mut conn = sqlx::PgConnection::connect(url).await.map_err(|e| format!("cannot connect: {e}"))?;
     let report = match &args.schema {
         None => manifest.check(&mut conn, &args.overrides).await.map_err(|e| e.to_string())?,
         Some(schema) => {
-            let ddl = std::fs::read_to_string(schema).map_err(|e| format!("cannot read {}: {e}", schema.display()))?;
+            let ddl = read_schema(schema)?;
             // Everything happens in a transaction that is rolled back
             let mut tx = conn.begin().await.map_err(|e| e.to_string())?;
             let name = format!("mabat_check_{}", std::process::id());
@@ -133,6 +152,27 @@ async fn check(args: &Args, manifest: &Manifest) -> Result<ExitCode, String> {
             report?
         }
     };
-    println!("{report}");
-    Ok(if report.is_ok() { ExitCode::SUCCESS } else { ExitCode::from(1) })
+    Ok(report)
+}
+
+#[cfg(feature = "sqlite")]
+async fn check_sqlite(args: &Args, manifest: &Manifest, url: Option<String>) -> Result<mabat_sqlx::Report, String> {
+    let url = match (url, &args.schema) {
+        (Some(url), _) => url,
+        (None, Some(_)) => "sqlite::memory:".to_string(),
+        (None, None) => return Err(format!("{URL_REQUIRED}, or --schema")),
+    };
+    let mut conn = sqlx::SqliteConnection::connect(&url).await.map_err(|e| format!("cannot connect: {e}"))?;
+    match &args.schema {
+        None => manifest.check(&mut conn, &args.overrides).await.map_err(|e| e.to_string()),
+        Some(schema) => {
+            let ddl = read_schema(schema)?;
+            // SQLite rolls back DDL too
+            let mut tx = conn.begin().await.map_err(|e| e.to_string())?;
+            tx.execute(AssertSqlSafe(ddl)).await.map_err(|e| format!("the schema file failed: {e}"))?;
+            let report = manifest.check(&mut tx, &args.overrides).await.map_err(|e| e.to_string());
+            tx.rollback().await.map_err(|e| e.to_string())?;
+            report
+        }
+    }
 }

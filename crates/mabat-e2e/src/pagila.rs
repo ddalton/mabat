@@ -9,6 +9,7 @@ use rust_decimal::Decimal;
 // Films: an enum from a PostgreSQL enum, a domain, an array, money, many-to-many links
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "film", key = "film_id")]
 pub struct FilmView {
     pub film_id: i32,
@@ -33,6 +34,7 @@ pub struct FilmView {
 }
 
 #[derive(View, Debug, Clone, Copy, PartialEq, Eq)]
+#[view(databases = "postgres")]
 #[view(tag = "rating")]
 pub enum Rating {
     #[view(tag_value = "G")]
@@ -60,6 +62,7 @@ impl Rating {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "language", key = "language_id")]
 pub struct LanguageView {
     pub language_id: i32,
@@ -68,6 +71,7 @@ pub struct LanguageView {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "actor", key = "actor_id")]
 pub struct ActorName {
     pub actor_id: i32,
@@ -76,6 +80,7 @@ pub struct ActorName {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "category", key = "category_id")]
 pub struct CategoryName {
     pub category_id: i32,
@@ -85,6 +90,7 @@ pub struct CategoryName {
 // Customers: a chain of references, rentals and payments from a partitioned table
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "customer", key = "customer_id")]
 pub struct CustomerView {
     pub customer_id: i32,
@@ -100,6 +106,7 @@ pub struct CustomerView {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "address", key = "address_id")]
 pub struct AddressView {
     pub address: String,
@@ -111,6 +118,7 @@ pub struct AddressView {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "city", key = "city_id")]
 pub struct CityView {
     pub city: String,
@@ -119,12 +127,14 @@ pub struct CityView {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "country", key = "country_id")]
 pub struct CountryView {
     pub country: String,
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "rental", key = "rental_id")]
 pub struct RentalView {
     pub rental_id: i32,
@@ -138,6 +148,7 @@ pub struct RentalView {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "inventory", key = "inventory_id")]
 pub struct InventoryView {
     pub store_id: i32,
@@ -146,6 +157,7 @@ pub struct InventoryView {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "film", key = "film_id")]
 pub struct FilmTitle {
     pub film_id: i32,
@@ -153,6 +165,7 @@ pub struct FilmTitle {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "payment", key = "payment_id")]
 pub struct PaymentView {
     pub payment_id: i32,
@@ -163,6 +176,7 @@ pub struct PaymentView {
 // An enum the schema does not have, derived by an override from the return date
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "rental", key = "rental_id")]
 pub struct RentalStatusView {
     pub rental_id: i32,
@@ -171,6 +185,7 @@ pub struct RentalStatusView {
 }
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(tag = "status")]
 pub enum RentalStatus {
     #[view(tag_value = "returned")]
@@ -193,6 +208,7 @@ FROM rental r
 // Stock computed by a stored function
 
 #[derive(View, Debug, Clone, PartialEq)]
+#[view(databases = "postgres")]
 #[view(table = "film", key = "film_id")]
 pub struct FilmStock {
     pub film_id: i32,
@@ -211,6 +227,7 @@ FROM film f
 // Stores and their staff reference each other: a graph
 
 #[derive(View, Debug)]
+#[view(databases = "postgres")]
 #[view(table = "store", key = "store_id")]
 pub struct Store {
     pub store_id: i32,
@@ -223,6 +240,7 @@ pub struct Store {
 }
 
 #[derive(View, Debug)]
+#[view(databases = "postgres")]
 #[view(table = "staff", key = "staff_id")]
 pub struct Staff {
     pub staff_id: i32,
@@ -235,6 +253,7 @@ pub struct Staff {
 // Films and actors: a large connected graph through the link table
 
 #[derive(View, Debug)]
+#[view(databases = "postgres")]
 #[view(table = "film", key = "film_id")]
 pub struct FilmNode {
     pub film_id: i32,
@@ -244,6 +263,7 @@ pub struct FilmNode {
 }
 
 #[derive(View, Debug)]
+#[view(databases = "postgres")]
 #[view(table = "actor", key = "actor_id")]
 pub struct ActorNode {
     pub actor_id: i32,

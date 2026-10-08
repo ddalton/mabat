@@ -18,6 +18,11 @@ exclude = ["tests/"]
 name = "mabat"
 path = "src/main.rs"
 
+[features]
+default = ["postgres", "sqlite"]
+postgres = ["mabat-sqlx/postgres"]
+sqlite = ["mabat-sqlx/sqlite"]
+
 [dependencies]
 mabat-sqlx.workspace = true
 sqlx.workspace = true
