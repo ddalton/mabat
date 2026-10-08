@@ -1,0 +1,5 @@
+error: `through` and `target` need to be used together
+  --> tests/ui/through_without_target.rs:10:12
+   |
+10 |     #[view(child(through = "playlist_song", fk = "playlist_id"))]
+   |            ^^^^^

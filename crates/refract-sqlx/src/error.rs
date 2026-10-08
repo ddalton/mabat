@@ -38,6 +38,15 @@ pub enum Error {
     #[error("{view}: the row of the variant table `{path}` was not found")]
     MissingVariant { view: &'static str, path: String },
 
+    #[error("{view}: the list `{path}` cannot be placed: {message}")]
+    ListIndex { view: &'static str, path: String, message: String },
+
+    #[error("{view}: the rows of the recursive collection `{path}` form a cycle, which a tree cannot hold")]
+    Cycle { view: &'static str, path: String },
+
+    #[error("{view}: two elements of the map `{path}` have the same key")]
+    DuplicateMapKey { view: &'static str, path: String },
+
     #[error("{view}: the keys to load have different types")]
     MixedKeys { view: &'static str },
 

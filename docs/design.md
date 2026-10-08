@@ -238,10 +238,10 @@ let open: Vec<TaskView> = refract
 | `table = "..."` | struct | Root table of the view |
 | `key = "id"` | struct | Primary key column(s); defaults to `id` |
 | `column = "..."` | field | Column name when it differs from the field name |
-| `child(fk, through, target, index, key, order_by)` | `Vec`/map field | To-many relationship loaded by a child query |
+| `child(fk, through, target, index, key, order_by, depth, recursive)` | `Vec`/map field | To-many relationship loaded by a child query; `depth = n` or `recursive = "cte"` for a recursive collection |
 | `to_one(fk, strategy = "join" \| "query")` | field | To-one relationship |
 | `tag = "..."`, `strategy = "..."` | enum | Sum type mapping (section 6) |
-| `depth = n` | recursive field | Maximum depth for a recursive view (section 7.1) |
+| `depth = n` | inside `child(..)` | Maximum depth for a recursive view (section 7.1) |
 | `json` | field | Decode the column with `serde` |
 | `representation = "tree" \| "shared" \| "graph"` | struct | In-memory representation (section 7) |
 
@@ -380,6 +380,29 @@ pub struct TaskTree {
 
 A recursive view needs either a `depth` limit or `recursive = "cte"`. In the second case the planner issues a
 single `WITH RECURSIVE` query and builds the tree from `(id, parent_id, depth)` rows.
+
+> **M4:** both modes are implemented. `depth` and `recursive` go inside `child(..)`, such as
+> `#[view(child(fk = "parent_id", depth = 5))]`.
+>
+> - **`depth = n`:**
+>   - The plan stays finite: when a collection leads back to a view whose query it already entered, the
+>     child repeats that query (`ChildQuery::Repeat`) instead of planning it again.
+>   - At run time, each level runs the same query with the keys of the level above. It stops at `n` levels,
+>     or when a level is empty.
+>   - This also covers cycles through several views (A → B → A), with the annotation on any collection of the
+>     cycle.
+> - **`recursive = "cte"`:**
+>   - One `WITH RECURSIVE` query selects the keys of all levels, each row once, then their columns. Its
+>     recursive field reads the next level from the same rows (`ChildQuery::Same`). An optional `depth`
+>     limits the levels.
+>   - Collections below the recursive view load with one query for all levels.
+>   - The CTE carries the path of keys, so the recursion in the database stops at cycles in the data.
+>   - If the loaded rows' parents still form a cycle, loading fails with `Error::Cycle` rather than looping
+>     forever. A tree can't hold a cycle; that is M5's graph representation.
+>   - It needs a collection that contains its own view directly, without `through`. Use `depth` otherwise.
+> - **Unannotated cycles:** a cycle without an annotation fails to plan, with a hint.
+> - **Overrides:** every level of a recursive collection has the query name of its first level, so one
+>   override applies to all levels.
 
 ### 7.2 Shared
 
@@ -525,6 +548,13 @@ System columns:
 | `$key` | Map key |
 | `<path>.$tag` | Sum type discriminator |
 
+> **As built:**
+>
+> - **`$key`:** it is the key of the selected entity, used when no field holds the key (M1).
+> - **`$map_key`:** the map key column is selected as `$map_key` (M4).
+> - **`$index`:** it must be an integer column.
+> - **`$ref.<field>`:** it holds the foreign key of a to-one reference.
+
 > **M3:** a query is addressed by its name: `$root`, or the path of the field the query fills, such as
 > `children.notes`. Both formats are implemented:
 >
@@ -640,6 +670,12 @@ swapped into the registry atomically (`ArcSwap`). An invalid change never replac
    - `Vec`: in `$index` order when an index is declared, otherwise in row order. Duplicate rows (identity) are
      collapsed.
    - Maps: keyed by `$key`. A duplicate key is an error.
+
+   > **M4:**
+   >
+   > - **Lists:** elements are sorted by `$index` within each parent; a duplicate or NULL index is an error.
+   >   Duplicate rows aren't collapsed: a many-to-many list may hold the same element twice.
+   > - **Maps:** `BTreeMap` or `HashMap`, keyed by `$map_key`.
    - `Option`: at most one row. More than one is an error.
 4. For the graph representation, entities are inserted into their arena through the identity map, and `Ref`s
    are resolved after all queries finish.
@@ -748,7 +784,7 @@ database.
 | M1 | Core reads (**done**) | Structs, `Option`, `Vec`, embedded structs, generated SQL, name-based decoding, PostgreSQL | Integration tests; parity benchmark |
 | M2 | Sum types (**done**) | `tag`, `table_per_variant`, `json`; nested sums; strict decoding | Every strategy tested with generated SQL |
 | M3 | Overrides (**done**) | Override files, startup validation, `refract check`, shadow mode | Mutation-style checks pass |
-| M4 | Collections and recursion | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
+| M4 | Collections and recursion (**done**) | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
 | M5 | Shared and graph | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
 | M6 | More databases, concurrency | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |
 | M7 | GraphQL | Sub-shapes from look-ahead; field arguments | Example server |

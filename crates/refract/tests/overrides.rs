@@ -21,7 +21,7 @@ impl Parts {
         let columns = plan.columns.iter().map(|c| (format!("t0.\"{}\"", c.column), c.alias.clone())).collect();
         let filter = match &plan.link {
             Link::Root => String::new(),
-            Link::Child { fk } => format!(" WHERE t0.\"{fk}\" = ANY($1)"),
+            Link::Child { fk, .. } => format!(" WHERE t0.\"{fk}\" = ANY($1)"),
             Link::ToOne { .. } | Link::Variant { .. } => format!(" WHERE t0.\"{}\" = ANY($1)", plan.shape.key_column),
         };
         Parts { columns, from: format!("FROM \"{}\" AS t0{filter}", plan.shape.table) }
@@ -376,7 +376,7 @@ async fn schema_drift_is_found_in_generated_queries() {
 #[tokio::test]
 async fn shadow_mode_compares_with_the_generated_query() {
     let Some(mut db) = setup("shadow").await else { return };
-    let children = Parts::of(&refract::plan::<TaskView>().unwrap().children[1].plan);
+    let children = Parts::of(refract::plan::<TaskView>().unwrap().children[1].plan().unwrap());
     let same = format!("{}\nORDER BY t0.\"position\", t0.\"name\", t0.\"id\"", children.sql());
     let reversed = format!("{}\nORDER BY t0.\"position\" DESC", children.sql());
 
@@ -509,7 +509,7 @@ impl Drop for OverridesDir {
 
 /// The children query of `TaskView`, ordered by the given SQL.
 fn children_ordered_by(order: &str) -> String {
-    let children = Parts::of(&refract::plan::<TaskView>().unwrap().children[1].plan);
+    let children = Parts::of(refract::plan::<TaskView>().unwrap().children[1].plan().unwrap());
     format!("{}\nORDER BY {order}", children.sql())
 }
 

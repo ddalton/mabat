@@ -190,7 +190,9 @@ impl<T: View> Load<T> {
     pub async fn all(self, conn: &mut PgConnection) -> Result<Vec<T>, Error> {
         let Some(load) = self.prepare()? else { return Ok(Vec::new()) };
         let overrides = load.overrides.as_ref().map(|c| &c.overrides);
-        let node = node::load(conn, &load.plan, &load.options, load.keys, overrides, &load.values).await?;
+        let node =
+            node::load(conn, &load.plan, &load.options, load.keys, overrides, &load.values, String::new(), Vec::new())
+                .await?;
         node.rows().iter().map(|row| T::decode(row, &node)).collect()
     }
 
@@ -235,10 +237,11 @@ struct Prepared {
 pub mod __private {
     pub use crate::describe::{DescribeFn, Description};
     pub use crate::node::{
-        children, column, optional_column, strict, tag, to_one, to_one_required, unknown_tag, variant,
+        MapInsert, children, column, map, optional_column, strict, tag, to_one, to_one_required, unknown_tag, variant,
     };
     pub use refract_core::{
-        EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, SumShape, SumStrategy, Variant, VariantData, ViewShape,
+        Child, EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, Recursion, SumShape, SumStrategy, Through,
+        Variant, VariantData, ViewShape,
     };
     pub use sqlx::postgres::PgRow;
     pub use sqlx::types::Json;

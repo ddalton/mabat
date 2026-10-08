@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use refract_core::sql::{self, RootOptions};
-use refract_core::{KEY_ALIAS, Link, PARENT_ALIAS, QueryPlan, TAG_ALIAS};
+use refract_core::{
+    ChildPlan, ChildQuery, INDEX_ALIAS, KEY_ALIAS, Link, MAP_KEY_ALIAS, PARENT_ALIAS, QueryPlan, TAG_ALIAS,
+};
 use sqlx::postgres::PgRow;
 use sqlx::{AssertSqlSafe, Column, Decode, PgConnection, Postgres, Row, Type, ValueRef};
 
@@ -37,7 +39,11 @@ pub struct Node {
 struct ChildEntry {
     field_index: usize,
     variant: Option<&'static str>,
-    child: ChildNode,
+    /// The rows of the child query, or `None` when they are rows of this node: the next
+    /// level of a recursive collection loaded with one query.
+    node: Option<Node>,
+    /// Rows of the child query by the key they are attached with, in list order.
+    by_key: HashMap<Key, Vec<usize>>,
 }
 
 /// The columns that must be NULL for each variant of an enum, see
@@ -50,32 +56,26 @@ struct SumColumns {
     variants: Vec<(&'static str, Vec<(usize, String)>)>,
 }
 
-#[derive(Debug)]
-struct ChildNode {
-    node: Node,
-    /// Rows of the child query by the key they are attached with, in row order.
-    by_key: HashMap<Key, Vec<usize>>,
-}
-
 impl Node {
     pub(crate) fn rows(&self) -> &[PgRow] {
         &self.rows
     }
 
-    fn child(&self, field_index: usize) -> &ChildNode {
-        self.children
-            .iter()
-            .find(|c| c.field_index == field_index && c.variant.is_none())
-            .map(|c| &c.child)
-            .expect("plan and decoder disagree on the fields of a view")
+    /// The rows of a child field and their grouping, `None` when they were not loaded: the
+    /// level below the depth limit of a recursive collection.
+    fn child(&self, field_index: usize) -> Option<(&Node, &HashMap<Key, Vec<usize>>)> {
+        self.entry(field_index, None)
     }
 
-    fn variant_child(&self, field_index: usize, variant: &str) -> &ChildNode {
+    fn entry(&self, field_index: usize, variant: Option<&str>) -> Option<(&Node, &HashMap<Key, Vec<usize>>)> {
         self.children
             .iter()
-            .find(|c| c.field_index == field_index && c.variant == Some(variant))
-            .map(|c| &c.child)
-            .expect("plan and decoder disagree on the variants of an enum")
+            .find(|c| c.field_index == field_index && c.variant == variant)
+            .map(|c| (c.node.as_ref().unwrap_or(self), &c.by_key))
+    }
+
+    fn variant_child(&self, field_index: usize, variant: &str) -> (&Node, &HashMap<Key, Vec<usize>>) {
+        self.entry(field_index, Some(variant)).expect("plan and decoder disagree on the variants of an enum")
     }
 
     fn path_of(&self, alias: &str) -> String {
@@ -108,10 +108,13 @@ impl Node {
             if let Link::Child { .. } = plan.link {
                 aliases.push((PARENT_ALIAS.to_string(), PARENT_ALIAS.to_string()));
             }
-            for child in &plan.children {
-                if let Link::ToOne { ref_alias } = &child.plan.link {
+            for child in plan.children.iter().filter_map(ChildPlan::plan) {
+                if let Link::ToOne { ref_alias } = &child.link {
                     aliases.push((ref_alias.clone(), ref_alias.clone()));
                 }
+            }
+            if plan.columns.iter().any(|c| c.alias == INDEX_ALIAS) {
+                aliases.push((INDEX_ALIAS.to_string(), INDEX_ALIAS.to_string()));
             }
             for (name, alias) in aliases {
                 let column = KeyColumn::resolve(row, &alias).map_err(|source| Error::Decode {
@@ -151,14 +154,71 @@ where
 /// Decode the elements of a to-many collection of the row, in the order of the child query.
 #[doc(hidden)]
 pub fn children<C: View>(row: &PgRow, node: &Node, field_index: usize) -> Result<Vec<C>, Error> {
-    let child = node.child(field_index);
+    let Some((child, by_key)) = node.child(field_index) else { return Ok(Vec::new()) };
     let Some(key) = node.key(row, KEY_ALIAS)? else {
         return Ok(Vec::new());
     };
-    match child.by_key.get(&key) {
-        Some(indices) => indices.iter().map(|&i| C::decode(&child.node.rows[i], &child.node)).collect(),
+    match by_key.get(&key) {
+        Some(indices) => indices.iter().map(|&i| C::decode(&child.rows[i], child)).collect(),
         None => Ok(Vec::new()),
     }
+}
+
+/// A map that a collection is decoded into.
+#[doc(hidden)]
+pub trait MapInsert<K, V>: Default {
+    /// Insert the entry, `false` if the key is already in the map.
+    fn insert_new(&mut self, key: K, value: V) -> bool;
+}
+
+impl<K: Ord, V> MapInsert<K, V> for std::collections::BTreeMap<K, V> {
+    fn insert_new(&mut self, key: K, value: V) -> bool {
+        match self.entry(key) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(value);
+                true
+            }
+            std::collections::btree_map::Entry::Occupied(_) => false,
+        }
+    }
+}
+
+impl<K, V, S> MapInsert<K, V> for HashMap<K, V, S>
+where
+    K: Eq + std::hash::Hash,
+    S: std::hash::BuildHasher + Default,
+{
+    fn insert_new(&mut self, key: K, value: V) -> bool {
+        match self.entry(key) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(value);
+                true
+            }
+            std::collections::hash_map::Entry::Occupied(_) => false,
+        }
+    }
+}
+
+/// Decode the elements of a map collection of the row, keyed by their `$map_key` column.
+#[doc(hidden)]
+pub fn map<K, C, M>(row: &PgRow, node: &Node, field_index: usize) -> Result<M, Error>
+where
+    K: for<'r> Decode<'r, Postgres> + Type<Postgres>,
+    C: View,
+    M: MapInsert<K, C>,
+{
+    let mut map = M::default();
+    let Some((child, by_key)) = node.child(field_index) else { return Ok(map) };
+    let Some(indices) = node.key(row, KEY_ALIAS)?.and_then(|key| by_key.get(&key)) else { return Ok(map) };
+    for &i in indices {
+        let row = &child.rows[i];
+        let key = column::<K>(row, child, MAP_KEY_ALIAS)?;
+        if !map.insert_new(key, C::decode(row, child)?) {
+            let path = child.path.clone();
+            return Err(Error::DuplicateMapKey { view: child.view, path });
+        }
+    }
+    Ok(map)
 }
 
 /// Decode the column of an `Option` field with the given alias. An override may leave the
@@ -225,11 +285,11 @@ pub fn variant<'a>(
     field_index: usize,
     variant: &str,
 ) -> Result<(&'a PgRow, &'a Node), Error> {
-    let child = node.variant_child(field_index, variant);
-    let missing = || Error::MissingVariant { view: node.view, path: child.node.path.clone() };
+    let (child, by_key) = node.variant_child(field_index, variant);
+    let missing = || Error::MissingVariant { view: node.view, path: child.path.clone() };
     let key = node.key(row, KEY_ALIAS)?.ok_or_else(missing)?;
-    match child.by_key.get(&key).and_then(|indices| indices.first()) {
-        Some(&i) => Ok((&child.node.rows[i], &child.node)),
+    match by_key.get(&key).and_then(|indices| indices.first()) {
+        Some(&i) => Ok((&child.rows[i], child)),
         None => Err(missing()),
     }
 }
@@ -237,27 +297,33 @@ pub fn variant<'a>(
 /// Decode an optional to-one reference of the row.
 #[doc(hidden)]
 pub fn to_one<C: View>(row: &PgRow, node: &Node, field_index: usize, ref_alias: &str) -> Result<Option<C>, Error> {
-    let child = node.child(field_index);
+    let (child, by_key) = node.child(field_index).expect("plan and decoder disagree on the fields of a view");
     let Some(key) = node.key(row, ref_alias)? else {
         return Ok(None);
     };
-    match child.by_key.get(&key).and_then(|indices| indices.first()) {
-        Some(&i) => C::decode(&child.node.rows[i], &child.node).map(Some),
-        None => Err(Error::MissingReference { view: node.view, path: child.node.path.clone() }),
+    match by_key.get(&key).and_then(|indices| indices.first()) {
+        Some(&i) => C::decode(&child.rows[i], child).map(Some),
+        None => Err(Error::MissingReference { view: node.view, path: child.path.clone() }),
     }
 }
 
 /// Decode a required to-one reference of the row.
 #[doc(hidden)]
 pub fn to_one_required<C: View>(row: &PgRow, node: &Node, field_index: usize, ref_alias: &str) -> Result<C, Error> {
-    to_one(row, node, field_index, ref_alias)?
-        .ok_or_else(|| Error::MissingReference { view: node.view, path: node.child(field_index).node.path.clone() })
+    to_one(row, node, field_index, ref_alias)?.ok_or_else(|| Error::MissingReference {
+        view: node.view,
+        path: node.child(field_index).map_or_else(String::new, |(child, _)| child.path.clone()),
+    })
 }
 
 type NodeFuture<'a> = Pin<Box<dyn Future<Output = Result<Node, Error>> + Send + 'a>>;
 
 /// Run the query of the plan, then its child queries, on the connection. Queries with an
 /// override in `overrides` run the override instead of the generated SQL.
+///
+/// `path` is the path of the rows in the root view, and `ancestors` the queries above, to
+/// run them again for the levels of a recursive collection.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load<'a>(
     conn: &'a mut PgConnection,
     plan: &'a QueryPlan,
@@ -265,6 +331,8 @@ pub(crate) fn load<'a>(
     keys: Option<KeyArray>,
     overrides: Option<&'a Overrides>,
     values: &'a [Bound],
+    path: String,
+    ancestors: Vec<&'a QueryPlan>,
 ) -> NodeFuture<'a> {
     Box::pin(async move {
         let view = plan.shape.name;
@@ -305,11 +373,43 @@ pub(crate) fn load<'a>(
             _ => fetch(conn, plan, &sql, keys, values).await?,
         };
 
-        let mut node = Node::new(view, plan.path.clone(), rows, plan)?;
+        let mut node = Node::new(view, path, rows, plan)?;
+        let mut chain = ancestors;
+        chain.push(plan);
 
         for child in &plan.children {
+            let field = plan.shape.fields[child.field_index].name;
+            let path = match child.variant {
+                Some(variant) => format!("{}.{variant}", join(&node.path, field)),
+                None => join(&node.path, field),
+            };
+            let target = match &child.query {
+                ChildQuery::Query(target) => target,
+                ChildQuery::Repeat { up, depth } => {
+                    // The next level of a recursive collection, unless it is the last level
+                    let target = chain[chain.len() - 1 - up];
+                    let level = chain.iter().filter(|p| std::ptr::eq(**p, target)).count();
+                    if level >= *depth as usize {
+                        continue;
+                    }
+                    target
+                }
+                ChildQuery::Same => {
+                    // The next level of a recursive collection is in the rows of this query
+                    node.check_acyclic()?;
+                    let by_key = node.group(PARENT_ALIAS)?;
+                    node.children.push(ChildEntry {
+                        field_index: child.field_index,
+                        variant: None,
+                        node: None,
+                        by_key,
+                    });
+                    continue;
+                }
+            };
+
             // The keys the child rows are selected by
-            let (parent_alias, tag) = match &child.plan.link {
+            let (parent_alias, tag) = match &target.link {
                 Link::Child { .. } => (KEY_ALIAS, None),
                 Link::ToOne { ref_alias } => (ref_alias.as_str(), None),
                 Link::Variant { tag_alias, tag_value } => (KEY_ALIAS, Some((tag_alias.as_str(), *tag_value))),
@@ -337,17 +437,18 @@ pub(crate) fn load<'a>(
             }
 
             let child_node = if keys.is_empty() {
-                Node::new(child.plan.shape.name, child.plan.path.clone(), Vec::new(), &child.plan)?
+                Node::new(target.shape.name, path, Vec::new(), target)?
             } else {
-                let keys = KeyArray::new(keys).map_err(|_| Error::MixedKeys { view: child.plan.shape.name })?;
-                load(&mut *conn, &child.plan, options, Some(keys), overrides, &[]).await?
+                let keys = KeyArray::new(keys).map_err(|_| Error::MixedKeys { view: target.shape.name })?;
+                load(&mut *conn, target, options, Some(keys), overrides, &[], path, chain.clone()).await?
             };
 
-            let by_key = child_node.group(attach_alias(&child.plan.link))?;
+            let by_key = child_node.group(attach_alias(&target.link))?;
             node.children.push(ChildEntry {
                 field_index: child.field_index,
                 variant: child.variant,
-                child: ChildNode { node: child_node, by_key },
+                node: Some(child_node),
+                by_key,
             });
         }
 
@@ -364,7 +465,8 @@ fn attach_alias(link: &Link) -> &'static str {
 }
 
 impl Node {
-    /// The indices of the rows by the key in the column with the given alias, in row order.
+    /// The indices of the rows by the key in the column with the given alias: in the order
+    /// of their `$index` column if the rows have one, otherwise in row order.
     fn group(&self, alias: &str) -> Result<HashMap<Key, Vec<usize>>, Error> {
         let mut by_key: HashMap<Key, Vec<usize>> = HashMap::new();
         for (i, row) in self.rows.iter().enumerate() {
@@ -372,7 +474,69 @@ impl Node {
                 by_key.entry(key).or_default().push(i);
             }
         }
+        if self.key_columns.iter().any(|(name, _)| name == INDEX_ALIAS) {
+            for indices in by_key.values_mut() {
+                self.place(indices)?;
+            }
+        }
         Ok(by_key)
+    }
+
+    /// Fail if the parent keys of the rows form a cycle, which a tree cannot hold: decoding
+    /// would not end.
+    fn check_acyclic(&self) -> Result<(), Error> {
+        let mut parents = HashMap::new();
+        for row in &self.rows {
+            if let (Some(key), parent) = (self.key(row, KEY_ALIAS)?, self.key(row, PARENT_ALIAS)?) {
+                parents.insert(key, parent);
+            }
+        }
+        // Follow each row's parents; reaching a row of the current walk again is a cycle
+        let mut done: HashSet<&Key> = HashSet::new();
+        for start in parents.keys() {
+            let mut walk = HashSet::new();
+            let mut current = Some(start);
+            while let Some(key) = current {
+                if done.contains(key) {
+                    break;
+                }
+                if !walk.insert(key) {
+                    return Err(Error::Cycle { view: self.view, path: self.path.clone() });
+                }
+                current = parents.get(key).and_then(Option::as_ref);
+            }
+            done.extend(walk);
+        }
+        Ok(())
+    }
+
+    /// Order the rows of one list by their `$index` column.
+    fn place(&self, indices: &mut [usize]) -> Result<(), Error> {
+        let mut placed = Vec::with_capacity(indices.len());
+        for &i in indices.iter() {
+            match self.key(&self.rows[i], INDEX_ALIAS)? {
+                Some(Key::Int(index)) => placed.push((index, i)),
+                _ => {
+                    return Err(Error::ListIndex {
+                        view: self.view,
+                        path: self.path.clone(),
+                        message: "an element has a NULL index".into(),
+                    });
+                }
+            }
+        }
+        placed.sort_unstable();
+        if let Some(pair) = placed.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+            return Err(Error::ListIndex {
+                view: self.view,
+                path: self.path.clone(),
+                message: format!("two elements of a list have the index {}", pair[0].0),
+            });
+        }
+        for (slot, (_, i)) in indices.iter_mut().zip(placed) {
+            *slot = i;
+        }
+        Ok(())
     }
 }
 

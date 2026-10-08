@@ -16,14 +16,20 @@ use std::collections::HashSet;
 use std::fmt::Write;
 
 use crate::shape::{
-    EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, SumShape, SumStrategy, VariantData, ViewShape,
+    Child, EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, Recursion, SumShape, SumStrategy, Through,
+    VariantData, ViewShape,
 };
-use crate::{KEY_ALIAS, PARENT_ALIAS, REF_ALIAS_PREFIX, ROOT_QUERY, TAG_ALIAS};
+use crate::{INDEX_ALIAS, KEY_ALIAS, MAP_KEY_ALIAS, PARENT_ALIAS, REF_ALIAS_PREFIX, ROOT_QUERY, TAG_ALIAS};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlanError {
-    #[error("{view} at `{path}` refers back to {view}; recursive views are not supported yet")]
+    #[error(
+        "{view} at `{path}` refers back to {view}; add `depth = n` or `recursive = \"cte\"` to the `child` \
+         attribute of a collection on the cycle"
+    )]
     Recursive { view: &'static str, path: String },
+    #[error("{view} at `{path}`: {reason}")]
+    UnsupportedRecursion { view: &'static str, path: String, reason: &'static str },
     #[error("{view}: field `{field}` is an embedded value that contains a {kind}, which is not supported")]
     UnsupportedEmbedded { view: &'static str, field: String, kind: &'static str },
 }
@@ -43,7 +49,17 @@ pub struct QueryPlan {
     pub order_by: Vec<OrderBy>,
     /// The enums stored in the rows of this query, for strict decoding.
     pub sums: Vec<SumPlan>,
+    /// For a recursive collection loaded with one query: the query selects all levels with
+    /// `WITH RECURSIVE`, and its recursive field is a [`ChildQuery::Same`].
+    pub cte: Option<Cte>,
     pub children: Vec<ChildPlan>,
+}
+
+/// A recursive collection loaded with one `WITH RECURSIVE` query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cte {
+    /// The most levels to load, all levels if `None`.
+    pub depth: Option<u32>,
 }
 
 /// How a query is linked to its parent query.
@@ -51,8 +67,10 @@ pub struct QueryPlan {
 pub enum Link {
     /// The root query of the view.
     Root,
-    /// A to-many collection: child rows whose `fk` column is one of the parent keys.
-    Child { fk: &'static str },
+    /// A to-many collection: child rows whose `fk` column is one of the parent keys, or
+    /// with `through`, rows linked to the parent rows by a link table whose `fk` column is
+    /// one of the parent keys.
+    Child { fk: &'static str, through: Option<Through> },
     /// A to-one reference: rows whose key is one of the values of the parent's
     /// `ref_alias` column.
     ToOne { ref_alias: String },
@@ -67,7 +85,31 @@ pub struct ChildPlan {
     pub field_index: usize,
     /// The variant, for a query of a variant table.
     pub variant: Option<&'static str>,
-    pub plan: QueryPlan,
+    pub query: ChildQuery,
+}
+
+/// How the rows of a child field are loaded.
+#[derive(Debug)]
+pub enum ChildQuery {
+    /// By a query of its own.
+    Query(Box<QueryPlan>),
+    /// By running a query above again, for the next level of a recursive collection: the
+    /// query `up` levels above this field's query (0 is that query itself). At most `depth`
+    /// levels are loaded.
+    Repeat { up: usize, depth: u32 },
+    /// By the same query, which selects all levels of a recursive collection, see
+    /// [`QueryPlan::cte`].
+    Same,
+}
+
+impl ChildPlan {
+    /// The query of the field, if it has one of its own.
+    pub fn plan(&self) -> Option<&QueryPlan> {
+        match &self.query {
+            ChildQuery::Query(plan) => Some(plan),
+            _ => None,
+        }
+    }
 }
 
 /// A selected column and its alias.
@@ -77,6 +119,8 @@ pub struct SelectColumn {
     pub alias: String,
     /// Select the column as `text`, for tag columns of any type, e.g. a PostgreSQL enum.
     pub as_text: bool,
+    /// A column of the link table of a many-to-many collection, not of the view's table.
+    pub from_link: bool,
 }
 
 /// An enum stored in the rows of a query.
@@ -97,8 +141,35 @@ pub struct VariantPlan {
 
 impl SelectColumn {
     fn new(column: impl Into<String>, alias: impl Into<String>) -> SelectColumn {
-        SelectColumn { column: column.into(), alias: alias.into(), as_text: false }
+        SelectColumn { column: column.into(), alias: alias.into(), as_text: false, from_link: false }
     }
+
+    fn link(column: impl Into<String>, alias: impl Into<String>) -> SelectColumn {
+        SelectColumn { from_link: true, ..SelectColumn::new(column, alias) }
+    }
+}
+
+/// A query being planned, to find cycles.
+struct Frame {
+    /// The field or variant that leads to this query, by address; `None` for the root.
+    entered_by: Option<usize>,
+    /// The recursion of the collection that leads to this query.
+    recursion: Option<Recursion>,
+}
+
+fn address<T>(value: &'static T) -> usize {
+    std::ptr::from_ref(value) as usize
+}
+
+/// A child query to plan.
+struct Entry {
+    shape: &'static ViewShape,
+    path: String,
+    link: Link,
+    order_by: Vec<OrderBy>,
+    child: Option<&'static Child>,
+    entered_by: usize,
+    recursion: Option<Recursion>,
 }
 
 /// A query of a variant table found while adding the columns of a view.
@@ -122,25 +193,37 @@ struct Row<'a> {
 impl QueryPlan {
     /// Plan the queries for a view.
     pub fn build(shape: &'static ViewShape) -> Result<QueryPlan, PlanError> {
-        let mut stack = Vec::new();
-        Self::build_inner(shape, String::new(), Link::Root, Vec::new(), &mut stack)
+        let mut stack = vec![Frame { entered_by: None, recursion: None }];
+        Self::build_inner(shape, String::new(), Link::Root, Vec::new(), None, &mut stack)
     }
 
+    /// Plan a query; its frame is the top of `stack`.
     fn build_inner(
         shape: &'static ViewShape,
         path: String,
         link: Link,
         order_by: Vec<OrderBy>,
-        stack: &mut Vec<&'static ViewShape>,
+        child: Option<&'static Child>,
+        stack: &mut Vec<Frame>,
     ) -> Result<QueryPlan, PlanError> {
-        if stack.iter().any(|s| std::ptr::eq(*s, shape)) {
-            return Err(PlanError::Recursive { view: shape.name, path });
-        }
-        stack.push(shape);
-
         let mut columns = vec![SelectColumn::new(shape.key_column, KEY_ALIAS)];
-        if let Link::Child { fk } = &link {
-            columns.push(SelectColumn::new(*fk, PARENT_ALIAS));
+        if let Link::Child { fk, through } = &link {
+            columns.push(if through.is_some() {
+                SelectColumn::link(*fk, PARENT_ALIAS)
+            } else {
+                SelectColumn::new(*fk, PARENT_ALIAS)
+            });
+        }
+        if let Some(child) = child {
+            let column = |name: &'static str, alias| {
+                if child.through.is_some() { SelectColumn::link(name, alias) } else { SelectColumn::new(name, alias) }
+            };
+            if let Some(index) = child.index {
+                columns.push(column(index, INDEX_ALIAS));
+            }
+            if let Some(key) = child.map_key {
+                columns.push(column(key, MAP_KEY_ALIAS));
+            }
         }
 
         let mut sums = Vec::new();
@@ -155,24 +238,61 @@ impl QueryPlan {
                     let top = Some((field_index, field_path.as_str()));
                     row.add_embedded(embedded(), column_prefix, &format!("{}.", field.name), top)?;
                 }
-                FieldKind::Child { fk, order_by, shape: child } => {
-                    let plan = Self::build_inner(child(), field_path, Link::Child { fk }, order_by.to_vec(), stack)?;
-                    children.push(ChildPlan { field_index, variant: None, plan });
+                FieldKind::Child(spec) => {
+                    let link = Link::Child { fk: spec.fk, through: spec.through };
+                    let entry = Entry {
+                        shape: (spec.shape)(),
+                        path: field_path,
+                        link,
+                        order_by: spec.order_by.to_vec(),
+                        child: Some(spec),
+                        entered_by: address(field),
+                        recursion: spec.recursion,
+                    };
+                    children.push(ChildPlan { field_index, variant: None, query: Self::child_query(entry, stack)? });
                 }
                 FieldKind::ToOne { fk, shape: target, .. } => {
                     let ref_alias = format!("{REF_ALIAS_PREFIX}{}", field.name);
                     columns.push(SelectColumn::new(*fk, ref_alias.clone()));
-                    let plan = Self::build_inner(target(), field_path, Link::ToOne { ref_alias }, Vec::new(), stack)?;
-                    children.push(ChildPlan { field_index, variant: None, plan });
+                    let entry = Entry {
+                        shape: target(),
+                        path: field_path,
+                        link: Link::ToOne { ref_alias },
+                        order_by: Vec::new(),
+                        child: None,
+                        entered_by: address(field),
+                        recursion: None,
+                    };
+                    children.push(ChildPlan { field_index, variant: None, query: Self::child_query(entry, stack)? });
                 }
             }
         }
 
         for query in variants {
-            let link = Link::Variant { tag_alias: query.tag_alias, tag_value: query.tag_value };
-            let plan = Self::build_inner(query.shape, query.path, link, Vec::new(), stack)?;
-            children.push(ChildPlan { field_index: query.field_index, variant: Some(query.variant), plan });
+            let entry = Entry {
+                shape: query.shape,
+                path: query.path,
+                link: Link::Variant { tag_alias: query.tag_alias, tag_value: query.tag_value },
+                order_by: Vec::new(),
+                child: None,
+                entered_by: address(query.shape),
+                recursion: None,
+            };
+            let query_plan = Self::child_query(entry, stack)?;
+            children.push(ChildPlan {
+                field_index: query.field_index,
+                variant: Some(query.variant),
+                query: query_plan,
+            });
         }
+
+        // A recursive collection selects all levels in one query when it loads itself with it
+        let cte = match stack.last().and_then(|f| f.recursion) {
+            Some(Recursion::Cte { depth }) if children.iter().any(|c| matches!(c.query, ChildQuery::Same)) => {
+                Some(Cte { depth })
+            }
+            _ => None,
+        };
 
         // Select the key column only once when a field holds it
         let mut key_alias = KEY_ALIAS.to_string();
@@ -183,8 +303,41 @@ impl QueryPlan {
             key_alias = field.name.to_string();
         }
 
+        Ok(QueryPlan { shape, path, link, key_alias, columns, order_by, sums, cte, children })
+    }
+
+    /// Plan the query of a child field, or find that it repeats a query above.
+    fn child_query(entry: Entry, stack: &mut Vec<Frame>) -> Result<ChildQuery, PlanError> {
+        // The same field leading to the same view again is a cycle
+        if let Some(position) = stack.iter().rposition(|f| f.entered_by == Some(entry.entered_by)) {
+            let up = stack.len() - 1 - position;
+            let recursion = entry.recursion.or_else(|| stack[position + 1..].iter().rev().find_map(|f| f.recursion));
+            return match recursion {
+                None => Err(PlanError::Recursive { view: entry.shape.name, path: entry.path }),
+                Some(Recursion::Depth(depth)) => Ok(ChildQuery::Repeat { up, depth }),
+                Some(Recursion::Cte { .. }) if up == 0 && entry.recursion.is_some() => {
+                    if let Link::Child { through: Some(_), .. } = entry.link {
+                        return Err(PlanError::UnsupportedRecursion {
+                            view: entry.shape.name,
+                            path: entry.path,
+                            reason: "`recursive = \"cte\"` does not support `through`; use `depth = n`",
+                        });
+                    }
+                    Ok(ChildQuery::Same)
+                }
+                Some(Recursion::Cte { .. }) => Err(PlanError::UnsupportedRecursion {
+                    view: entry.shape.name,
+                    path: entry.path,
+                    reason: "`recursive = \"cte\"` needs a collection that contains its own view directly; \
+                             use `depth = n` for a cycle through other views",
+                }),
+            };
+        }
+
+        stack.push(Frame { entered_by: Some(entry.entered_by), recursion: entry.recursion });
+        let plan = Self::build_inner(entry.shape, entry.path, entry.link, entry.order_by, entry.child, stack);
         stack.pop();
-        Ok(QueryPlan { shape, path, link, key_alias, columns, order_by, sums, children })
+        Ok(ChildQuery::Query(Box::new(plan?)))
     }
 
     /// Name of the query in its plan: its path, or `$root` for the root query. Overrides
@@ -197,13 +350,15 @@ impl QueryPlan {
     pub fn walk<'a>(&'a self, visit: &mut impl FnMut(&'a QueryPlan)) {
         visit(self);
         for child in &self.children {
-            child.plan.walk(visit);
+            if let Some(plan) = child.plan() {
+                plan.walk(visit);
+            }
         }
     }
 
     /// Number of queries in the plan, including this one.
     pub fn query_count(&self) -> usize {
-        1 + self.children.iter().map(|c| c.plan.query_count()).sum::<usize>()
+        1 + self.children.iter().filter_map(ChildPlan::plan).map(QueryPlan::query_count).sum::<usize>()
     }
 
     /// A readable description of the plan, with the SQL of every query.
@@ -216,16 +371,35 @@ impl QueryPlan {
     fn explain_inner(&self, out: &mut String, depth: usize) {
         let indent = "  ".repeat(depth);
         let name = self.query_name();
-        let link = match &self.link {
-            Link::Root => String::new(),
-            Link::Child { fk } => format!(" (to-many by {fk})"),
-            Link::ToOne { ref_alias } => format!(" (to-one by {ref_alias})"),
-            Link::Variant { tag_alias, tag_value } => format!(" (variant where {tag_alias} = '{tag_value}')"),
-        };
+        let link = self.link.describe();
         let _ = writeln!(out, "{indent}{name}: {}{link}", self.shape.name);
         let _ = writeln!(out, "{indent}  {}", crate::sql::select(self, &crate::sql::RootOptions::default()));
         for child in &self.children {
-            child.plan.explain_inner(out, depth + 1);
+            match &child.query {
+                ChildQuery::Query(plan) => plan.explain_inner(out, depth + 1),
+                ChildQuery::Repeat { up, depth: levels } => {
+                    let field = self.shape.fields[child.field_index].name;
+                    let _ =
+                        writeln!(out, "{indent}  {field}: repeats the query {up} level(s) up, at most {levels} levels");
+                }
+                ChildQuery::Same => {
+                    let field = self.shape.fields[child.field_index].name;
+                    let _ = writeln!(out, "{indent}  {field}: all levels in this query");
+                }
+            }
+        }
+    }
+}
+
+impl Link {
+    /// How the query is linked, for `explain`, e.g. ` (to-many by parent_id)`.
+    pub fn describe(&self) -> String {
+        match self {
+            Link::Root => String::new(),
+            Link::Child { fk, through: None } => format!(" (to-many by {fk})"),
+            Link::Child { fk, through: Some(through) } => format!(" (to-many through {}.{fk})", through.table),
+            Link::ToOne { ref_alias } => format!(" (to-one by {ref_alias})"),
+            Link::Variant { tag_alias, tag_value } => format!(" (variant where {tag_alias} = '{tag_value}')"),
         }
     }
 }
@@ -263,6 +437,7 @@ impl Row<'_> {
             column: format!("{column_prefix}{}", sum.tag_column),
             alias: tag_alias.clone(),
             as_text: true,
+            from_link: false,
         });
 
         if sum.strategy == SumStrategy::TablePerVariant {
@@ -389,7 +564,7 @@ mod tests {
         Field { name: "assignee", kind: FieldKind::ToOne { fk: "assignee_id", optional: true, shape: || &PERSON } },
         Field {
             name: "children",
-            kind: FieldKind::Child { fk: "parent_id", order_by: &CHILD_ORDER, shape: || &SUBTASK },
+            kind: FieldKind::Child(Child { order_by: &CHILD_ORDER, ..Child::new("parent_id", || &SUBTASK) }),
         },
     ];
     static TASK: ViewShape = ViewShape { name: "Task", table: "task", key_column: "id", fields: &TASK_FIELDS };
@@ -398,7 +573,7 @@ mod tests {
     static SUBTASK: ViewShape = ViewShape { name: "Subtask", table: "task", key_column: "id", fields: &SUBTASK_FIELDS };
 
     static LOOP_FIELDS: [Field; 1] =
-        [Field { name: "children", kind: FieldKind::Child { fk: "parent_id", order_by: &[], shape: || &LOOP } }];
+        [Field { name: "children", kind: FieldKind::Child(Child::new("parent_id", || &LOOP)) }];
     static LOOP: ViewShape = ViewShape { name: "Loop", table: "task", key_column: "id", fields: &LOOP_FIELDS };
 
     fn aliases(plan: &QueryPlan) -> Vec<&str> {
@@ -419,15 +594,17 @@ mod tests {
         let plan = QueryPlan::build(&TASK).unwrap();
         let assignee = &plan.children[0];
         assert_eq!(assignee.field_index, 2);
-        assert_eq!(assignee.plan.path, "assignee");
-        assert_eq!(assignee.plan.link, Link::ToOne { ref_alias: "$ref.assignee".into() });
-        assert_eq!(aliases(&assignee.plan), ["$key", "name"]);
+        let assignee = assignee.plan().unwrap();
+        assert_eq!(assignee.path, "assignee");
+        assert_eq!(assignee.link, Link::ToOne { ref_alias: "$ref.assignee".into() });
+        assert_eq!(aliases(assignee), ["$key", "name"]);
 
         let children = &plan.children[1];
         assert_eq!(children.field_index, 3);
-        assert_eq!(children.plan.link, Link::Child { fk: "parent_id" });
-        assert_eq!(aliases(&children.plan), ["$key", "$parent", "name"]);
-        assert_eq!(children.plan.order_by, [OrderBy::desc("name")]);
+        let children = children.plan().unwrap();
+        assert_eq!(children.link, Link::Child { fk: "parent_id", through: None });
+        assert_eq!(aliases(children), ["$key", "$parent", "name"]);
+        assert_eq!(children.order_by, [OrderBy::desc("name")]);
     }
 
     static KEYED_FIELDS: [Field; 2] = [
@@ -449,7 +626,7 @@ mod tests {
     #[test]
     fn recursion_is_rejected() {
         let err = QueryPlan::build(&LOOP).unwrap_err();
-        assert_eq!(err, PlanError::Recursive { view: "Loop", path: "children".into() });
+        assert_eq!(err, PlanError::Recursive { view: "Loop", path: "children.children".into() });
     }
 
     #[test]
@@ -597,11 +774,12 @@ mod tests {
         assert!(plan.sums.is_empty());
         let [card] = plan.children.as_slice() else { panic!() };
         assert_eq!((card.field_index, card.variant), (0, Some("Card")));
-        assert_eq!(card.plan.query_name(), "payment.Card");
-        assert_eq!(card.plan.link, Link::Variant { tag_alias: "payment.$tag".into(), tag_value: "card" });
-        assert_eq!(aliases(&card.plan), ["$key", "last4"]);
+        let card = card.plan().unwrap();
+        assert_eq!(card.query_name(), "payment.Card");
+        assert_eq!(card.link, Link::Variant { tag_alias: "payment.$tag".into(), tag_value: "card" });
+        assert_eq!(aliases(card), ["$key", "last4"]);
         assert_eq!(
-            crate::sql::select(&card.plan, &crate::sql::RootOptions::default()),
+            crate::sql::select(card, &crate::sql::RootOptions::default()),
             "SELECT t0.\"payment_id\" AS \"$key\", t0.\"last4\" AS \"last4\" FROM \"card_payment\" AS t0 \
              WHERE t0.\"payment_id\" = ANY($1) ORDER BY t0.\"payment_id\""
         );
@@ -628,5 +806,120 @@ mod tests {
                 kind: "enum stored in a table per variant"
             }
         );
+    }
+    // Lists placed by an index on a link table, and maps keyed by a column
+    static DEPENDANT_FIELDS: [Field; 1] = [Field { name: "name", kind: FieldKind::Column { column: "name" } }];
+    static DEPENDANT: ViewShape =
+        ViewShape { name: "Dependant", table: "task", key_column: "id", fields: &DEPENDANT_FIELDS };
+    static PROJECT_FIELDS: [Field; 2] = [
+        Field {
+            name: "dependants",
+            kind: FieldKind::Child(Child {
+                through: Some(Through { table: "task_dependant", target: "dependant_id" }),
+                index: Some("seq"),
+                ..Child::new("task_id", || &DEPENDANT)
+            }),
+        },
+        Field {
+            name: "by_name",
+            kind: FieldKind::Child(Child { map_key: Some("name"), ..Child::new("project_id", || &DEPENDANT) }),
+        },
+    ];
+    static PROJECT: ViewShape = ViewShape { name: "Project", table: "task", key_column: "id", fields: &PROJECT_FIELDS };
+
+    #[test]
+    fn link_tables_indices_and_map_keys() {
+        let plan = QueryPlan::build(&PROJECT).unwrap();
+        let dependants = plan.children[0].plan().unwrap();
+        assert_eq!(aliases(dependants), ["$key", "$parent", "$index", "name"]);
+        let from_link: Vec<bool> = dependants.columns.iter().map(|c| c.from_link).collect();
+        assert_eq!(from_link, [false, true, true, false]);
+        assert_eq!(
+            crate::sql::select(dependants, &crate::sql::RootOptions::default()),
+            "SELECT t0.\"id\" AS \"$key\", j.\"task_id\" AS \"$parent\", j.\"seq\" AS \"$index\", t0.\"name\" AS \"name\" \
+             FROM \"task\" AS t0 JOIN \"task_dependant\" AS j ON j.\"dependant_id\" = t0.\"id\" \
+             WHERE j.\"task_id\" = ANY($1) ORDER BY t0.\"id\""
+        );
+        assert!(plan.explain().contains("dependants: Dependant (to-many through task_dependant.task_id)"));
+
+        let by_name = plan.children[1].plan().unwrap();
+        assert_eq!(aliases(by_name), ["$key", "$parent", "$map_key", "name"]);
+        assert_eq!(by_name.columns[2].column, "name");
+    }
+
+    // struct Tree { children: Vec<Tree> } loaded level by level, and with one query
+    static TREE_FIELDS: [Field; 2] = [
+        Field { name: "name", kind: FieldKind::Column { column: "name" } },
+        Field {
+            name: "children",
+            kind: FieldKind::Child(Child { recursion: Some(Recursion::Depth(3)), ..Child::new("parent_id", || &TREE) }),
+        },
+    ];
+    static TREE: ViewShape = ViewShape { name: "Tree", table: "task", key_column: "id", fields: &TREE_FIELDS };
+    static CTE_TREE_FIELDS: [Field; 1] = [Field {
+        name: "children",
+        kind: FieldKind::Child(Child {
+            recursion: Some(Recursion::Cte { depth: Some(10) }),
+            ..Child::new("parent_id", || &CTE_TREE)
+        }),
+    }];
+    static CTE_TREE: ViewShape =
+        ViewShape { name: "CteTree", table: "task", key_column: "id", fields: &CTE_TREE_FIELDS };
+
+    #[test]
+    fn recursive_collections_by_level() {
+        let plan = QueryPlan::build(&TREE).unwrap();
+        assert_eq!(plan.query_count(), 2);
+        let level = plan.children[0].plan().unwrap();
+        assert_eq!(level.query_name(), "children");
+        assert!(level.cte.is_none());
+        assert!(matches!(level.children[0].query, ChildQuery::Repeat { up: 0, depth: 3 }));
+        assert!(plan.explain().contains("children: repeats the query 0 level(s) up, at most 3 levels"));
+    }
+
+    #[test]
+    fn recursive_collections_in_one_query() {
+        let plan = QueryPlan::build(&CTE_TREE).unwrap();
+        let level = plan.children[0].plan().unwrap();
+        assert_eq!(level.cte, Some(Cte { depth: Some(10) }));
+        assert!(matches!(level.children[0].query, ChildQuery::Same));
+        assert_eq!(
+            crate::sql::select(level, &crate::sql::RootOptions::default()),
+            "WITH RECURSIVE \"$tree\" AS ( SELECT t0.\"id\" AS \"k\", ARRAY[t0.\"id\"] AS \"path\", 1 AS \"depth\" \
+             FROM \"task\" AS t0 WHERE t0.\"parent_id\" = ANY($1) UNION ALL SELECT t0.\"id\", r.\"path\" || t0.\"id\", \
+             r.\"depth\" + 1 FROM \"task\" AS t0 JOIN \"$tree\" AS r ON t0.\"parent_id\" = r.\"k\" \
+             WHERE t0.\"id\" <> ALL(r.\"path\") AND r.\"depth\" < 10 ) \
+             SELECT t0.\"id\" AS \"$key\", t0.\"parent_id\" AS \"$parent\" FROM (SELECT DISTINCT \"k\" FROM \"$tree\") AS r \
+             JOIN \"task\" AS t0 ON t0.\"id\" = r.\"k\" ORDER BY t0.\"id\""
+        );
+    }
+
+    // A -> bs -> B -> as (depth 4) -> A: a cycle through two views
+    static A_FIELDS: [Field; 1] = [Field { name: "bs", kind: FieldKind::Child(Child::new("a_id", || &B)) }];
+    static A: ViewShape = ViewShape { name: "A", table: "a", key_column: "id", fields: &A_FIELDS };
+    static B_FIELDS: [Field; 1] = [Field {
+        name: "as",
+        kind: FieldKind::Child(Child { recursion: Some(Recursion::Depth(4)), ..Child::new("b_id", || &A) }),
+    }];
+    static B: ViewShape = ViewShape { name: "B", table: "b", key_column: "id", fields: &B_FIELDS };
+    static C_FIELDS: [Field; 1] = [Field {
+        name: "ds",
+        kind: FieldKind::Child(Child { recursion: Some(Recursion::Cte { depth: None }), ..Child::new("c_id", || &D) }),
+    }];
+    static C: ViewShape = ViewShape { name: "C", table: "c", key_column: "id", fields: &C_FIELDS };
+    static D_FIELDS: [Field; 1] = [Field { name: "cs", kind: FieldKind::Child(Child::new("d_id", || &C)) }];
+    static D: ViewShape = ViewShape { name: "D", table: "d", key_column: "id", fields: &D_FIELDS };
+
+    #[test]
+    fn cycles_through_several_views() {
+        let plan = QueryPlan::build(&A).unwrap();
+        let b = plan.children[0].plan().unwrap();
+        let a = b.children[0].plan().unwrap();
+        assert_eq!(a.query_name(), "bs.as");
+        // bs is entered again: repeat the query of B, one level up from A
+        assert!(matches!(a.children[0].query, ChildQuery::Repeat { up: 1, depth: 4 }));
+
+        let err = QueryPlan::build(&C).unwrap_err();
+        assert!(matches!(err, PlanError::UnsupportedRecursion { view: "D", .. }), "{err}");
     }
 }

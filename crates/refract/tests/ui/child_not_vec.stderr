@@ -1,4 +1,4 @@
-error: a `child` field needs to be a `Vec` of a view
+error: a `child` field needs to be a `Vec` of a view, or a `BTreeMap` or `HashMap` of views
   --> tests/ui/child_not_vec.rs:11:11
    |
 11 |     note: Option<Note>,

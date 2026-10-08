@@ -88,10 +88,55 @@ pub enum FieldKind {
     /// A struct or an enum stored in the view's row, optionally with a common column prefix.
     Embedded { column_prefix: &'static str, shape: fn() -> &'static EmbeddedShape },
     /// A to-many collection loaded by a child query: rows of the child table whose `fk`
-    /// column references the key of this view.
-    Child { fk: &'static str, order_by: &'static [OrderBy], shape: fn() -> &'static ViewShape },
+    /// column references the key of this view, or with [`Child::through`], rows linked to
+    /// this view by a link table.
+    Child(Child),
     /// A to-one reference: the `fk` column of this view references the key of the target view.
     ToOne { fk: &'static str, optional: bool, shape: fn() -> &'static ViewShape },
+}
+
+/// A to-many collection, see [`FieldKind::Child`].
+#[derive(Debug)]
+pub struct Child {
+    /// The column referencing the key of the containing view: of the child table, or of the
+    /// link table with `through`.
+    pub fk: &'static str,
+    pub order_by: &'static [OrderBy],
+    pub shape: fn() -> &'static ViewShape,
+    /// A many-to-many collection through a link table.
+    pub through: Option<Through>,
+    /// A column whose integer value places each element in the list, whatever the order of
+    /// the rows. Of the link table with `through`.
+    pub index: Option<&'static str>,
+    /// A column whose value is the key of each element in a map. Of the link table with
+    /// `through`.
+    pub map_key: Option<&'static str>,
+    /// The collection contains the view it is a field of, directly or indirectly.
+    pub recursion: Option<Recursion>,
+}
+
+impl Child {
+    /// A collection whose `fk` column references the key of the containing view.
+    pub const fn new(fk: &'static str, shape: fn() -> &'static ViewShape) -> Child {
+        Child { fk, order_by: &[], shape, through: None, index: None, map_key: None, recursion: None }
+    }
+}
+
+/// The link table of a many-to-many collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Through {
+    pub table: &'static str,
+    /// The column of the link table referencing the key of the child view.
+    pub target: &'static str,
+}
+
+/// How a recursive collection is loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recursion {
+    /// One query per level, at most `depth` levels.
+    Depth(u32),
+    /// One `WITH RECURSIVE` query for all levels, at most `depth` levels if given.
+    Cte { depth: Option<u32> },
 }
 
 /// A column to order by.
