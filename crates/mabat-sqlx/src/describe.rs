@@ -34,75 +34,122 @@ pub(crate) struct ColumnType {
     pub(crate) accepts: Vec<String>,
 }
 
-/// The names of the built-in PostgreSQL types as SQLx names them, and common extension
-/// types. Each has an array type, named with `[]`.
-const TYPE_NAMES: &[&str] = &[
-    "BOOL",
-    "BYTEA",
-    "CHAR",
-    "NAME",
-    "INT8",
-    "INT2",
-    "INT4",
-    "TEXT",
-    "OID",
-    "JSON",
-    "POINT",
-    "LSEG",
-    "PATH",
-    "BOX",
-    "POLYGON",
-    "LINE",
-    "CIDR",
-    "FLOAT4",
-    "FLOAT8",
-    "UNKNOWN",
-    "CIRCLE",
-    "MACADDR8",
-    "MACADDR",
-    "INET",
-    "BPCHAR",
-    "VARCHAR",
-    "DATE",
-    "TIME",
-    "TIMESTAMP",
-    "TIMESTAMPTZ",
-    "INTERVAL",
-    "TIMETZ",
-    "BIT",
-    "VARBIT",
-    "NUMERIC",
-    "RECORD",
-    "UUID",
-    "JSONB",
-    "INT4RANGE",
-    "NUMRANGE",
-    "TSRANGE",
-    "TSTZRANGE",
-    "DATERANGE",
-    "INT8RANGE",
-    "JSONPATH",
-    "MONEY",
-    "citext",
-    "hstore",
-    "ltree",
-    "lquery",
+/// SQLx's built-in PostgreSQL types (the variants of its `PgType`), resolved by name.
+const BUILT_IN_TYPES: &[&str] = &[
+    "Bool",
+    "Bytea",
+    "Char",
+    "Name",
+    "Int8",
+    "Int2",
+    "Int4",
+    "Text",
+    "Oid",
+    "Json",
+    "JsonArray",
+    "Point",
+    "Lseg",
+    "Path",
+    "Box",
+    "Polygon",
+    "Line",
+    "LineArray",
+    "Cidr",
+    "CidrArray",
+    "Float4",
+    "Float8",
+    "Unknown",
+    "Circle",
+    "CircleArray",
+    "Macaddr8",
+    "Macaddr8Array",
+    "Macaddr",
+    "Inet",
+    "BoolArray",
+    "ByteaArray",
+    "CharArray",
+    "NameArray",
+    "Int2Array",
+    "Int4Array",
+    "TextArray",
+    "BpcharArray",
+    "VarcharArray",
+    "Int8Array",
+    "PointArray",
+    "LsegArray",
+    "PathArray",
+    "BoxArray",
+    "Float4Array",
+    "Float8Array",
+    "PolygonArray",
+    "OidArray",
+    "MacaddrArray",
+    "InetArray",
+    "Bpchar",
+    "Varchar",
+    "Date",
+    "Time",
+    "Timestamp",
+    "TimestampArray",
+    "DateArray",
+    "TimeArray",
+    "Timestamptz",
+    "TimestamptzArray",
+    "Interval",
+    "IntervalArray",
+    "NumericArray",
+    "Timetz",
+    "TimetzArray",
+    "Bit",
+    "BitArray",
+    "Varbit",
+    "VarbitArray",
+    "Numeric",
+    "Record",
+    "RecordArray",
+    "Uuid",
+    "UuidArray",
+    "Jsonb",
+    "JsonbArray",
+    "Int4Range",
+    "Int4RangeArray",
+    "NumRange",
+    "NumRangeArray",
+    "TsRange",
+    "TsRangeArray",
+    "TstzRange",
+    "TstzRangeArray",
+    "DateRange",
+    "DateRangeArray",
+    "Int8Range",
+    "Int8RangeArray",
+    "Jsonpath",
+    "JsonpathArray",
+    "Money",
+    "MoneyArray",
 ];
 
-/// The names of the PostgreSQL types `T` can be decoded from. Types are compared by name,
-/// as SQLx compares a type it only knows by name; a custom type, such as an enum declared
-/// with `#[sqlx(type_name = "...")]`, adds its own name.
+/// The built-in types, resolved as SQLx resolves the types of a prepared statement. A type
+/// declared only by name or OID cannot be used: SQLx compares a declared type as equal to
+/// any type of the other kind of declaration, and its array checks need a resolved type.
+fn built_in_types() -> &'static [PgTypeInfo] {
+    static TYPES: std::sync::OnceLock<Vec<PgTypeInfo>> = std::sync::OnceLock::new();
+    TYPES.get_or_init(|| {
+        BUILT_IN_TYPES
+            .iter()
+            .filter_map(|variant| serde_json::from_value::<PgTypeInfo>(serde_json::Value::from(*variant)).ok())
+            .collect()
+    })
+}
+
+/// The names of the PostgreSQL types `T` can be decoded from, as SQLx names them. A custom
+/// type, such as an enum declared with `#[sqlx(type_name = "...")]`, adds its own name.
 fn accepted_types<T: Type<Postgres>>() -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for name in TYPE_NAMES {
-        if T::compatible(&PgTypeInfo::with_name(name)) {
-            names.push(name.to_string());
-        }
-    }
-    for name in TYPE_NAMES {
-        if T::compatible(&PgTypeInfo::array_of(name)) {
-            names.push(format!("{name}[]"));
-        }
+    let mut names: Vec<String> =
+        built_in_types().iter().filter(|ty| T::compatible(ty)).map(|ty| ty.name().to_string()).collect();
+    // Text types also accept the citext extension, which SQLx knows only by name
+    if names.iter().any(|n| n == "TEXT") && T::compatible(&PgTypeInfo::with_name("citext")) {
+        names.push("citext".to_string());
     }
     let own = T::type_info();
     if own.oid().is_none() && !names.iter().any(|n| n.eq_ignore_ascii_case(own.name())) {
@@ -189,9 +236,12 @@ mod tests {
 
     #[test]
     fn accepted_types_by_name() {
-        assert_eq!(accepted_types::<String>(), ["NAME", "TEXT", "UNKNOWN", "BPCHAR", "VARCHAR", "citext"]);
+        assert_eq!(built_in_types().len(), BUILT_IN_TYPES.len(), "every built-in type resolves");
+        assert_eq!(accepted_types::<String>(), ["NAME", "TEXT", "UNKNOWN", "CHAR", "VARCHAR", "citext"]);
+        assert_eq!(accepted_types::<Vec<String>>(), ["NAME[]", "TEXT[]", "CHAR[]", "VARCHAR[]"]);
         assert_eq!(accepted_types::<i64>(), ["INT8"]);
         assert_eq!(accepted_types::<Option<i32>>(), ["INT4"]);
+        assert_eq!(accepted_types::<bool>(), ["BOOL"]);
         assert_eq!(accepted_types::<uuid::Uuid>(), ["UUID"]);
         assert_eq!(accepted_types::<sqlx::types::Json<serde_json::Value>>(), ["JSON", "JSONB"]);
         assert_eq!(accepted_types::<Vec<i64>>(), ["INT8[]"]);

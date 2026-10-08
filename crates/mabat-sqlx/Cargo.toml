@@ -17,6 +17,7 @@ arc-swap.workspace = true
 chrono.workspace = true
 mabat-core.workspace = true
 sqlx.workspace = true
+sqlx-postgres.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

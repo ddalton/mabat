@@ -26,5 +26,6 @@ tokio = { workspace = true, features = ["rt"] }
 [dev-dependencies]
 chrono.workspace = true
 mabat.workspace = true
+mabat-e2e.workspace = true
 tokio.workspace = true
 uuid = { workspace = true, features = ["v4"] }

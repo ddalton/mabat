@@ -202,3 +202,75 @@ async fn schema_checks_leave_nothing_behind() {
     assert_eq!(out.code, 2);
     assert!(out.stderr.starts_with("error: the schema file failed:"), "{}", out.stderr);
 }
+
+/// `mabat check --schema` with the Pagila and Chinook sample databases: the schema files a
+/// DBA would use, with overrides that derive enums from legacy columns and call a stored
+/// function.
+#[test]
+fn checks_sample_databases_from_schema_files() {
+    use mabat_e2e::{Dataset, chinook, pagila};
+
+    let Some(url) = database_url() else { return };
+    let dir = std::env::temp_dir().join(format!("mabat-cli-samples-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(dir.join("overrides")).unwrap();
+    let path = |name: &str| dir.join(name).display().to_string();
+
+    let manifest = Mabat::builder()
+        .register::<pagila::FilmView>()
+        .register::<pagila::CustomerView>()
+        .register::<pagila::RentalStatusView>()
+        .register::<pagila::FilmStock>()
+        .register::<pagila::Store>()
+        .manifest()
+        .unwrap();
+    manifest.write(dir.join("pagila.json")).unwrap();
+    std::fs::write(dir.join("pagila.sql"), Dataset::Pagila.sql()).unwrap();
+    std::fs::write(dir.join("overrides/RentalStatusView.sql"), pagila::RENTAL_STATUS_OVERRIDE).unwrap();
+    std::fs::write(dir.join("overrides/FilmStock.sql"), pagila::FILM_STOCK_OVERRIDE).unwrap();
+
+    let out = mabat(&[
+        "check",
+        "--manifest",
+        &path("pagila.json"),
+        "--overrides",
+        &path("overrides"),
+        "--schema",
+        &path("pagila.sql"),
+        "--database-url",
+        &url,
+    ]);
+    assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
+    // The generated queries of the two views without columns of their own are replaced
+    assert!(out.stdout.ends_with("0 error(s), 2 warning(s)\n"), "{}", out.stdout);
+
+    // Without the overrides, those views cannot run
+    let out =
+        mabat(&["check", "--manifest", &path("pagila.json"), "--schema", &path("pagila.sql"), "--database-url", &url]);
+    assert_eq!(out.code, 1, "{}", out.stdout);
+    assert!(
+        out.stdout.contains("error[M0103]: generated query for RentalStatusView.$root does not prepare"),
+        "{}",
+        out.stdout
+    );
+
+    let manifest = Mabat::builder()
+        .register::<chinook::InvoiceView>()
+        .register::<chinook::EmployeeTree>()
+        .register::<chinook::Employee>()
+        .manifest()
+        .unwrap();
+    manifest.write(dir.join("chinook.json")).unwrap();
+    std::fs::write(dir.join("chinook.sql"), Dataset::Chinook.sql()).unwrap();
+    let out = mabat(&[
+        "check",
+        "--manifest",
+        &path("chinook.json"),
+        "--schema",
+        &path("chinook.sql"),
+        "--database-url",
+        &url,
+    ]);
+    assert_eq!((out.code, out.stdout.as_str()), (0, "0 error(s), 0 warning(s)\n"), "{}", out.stderr);
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -49,3 +49,4 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md) and th
   - The `mabat` command line tool (crate `mabat-cli`) runs `check` (against a database or a schema file,
     in a transaction that is rolled back), `explain` and `scaffold`, with no Rust toolchain.
 - **Platform.** PostgreSQL with SQLx 0.9 and Rust 1.94 or later.
+- **End-to-end tests** against the Pagila and Chinook sample databases.
