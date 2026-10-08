@@ -19,8 +19,12 @@ pub enum ColumnValue {
 
 /// The values of the columns, with placeholders numbered from 1 on PostgreSQL.
 fn values(dialect: Dialect, columns: &[(String, ColumnValue)]) -> String {
+    value_list(dialect, columns).join(", ")
+}
+
+fn value_list(dialect: Dialect, columns: &[(String, ColumnValue)]) -> Vec<String> {
     let mut n = 0;
-    let values: Vec<String> = columns
+    columns
         .iter()
         .map(|(_, value)| match value {
             ColumnValue::Bound => {
@@ -30,8 +34,7 @@ fn values(dialect: Dialect, columns: &[(String, ColumnValue)]) -> String {
             ColumnValue::Null => "NULL".to_string(),
             ColumnValue::Literal(text) => format!("'{}'", text.replace('\'', "''")),
         })
-        .collect();
-    values.join(", ")
+        .collect()
 }
 
 /// Insert a row, or update the row with the same key: `ON CONFLICT … DO UPDATE` on
@@ -61,6 +64,51 @@ pub fn upsert(dialect: Dialect, table: &str, key: &str, columns: &[(String, Colu
         }
     }
     sql
+}
+
+/// Update the columns of the row with the key, bound after the columns, and with a
+/// `version` column, only if it has the version bound after the key, incrementing it.
+pub fn update(
+    dialect: Dialect,
+    table: &str,
+    key: &str,
+    columns: &[(String, ColumnValue)],
+    version: Option<&str>,
+) -> String {
+    let q = |ident: &str| dialect.quote(ident);
+    let values = value_list(dialect, columns);
+    let mut set: Vec<String> =
+        columns.iter().zip(&values).map(|((name, _), value)| format!("{} = {value}", q(name))).collect();
+    if let Some(version) = version {
+        set.push(format!("{0} = {0} + 1", q(version)));
+    }
+    let bound = columns.iter().filter(|(_, value)| *value == ColumnValue::Bound).count();
+    let mut sql =
+        format!("UPDATE {} SET {} WHERE {} = {}", q(table), set.join(", "), q(key), dialect.placeholder(bound + 1));
+    if let Some(version) = version {
+        let _ = write!(sql, " AND {} = {}", q(version), dialect.placeholder(bound + 2));
+    }
+    sql
+}
+
+/// Insert a row unless a row has its key, so that the number of rows affected says which
+/// happened. On MySQL, which counts an existing row as affected by `ON DUPLICATE KEY`, the
+/// key is bound once more after the columns.
+pub fn insert_if_absent(dialect: Dialect, table: &str, key: &str, columns: &[(String, ColumnValue)]) -> String {
+    let q = |ident: &str| dialect.quote(ident);
+    let names: Vec<String> = columns.iter().map(|(name, _)| q(name)).collect();
+    match dialect {
+        Dialect::Postgres | Dialect::Sqlite => {
+            format!("{} ON CONFLICT ({}) DO NOTHING", insert(dialect, table, columns), q(key))
+        }
+        Dialect::MySql => format!(
+            "INSERT INTO {table} ({}) SELECT {} FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM {table} WHERE {} = ?)",
+            names.join(", "),
+            values(dialect, columns),
+            q(key),
+            table = q(table),
+        ),
+    }
 }
 
 /// Insert a row.
@@ -117,6 +165,38 @@ mod tests {
             "INSERT INTO \"tag\" (\"id\") VALUES ($1) ON CONFLICT (\"id\") DO NOTHING"
         );
         assert!(upsert(Dialect::MySql, "tag", "id", &key).ends_with("ON DUPLICATE KEY UPDATE `id` = `id`"));
+    }
+
+    #[test]
+    fn updates_and_inserts_if_absent() {
+        let changed = vec![("name".to_string(), ColumnValue::Bound), ("reason".to_string(), ColumnValue::Null)];
+        let literal = vec![("state".to_string(), ColumnValue::Literal("a, b".into()))];
+        assert_eq!(
+            update(Dialect::Sqlite, "t", "id", &literal, None),
+            "UPDATE \"t\" SET \"state\" = 'a, b' WHERE \"id\" = ?"
+        );
+        assert_eq!(
+            update(Dialect::Postgres, "task", "id", &changed, Some("version")),
+            "UPDATE \"task\" SET \"name\" = $1, \"reason\" = NULL, \"version\" = \"version\" + 1 \
+             WHERE \"id\" = $2 AND \"version\" = $3"
+        );
+        assert_eq!(
+            update(Dialect::Sqlite, "task", "id", &changed, None),
+            "UPDATE \"task\" SET \"name\" = ?, \"reason\" = NULL WHERE \"id\" = ?"
+        );
+        assert_eq!(
+            update(Dialect::MySql, "task", "id", &[], Some("version")),
+            "UPDATE `task` SET `version` = `version` + 1 WHERE `id` = ? AND `version` = ?"
+        );
+        let row = vec![("id".to_string(), ColumnValue::Bound), ("name".to_string(), ColumnValue::Bound)];
+        assert_eq!(
+            insert_if_absent(Dialect::Postgres, "task", "id", &row),
+            "INSERT INTO \"task\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO NOTHING"
+        );
+        assert_eq!(
+            insert_if_absent(Dialect::MySql, "task", "id", &row),
+            "INSERT INTO `task` (`id`, `name`) SELECT ?, ? FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM `task` WHERE `id` = ?)"
+        );
     }
 
     #[test]

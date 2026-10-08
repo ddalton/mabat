@@ -118,6 +118,8 @@ struct ViewField {
     span: Span,
     ty: Type,
     spec: FieldSpec,
+    /// `#[view(version)]`: the row's version, for optimistic locking.
+    version: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -360,6 +362,7 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
     let mut spec: Option<FieldSpec> = None;
     let mut column: Option<String> = None;
     let mut json = false;
+    let mut version = false;
 
     let set = |spec: &mut Option<FieldSpec>, value: FieldSpec, span: Span| -> syn::Result<()> {
         if spec.is_some() {
@@ -376,6 +379,8 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
                 column = Some(meta.value()?.parse::<LitStr>()?.value());
             } else if meta.path.is_ident("json") {
                 json = true;
+            } else if meta.path.is_ident("version") {
+                version = true;
             } else if meta.path.is_ident("child") {
                 let child = parse_child(&meta, &ty)?;
                 set(&mut spec, FieldSpec::Child(Box::new(child)), span)?;
@@ -410,9 +415,9 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
                 }
                 set(&mut spec, FieldSpec::Embed { prefix, ty: ty.clone() }, span)?;
             } else {
-                return Err(
-                    meta.error("unknown view attribute, expected `column`, `json`, `child`, `to_one` or `embed`")
-                );
+                return Err(meta.error(
+                    "unknown view attribute, expected `column`, `json`, `version`, `child`, `to_one` or `embed`",
+                ));
             }
             Ok(())
         })?;
@@ -438,7 +443,10 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
         }
     };
 
-    Ok(ViewField { vis: field.vis.clone(), member, name, span, ty, spec })
+    if version && !matches!(spec, FieldSpec::Column { .. }) {
+        return Err(syn::Error::new(span, "`version` applies to an integer column field"));
+    }
+    Ok(ViewField { vis: field.vis.clone(), member, name, span, ty, spec, version })
 }
 
 fn parse_child(meta: &syn::meta::ParseNestedMeta<'_>, ty: &Type) -> syn::Result<ChildSpec> {
@@ -964,28 +972,182 @@ fn write_value(field: &ViewField, index: usize, value: TokenStream2, scope: Scop
                 }}
             }
         }
-        FieldSpec::ToOne { fk, optional, target, form } => {
+        FieldSpec::ToOne { fk, form, .. } => {
             if *form == Form::Graph {
                 return graph;
             }
-            let key = |value: TokenStream2| {
-                let value = borrow(target, value);
-                quote! { __mabat::__private::target_key::<#target, __Backend>(#value)? }
-            };
-            let referenced = if *optional {
-                let key = key(quote! { target });
-                quote! {
-                    match #value {
-                        ::core::option::Option::Some(target) => ::core::option::Option::Some(#key),
-                        ::core::option::Option::None => ::core::option::Option::None,
-                    }
-                }
-            } else {
-                let key = key(value);
-                quote! { ::core::option::Option::Some(#key) }
-            };
+            let referenced = reference_key(field, value);
             quote! { row.reference(#fk, #referenced)?; }
         }
+    }
+}
+
+/// The expression of the key referenced by a to-one field whose value is the reference
+/// `value`: an `Option<Key>`, `None` for a reference that is `None`.
+fn reference_key(field: &ViewField, value: TokenStream2) -> TokenStream2 {
+    let FieldSpec::ToOne { optional, target, .. } = &field.spec else { unreachable!("a to-one field") };
+    let key = |value: TokenStream2| {
+        quote! { __mabat::__private::target_key::<#target, __Backend>(::core::borrow::Borrow::<#target>::borrow(#value))? }
+    };
+    if *optional {
+        let key = key(quote! { target });
+        quote! {
+            match #value {
+                ::core::option::Option::Some(target) => ::core::option::Option::Some(#key),
+                ::core::option::Option::None => ::core::option::Option::None,
+            }
+        }
+    } else {
+        let key = key(value);
+        quote! { ::core::option::Option::Some(#key) }
+    }
+}
+
+/// The statement that writes a field of a view if it changed from `before`, for
+/// `ViewEncoder::write_changes`.
+fn change_value(field: &ViewField, index: usize, view: &str) -> TokenStream2 {
+    let member = match &field.member {
+        Member::Named(member) => quote! { #member },
+        Member::Unnamed => quote! { #index },
+    };
+    let (after, before) = (quote! { &self.#member }, quote! { &before.#member });
+    let changed = |ty: &Type| {
+        quote! {{
+            #[allow(unused_imports)]
+            use __mabat::__private::{ChangeFallback as _, ChangeViaEq as _};
+            (&__mabat::__private::ChangeProbe::<#ty>::NEW).changed(#after, #before)
+        }}
+    };
+    let write = write_value(field, index, after.clone(), Scope::Row, view);
+    match &field.spec {
+        FieldSpec::Column { .. } | FieldSpec::Json { .. } => {
+            let changed = changed(&field.ty);
+            quote! { if #changed { #write } }
+        }
+        FieldSpec::Embed { ty, .. } => {
+            let changed = changed(ty);
+            quote! { if #changed { #write } }
+        }
+        FieldSpec::ToOne { fk, form, .. } => {
+            if *form == Form::Graph {
+                return write;
+            }
+            let (after_key, before_key) = (reference_key(field, after), reference_key(field, before));
+            quote! {{
+                let after_key = #after_key;
+                if after_key != #before_key {
+                    row.reference(#fk, after_key)?;
+                }
+            }}
+        }
+        FieldSpec::Child(child) => {
+            if child.form == Form::Graph {
+                return write;
+            }
+            let element = &child.element;
+            let borrow = quote! { ::core::borrow::Borrow::<#element>::borrow(element) };
+            let pairs = |value: &TokenStream2| match &child.map_key_type {
+                Some(_) => {
+                    quote! { (#value).iter().map(|(key, element)| (key, #borrow)).collect::<::std::vec::Vec<_>>() }
+                }
+                None => quote! { (#value).iter().map(|element| ((), #borrow)).collect::<::std::vec::Vec<_>>() },
+            };
+            let (after_pairs, before_pairs) = (pairs(&after), pairs(&before));
+            let key_changed = |after_key: TokenStream2, before_key: TokenStream2| match &child.map_key_type {
+                Some(key) => quote! {{
+                    #[allow(unused_imports)]
+                    use __mabat::__private::{ChangeFallback as _, ChangeViaEq as _};
+                    (&__mabat::__private::ChangeProbe::<#key>::NEW).changed(#after_key, #before_key)
+                }},
+                None => quote! { false },
+            };
+            if child.through.is_some() {
+                // The links are replaced if the linked keys or the map keys differ
+                let changed_key = key_changed(quote! { a.0 }, quote! { b.0 });
+                quote! {{
+                    let after_pairs = #after_pairs;
+                    let before_pairs = #before_pairs;
+                    let mut changed = after_pairs.len() != before_pairs.len();
+                    for (a, b) in after_pairs.iter().zip(&before_pairs) {
+                        let (a_key, b_key) = (
+                            __mabat::__private::target_key::<#element, __Backend>(a.1)?,
+                            __mabat::__private::target_key::<#element, __Backend>(b.1)?,
+                        );
+                        changed |= a_key != b_key || #changed_key;
+                    }
+                    if changed { #write }
+                }}
+            } else {
+                let set_map_key = match (&child.map_key, &child.map_key_type) {
+                    (Some(name), Some(key)) => {
+                        let changed_key = key_changed(quote! { after_pairs[i].0 }, quote! { before_pairs[j].0 });
+                        quote! {
+                            let changed = match j {
+                                ::core::option::Option::Some(j) => #changed_key,
+                                ::core::option::Option::None => true,
+                            };
+                            if changed {
+                                #[allow(unused_imports)]
+                                use __mabat::__private::{WriteFallback as _, WriteViaEncode as _};
+                                (&__mabat::__private::WriteProbe::<#key, __Backend>::NEW)
+                                    .write_column(element_row, ::std::string::String::from(#name), after_pairs[i].0)?;
+                            }
+                        }
+                    }
+                    _ => quote! {},
+                };
+                quote! {{
+                    let after_pairs = #after_pairs;
+                    let before_pairs = #before_pairs;
+                    let (rows, removed) = __mabat::__private::changes::<#element, __Backend>(
+                        after_pairs.iter().map(|pair| pair.1).collect(),
+                        before_pairs.iter().map(|pair| pair.1).collect(),
+                        #[allow(unused_variables)]
+                        |element_row, i, j| {
+                            #set_map_key
+                            ::core::result::Result::Ok(())
+                        },
+                    )?;
+                    row.collection(#index, rows);
+                    row.removed(#index, removed);
+                }}
+            }
+        }
+    }
+}
+
+/// The statement that writes back what saving produced into a field of a view: its version,
+/// or the versions of the elements of an owned collection.
+fn written_value(field: &ViewField, index: usize, view: &str) -> TokenStream2 {
+    let member = match &field.member {
+        Member::Named(member) => quote! { #member },
+        Member::Unnamed => quote! { #index },
+    };
+    if field.version {
+        return quote! {
+            if let ::core::option::Option::Some(version) = written.version() {
+                self.#member = ::core::convert::TryFrom::try_from(version).map_err(|_| __mabat::Error::Write {
+                    view: #view,
+                    message: ::std::string::String::from("the new version does not fit its field"),
+                })?;
+            }
+        };
+    }
+    match &field.spec {
+        FieldSpec::Child(child) if child.through.is_none() && child.form == Form::Owned => {
+            let element = &child.element;
+            let elements = if child.map_key_type.is_some() {
+                quote! { self.#member.values_mut() }
+            } else {
+                quote! { self.#member.iter_mut() }
+            };
+            quote! {
+                for (element, written) in #elements.zip(written.collection(#index)) {
+                    <#element as __mabat::ViewEncoder<__Backend>>::written(element, written)?;
+                }
+            }
+        }
+        _ => quote! {},
     }
 }
 
@@ -1107,9 +1269,25 @@ fn expand_view(
                 Member::Named(member) => quote! { &self.#member },
                 Member::Unnamed => quote! { &self.#index },
             };
-            write_value(field, index, value, Scope::Row, &ident.to_string())
+            match (&field.spec, field.version) {
+                (FieldSpec::Column { column }, true) => quote! { row.version(#column, *#value)?; },
+                _ => write_value(field, index, value, Scope::Row, &ident.to_string()),
+            }
         })
         .collect();
+    let view_name_str = ident.to_string();
+    let changes: Vec<TokenStream2> = fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| match (&field.spec, field.version, &field.member) {
+            (FieldSpec::Column { column }, true, Member::Named(member)) => {
+                quote! { row.version(#column, self.#member)?; }
+            }
+            _ => change_value(field, index, &view_name_str),
+        })
+        .collect();
+    let written_back: Vec<TokenStream2> =
+        fields.iter().enumerate().map(|(index, field)| written_value(field, index, &view_name_str)).collect();
     // The key of a value is its key field
     let key_field = fields.iter().find(|f| matches!(&f.spec, FieldSpec::Column { column } if column == key));
     let key_value = match key_field {
@@ -1184,6 +1362,29 @@ fn expand_view(
                     #(#writes)*
                     row.set_key(<Self as __mabat::ViewEncoder<#backend>>::key(self));
                     ::core::result::Result::Ok(value)
+                }
+
+                #[allow(unused_variables, unreachable_code)]
+                fn write_changes(
+                    &self,
+                    before: &Self,
+                ) -> ::core::result::Result<__mabat::__private::RowWrite<#backend>, __mabat::Error> {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    let mut value = __mabat::__private::RowWrite::<#backend>::new(<Self as __mabat::View>::shape());
+                    value.update();
+                    let row = &mut value;
+                    #(#changes)*
+                    row.set_key(<Self as __mabat::ViewEncoder<#backend>>::key(self));
+                    ::core::result::Result::Ok(value)
+                }
+
+                #[allow(unused_variables)]
+                fn written(&mut self, written: &__mabat::__private::Written) -> ::core::result::Result<(), __mabat::Error> {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    #(#written_back)*
+                    ::core::result::Result::Ok(())
                 }
             }
         }

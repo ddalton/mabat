@@ -221,8 +221,14 @@ A view also saves: `mabat::save` writes a value and everything it owns, in one t
 yours), on any of the three databases:
 
 ```rust
-mabat::save(&board, &mut tx).await?;             // upsert the board, then make its lists, cards, links match
+mabat::save(&mut board, &mut tx).await?;             // upsert the board, then make its lists, cards, links match
 mabat::delete::<Board, _>(board.id, &mut tx).await?; // the board and all it owns
+
+// Load, change, save only what changed: updated columns, new and removed elements, nothing else
+let before = mabat::load::<Board>().by_key(id).one(&mut tx).await?;
+let mut after = before.clone();
+after.name = "Roadmap 2".into();
+mabat::save_changes(&before, &mut after, &mut tx).await?;  // UPDATE "board" SET "name" = $1 WHERE "id" = $2
 ```
 
 - **Rows** are upserted by key: `ON CONFLICT … DO UPDATE` on PostgreSQL and SQLite, `ON DUPLICATE KEY UPDATE` on
@@ -234,8 +240,15 @@ mabat::delete::<Board, _>(board.id, &mut tx).await?; // the board and all it own
 - **Enums** write their tag and their variant's columns, NULL to the other variants', or the variant's table row,
   deleting the other variants' rows.
 
-Writes never use overrides. Database-generated keys, optimistic locking, saving only what changed and saving
-graphs come next (M8).
+`save_changes` compares the two values with `PartialEq`, field by field and element by element (matched by key), so
+rows that did not change produce no statement. It also updates views of some of a table's columns, which a whole
+`save` cannot insert.
+
+A `#[view(version)]` integer field locks a row optimistically: it is updated only if it still has the value's
+version, which it increments, and otherwise the write fails with `Error::Conflict`. New versions are written back
+into the value, so it can be saved again.
+
+Writes never use overrides. Database-generated keys and saving graphs come next (M8).
 
 ## Arguments of nested collections
 
@@ -424,8 +437,8 @@ ORDER BY n.id;
 | JSON loads and selections of fields | Done (M7) |
 | GraphQL schema generated from views (`mabat-graphql`) | Done (M7) |
 | Arguments of nested collections: filters, order and paging per parent, also in GraphQL | Done |
-| Saving and deleting aggregates | Done (M8) |
-| Generated keys, optimistic locking, saving changes only, saving graphs | Planned (M8) |
+| Saving and deleting aggregates, saving changes only, optimistic locking | Done (M8) |
+| Generated keys, saving graphs | Planned (M8) |
 
 Loading 1,000 tasks with 10 subtasks each takes about 8% longer than hand-written SQLx code running the same two
 queries (`crates/mabat/examples/parity.rs`).
