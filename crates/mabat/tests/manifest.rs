@@ -8,7 +8,7 @@ use mabat::manifest::{LinkManifest, Manifest, Role};
 
 #[test]
 fn describes_every_query_and_column() {
-    let manifest = Mabat::builder().register::<TaskView>().manifest().unwrap();
+    let manifest = Mabat::<sqlx::Postgres>::builder().register::<TaskView>().manifest().unwrap();
     let view = manifest.view("TaskView").unwrap();
     let names: Vec<&str> = view.queries.iter().map(|q| q.name.as_str()).collect();
     assert_eq!(names, ["$root", "assignee", "children", "children.notes", "children.notes.tag"]);
@@ -32,7 +32,8 @@ fn describes_every_query_and_column() {
 
 #[test]
 fn round_trips_through_json_and_files() {
-    let manifest = Mabat::builder().register::<TaskView>().register::<PersonView>().manifest().unwrap();
+    let manifest =
+        Mabat::<sqlx::Postgres>::builder().register::<TaskView>().register::<PersonView>().manifest().unwrap();
     let json = manifest.to_json();
     assert!(json.contains("\"role\": \"reference\""), "{json}");
     assert_eq!(Manifest::from_json(&json).unwrap(), manifest);

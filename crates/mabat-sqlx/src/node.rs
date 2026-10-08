@@ -6,34 +6,33 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
-use mabat_core::sql::{self, RootOptions};
+use mabat_core::sql::{self, Render, RootOptions};
 use mabat_core::{
     ChildQuery, FieldKind, INDEX_ALIAS, KEY_ALIAS, Link, MAP_KEY_ALIAS, PARENT_ALIAS, QueryPlan, REF_ALIAS_PREFIX,
     TAG_ALIAS, ViewShape,
 };
-use sqlx::postgres::PgRow;
-use sqlx::{AssertSqlSafe, Column, Decode, PgConnection, Postgres, Row, Type, ValueRef};
+use sqlx::{Decode, Type};
 
+use crate::backend::Backend;
 use crate::filter::Bound;
 use crate::graph::{GraphBuilder, Identity, Ref};
-use crate::key::{Key, KeyArray, KeyColumn};
+use crate::key::{Key, KeyColumn, KeyList};
 use crate::registry::{ActiveOverride, Overrides};
-use crate::{Error, View};
+use crate::{Error, View, ViewDecoder};
 
 /// The rows of one query of a plan, with the rows of its child queries.
-#[derive(Debug)]
-pub struct Node {
+pub struct Node<B: Backend> {
     view: &'static str,
     shape: &'static ViewShape,
     path: String,
-    rows: Vec<PgRow>,
+    rows: Vec<B::Row>,
     /// Alias of the key column, see [`QueryPlan::key_alias`].
     key_alias: String,
     /// The key columns of the rows by alias, resolved from the first row. The key column
     /// is stored as [`KEY_ALIAS`].
     key_columns: Vec<(String, KeyColumn)>,
     /// The child queries: child and to-one fields, and variant tables.
-    children: Vec<ChildEntry>,
+    children: Vec<ChildEntry<B>>,
     /// The enums stored in the rows, for strict decoding.
     sums: Vec<SumColumns>,
     /// The entities seen by the load, for graphs and shared values.
@@ -44,13 +43,12 @@ pub struct Node {
     fresh: Option<Vec<bool>>,
 }
 
-#[derive(Debug)]
-struct ChildEntry {
+struct ChildEntry<B: Backend> {
     field_index: usize,
     variant: Option<&'static str>,
     /// The rows of the child query, or `None` when they are rows of this node: the next
     /// level of a recursive collection loaded with one query.
-    node: Option<Node>,
+    node: Option<Node<B>>,
     /// Rows of the child query by the key they are attached with, in list order.
     by_key: HashMap<Key, Vec<usize>>,
 }
@@ -65,25 +63,38 @@ struct SumColumns {
     variants: Vec<(&'static str, Vec<(usize, String)>)>,
 }
 
-impl Node {
-    pub(crate) fn rows(&self) -> &[PgRow] {
+impl<B: Backend> std::fmt::Debug for Node<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Node")
+            .field("view", &self.view)
+            .field("path", &self.path)
+            .field("rows", &self.rows.len())
+            .finish()
+    }
+}
+
+/// The rows of a child field and the indexes of those rows by the key of their parent.
+type Children<'a, B> = (&'a Node<B>, &'a HashMap<Key, Vec<usize>>);
+
+impl<B: Backend> Node<B> {
+    pub(crate) fn rows(&self) -> &[B::Row] {
         &self.rows
     }
 
     /// The rows of a child field and their grouping, `None` when they were not loaded: the
     /// level below the depth limit of a recursive collection.
-    fn child(&self, field_index: usize) -> Option<(&Node, &HashMap<Key, Vec<usize>>)> {
+    fn child(&self, field_index: usize) -> Option<Children<'_, B>> {
         self.entry(field_index, None)
     }
 
-    fn entry(&self, field_index: usize, variant: Option<&str>) -> Option<(&Node, &HashMap<Key, Vec<usize>>)> {
+    fn entry(&self, field_index: usize, variant: Option<&str>) -> Option<Children<'_, B>> {
         self.children
             .iter()
             .find(|c| c.field_index == field_index && c.variant == variant)
             .map(|c| (c.node.as_ref().unwrap_or(self), &c.by_key))
     }
 
-    fn variant_child(&self, field_index: usize, variant: &str) -> (&Node, &HashMap<Key, Vec<usize>>) {
+    fn variant_child(&self, field_index: usize, variant: &str) -> Children<'_, B> {
         self.entry(field_index, Some(variant)).expect("plan and decoder disagree on the variants of an enum")
     }
 
@@ -91,7 +102,7 @@ impl Node {
         join(&self.path, alias)
     }
 
-    fn new(path: String, rows: Vec<PgRow>, plan: &QueryPlan, identity: &Arc<Identity>) -> Result<Node, Error> {
+    fn new(path: String, rows: Vec<B::Row>, plan: &QueryPlan, identity: &Arc<Identity>) -> Result<Node<B>, Error> {
         let view = plan.shape.name;
         let mut key_columns = Vec::new();
         let mut sums = Vec::new();
@@ -104,9 +115,7 @@ impl Node {
                         let columns = variant
                             .exclusive
                             .iter()
-                            .filter_map(|alias| {
-                                row.try_column(alias.as_str()).ok().map(|c| (c.ordinal(), alias.clone()))
-                            })
+                            .filter_map(|alias| B::find_column(row, alias).map(|ordinal| (ordinal, alias.clone())))
                             .collect();
                         (variant.name, columns)
                     })
@@ -128,7 +137,7 @@ impl Node {
                 aliases.push((INDEX_ALIAS.to_string(), INDEX_ALIAS.to_string()));
             }
             for (name, alias) in aliases {
-                let column = KeyColumn::resolve(row, &alias).map_err(|source| Error::Decode {
+                let column = KeyColumn::resolve::<B>(row, &alias).map_err(|source| Error::Decode {
                     view,
                     path: join(&path, &alias),
                     source,
@@ -150,13 +159,13 @@ impl Node {
         })
     }
 
-    fn key(&self, row: &PgRow, alias: &str) -> Result<Option<Key>, Error> {
+    fn key(&self, row: &B::Row, alias: &str) -> Result<Option<Key>, Error> {
         let column = match self.key_columns.iter().find(|(a, _)| a == alias) {
             Some((_, column)) => *column,
-            None => KeyColumn::resolve(row, if alias == KEY_ALIAS { &self.key_alias } else { alias })
+            None => KeyColumn::resolve::<B>(row, if alias == KEY_ALIAS { &self.key_alias } else { alias })
                 .map_err(|source| Error::Decode { view: self.view, path: self.path_of(alias), source })?,
         };
-        column.read(row).map_err(|source| Error::Decode { view: self.view, path: self.path_of(alias), source })
+        column.read::<B>(row).map_err(|source| Error::Decode { view: self.view, path: self.path_of(alias), source })
     }
 }
 
@@ -166,16 +175,20 @@ fn join(path: &str, alias: &str) -> String {
 
 /// Decode the column with the given alias.
 #[doc(hidden)]
-pub fn column<T>(row: &PgRow, node: &Node, alias: &str) -> Result<T, Error>
+pub fn column<T, B: Backend>(row: &B::Row, node: &Node<B>, alias: &str) -> Result<T, Error>
 where
-    T: for<'r> Decode<'r, Postgres> + Type<Postgres>,
+    T: for<'r> Decode<'r, B> + Type<B>,
 {
-    row.try_get::<T, _>(alias).map_err(|source| Error::Decode { view: node.view, path: node.path_of(alias), source })
+    B::get::<T>(row, alias).map_err(|source| Error::Decode { view: node.view, path: node.path_of(alias), source })
 }
 
 /// Decode the elements of a to-many collection of the row, in the order of the child query.
 #[doc(hidden)]
-pub fn children<C: View>(row: &PgRow, node: &Node, field_index: usize) -> Result<Vec<C>, Error> {
+pub fn children<C: ViewDecoder<B>, B: Backend>(
+    row: &B::Row,
+    node: &Node<B>,
+    field_index: usize,
+) -> Result<Vec<C>, Error> {
     let Some((child, by_key)) = node.child(field_index) else { return Ok(Vec::new()) };
     let Some(key) = node.key(row, KEY_ALIAS)? else {
         return Ok(Vec::new());
@@ -223,10 +236,10 @@ where
 
 /// Decode the elements of a map collection of the row, keyed by their `$map_key` column.
 #[doc(hidden)]
-pub fn map<K, C, M>(row: &PgRow, node: &Node, field_index: usize) -> Result<M, Error>
+pub fn map<K, C, M, B: Backend>(row: &B::Row, node: &Node<B>, field_index: usize) -> Result<M, Error>
 where
-    K: for<'r> Decode<'r, Postgres> + Type<Postgres>,
-    C: View,
+    K: for<'r> Decode<'r, B> + Type<B>,
+    C: ViewDecoder<B>,
     M: MapInsert<K, C>,
 {
     let mut map = M::default();
@@ -234,7 +247,7 @@ where
     let Some(indices) = node.key(row, KEY_ALIAS)?.and_then(|key| by_key.get(&key)) else { return Ok(map) };
     for &i in indices {
         let row = &child.rows[i];
-        let key = column::<K>(row, child, MAP_KEY_ALIAS)?;
+        let key = column::<K, B>(row, child, MAP_KEY_ALIAS)?;
         if !map.insert_new(key, C::decode(row, child)?) {
             let path = child.path.clone();
             return Err(Error::DuplicateMapKey { view: child.view, path });
@@ -246,11 +259,11 @@ where
 /// Decode the column of an `Option` field with the given alias. An override may leave the
 /// column out, and then the value is `None`.
 #[doc(hidden)]
-pub fn optional_column<T>(row: &PgRow, node: &Node, alias: &str) -> Result<Option<T>, Error>
+pub fn optional_column<T, B: Backend>(row: &B::Row, node: &Node<B>, alias: &str) -> Result<Option<T>, Error>
 where
-    T: for<'r> Decode<'r, Postgres> + Type<Postgres>,
+    T: for<'r> Decode<'r, B> + Type<B>,
 {
-    match row.try_get::<Option<T>, _>(alias) {
+    match B::get::<Option<T>>(row, alias) {
         Ok(value) => Ok(value),
         Err(sqlx::Error::ColumnNotFound(_)) => Ok(None),
         Err(source) => Err(Error::Decode { view: node.view, path: node.path_of(alias), source }),
@@ -259,9 +272,12 @@ where
 
 /// Read the tag of the enum whose aliases start with `prefix`.
 #[doc(hidden)]
-pub fn tag(row: &PgRow, node: &Node, prefix: &str) -> Result<String, Error> {
+pub fn tag<B: Backend>(row: &B::Row, node: &Node<B>, prefix: &str) -> Result<String, Error>
+where
+    String: for<'r> Decode<'r, B> + Type<B>,
+{
     let alias = format!("{prefix}{TAG_ALIAS}");
-    match row.try_get::<Option<String>, _>(alias.as_str()) {
+    match B::get::<Option<String>>(row, alias.as_str()) {
         Ok(Some(tag)) => Ok(tag),
         Ok(None) => Err(Error::NullTag { view: node.view, path: node.path_of(&alias) }),
         Err(source) => Err(Error::Decode { view: node.view, path: node.path_of(&alias), source }),
@@ -271,16 +287,16 @@ pub fn tag(row: &PgRow, node: &Node, prefix: &str) -> Result<String, Error> {
 /// Check that the columns of the other variants than `variant` are NULL, for the enum
 /// whose aliases start with `prefix`.
 #[doc(hidden)]
-pub fn strict(row: &PgRow, node: &Node, prefix: &str, variant: &str, tag: &str) -> Result<(), Error> {
+pub fn strict<B: Backend>(row: &B::Row, node: &Node<B>, prefix: &str, variant: &str, tag: &str) -> Result<(), Error> {
     let Some(sum) = node.sums.iter().find(|s| s.alias_prefix == prefix) else { return Ok(()) };
     let Some((_, columns)) = sum.variants.iter().find(|(name, _)| *name == variant) else { return Ok(()) };
     for (ordinal, alias) in columns {
-        let raw = row.try_get_raw(*ordinal).map_err(|source| Error::Decode {
+        let null = B::is_null(row, *ordinal).map_err(|source| Error::Decode {
             view: node.view,
             path: node.path_of(alias),
             source,
         })?;
-        if !raw.is_null() {
+        if !null {
             return Err(Error::OtherVariantColumn { view: node.view, path: node.path_of(alias), tag: tag.to_string() });
         }
     }
@@ -289,7 +305,7 @@ pub fn strict(row: &PgRow, node: &Node, prefix: &str, variant: &str, tag: &str) 
 
 /// The error for a tag that names no variant.
 #[doc(hidden)]
-pub fn unknown_tag(node: &Node, prefix: &str, tag: &str, expected: &[&'static str]) -> Error {
+pub fn unknown_tag<B: Backend>(node: &Node<B>, prefix: &str, tag: &str, expected: &[&'static str]) -> Error {
     Error::UnknownTag {
         view: node.view,
         path: node.path_of(&format!("{prefix}{TAG_ALIAS}")),
@@ -301,12 +317,12 @@ pub fn unknown_tag(node: &Node, prefix: &str, tag: &str, expected: &[&'static st
 /// The row of the variant table of `variant` for the row, and its node, for an enum stored
 /// in a table per variant in the field `field_index` of the view.
 #[doc(hidden)]
-pub fn variant<'a>(
-    row: &PgRow,
-    node: &'a Node,
+pub fn variant<'a, B: Backend>(
+    row: &B::Row,
+    node: &'a Node<B>,
     field_index: usize,
     variant: &str,
-) -> Result<(&'a PgRow, &'a Node), Error> {
+) -> Result<(&'a B::Row, &'a Node<B>), Error> {
     let (child, by_key) = node.variant_child(field_index, variant);
     let missing = || Error::MissingVariant { view: node.view, path: child.path.clone() };
     let key = node.key(row, KEY_ALIAS)?.ok_or_else(missing)?;
@@ -318,7 +334,12 @@ pub fn variant<'a>(
 
 /// Decode an optional to-one reference of the row.
 #[doc(hidden)]
-pub fn to_one<C: View>(row: &PgRow, node: &Node, field_index: usize, ref_alias: &str) -> Result<Option<C>, Error> {
+pub fn to_one<C: ViewDecoder<B>, B: Backend>(
+    row: &B::Row,
+    node: &Node<B>,
+    field_index: usize,
+    ref_alias: &str,
+) -> Result<Option<C>, Error> {
     let (child, by_key) = node.child(field_index).expect("plan and decoder disagree on the fields of a view");
     let Some(key) = node.key(row, ref_alias)? else {
         return Ok(None);
@@ -332,20 +353,20 @@ pub fn to_one<C: View>(row: &PgRow, node: &Node, field_index: usize, ref_alias: 
 /// A reference to the entity of a to-one field of a graph view, `None` if the foreign key is
 /// NULL.
 #[doc(hidden)]
-pub fn reference<C: View>(row: &PgRow, node: &Node, ref_alias: &str) -> Result<Option<Ref<C>>, Error> {
+pub fn reference<C: View, B: Backend>(row: &B::Row, node: &Node<B>, ref_alias: &str) -> Result<Option<Ref<C>>, Error> {
     Ok(node.key(row, ref_alias)?.map(|key| node.identity.reference::<C>(key)))
 }
 
 /// A reference to the entity of a required to-one field of a graph view.
 #[doc(hidden)]
-pub fn reference_required<C: View>(row: &PgRow, node: &Node, ref_alias: &str) -> Result<Ref<C>, Error> {
+pub fn reference_required<C: View, B: Backend>(row: &B::Row, node: &Node<B>, ref_alias: &str) -> Result<Ref<C>, Error> {
     reference(row, node, ref_alias)?
         .ok_or_else(|| Error::MissingReference { view: node.view, path: node.path_of(ref_alias) })
 }
 
 /// References to the elements of a collection of a graph view.
 #[doc(hidden)]
-pub fn references<C: View>(row: &PgRow, node: &Node, field_index: usize) -> Result<Vec<Ref<C>>, Error> {
+pub fn references<C: View, B: Backend>(row: &B::Row, node: &Node<B>, field_index: usize) -> Result<Vec<Ref<C>>, Error> {
     match node.key(row, KEY_ALIAS)? {
         Some(key) => Ok(node.identity.references::<C>(node.shape, field_index, &key)),
         None => Ok(Vec::new()),
@@ -354,9 +375,9 @@ pub fn references<C: View>(row: &PgRow, node: &Node, field_index: usize) -> Resu
 
 /// Decode a to-one field shared by all the rows that reference the same entity.
 #[doc(hidden)]
-pub fn shared_to_one<C: View>(
-    row: &PgRow,
-    node: &Node,
+pub fn shared_to_one<C: ViewDecoder<B>, B: Backend>(
+    row: &B::Row,
+    node: &Node<B>,
     field_index: usize,
     ref_alias: &str,
 ) -> Result<Option<Arc<C>>, Error> {
@@ -372,9 +393,9 @@ pub fn shared_to_one<C: View>(
 
 /// Decode a required to-one field shared by all the rows that reference the same entity.
 #[doc(hidden)]
-pub fn shared_to_one_required<C: View>(
-    row: &PgRow,
-    node: &Node,
+pub fn shared_to_one_required<C: ViewDecoder<B>, B: Backend>(
+    row: &B::Row,
+    node: &Node<B>,
     field_index: usize,
     ref_alias: &str,
 ) -> Result<Arc<C>, Error> {
@@ -384,7 +405,11 @@ pub fn shared_to_one_required<C: View>(
 
 /// Decode the elements of a collection, each entity shared by all the collections it is in.
 #[doc(hidden)]
-pub fn shared_children<C: View>(row: &PgRow, node: &Node, field_index: usize) -> Result<Vec<Arc<C>>, Error> {
+pub fn shared_children<C: ViewDecoder<B>, B: Backend>(
+    row: &B::Row,
+    node: &Node<B>,
+    field_index: usize,
+) -> Result<Vec<Arc<C>>, Error> {
     let Some((child, by_key)) = node.child(field_index) else { return Ok(Vec::new()) };
     let Some(indices) = node.key(row, KEY_ALIAS)?.and_then(|key| by_key.get(&key)) else { return Ok(Vec::new()) };
     indices
@@ -401,7 +426,7 @@ pub fn shared_children<C: View>(row: &PgRow, node: &Node, field_index: usize) ->
 
 /// Store the entities of the rows in the graph, each once.
 #[doc(hidden)]
-pub fn graph_store<T: View>(node: &Node, graph: &mut GraphBuilder) -> Result<(), Error> {
+pub fn graph_store<T: ViewDecoder<B>, B: Backend>(node: &Node<B>, graph: &mut GraphBuilder) -> Result<(), Error> {
     for (i, row) in node.rows.iter().enumerate() {
         if node.fresh.as_ref().is_some_and(|fresh| !fresh[i]) {
             continue;
@@ -416,8 +441,8 @@ pub fn graph_store<T: View>(node: &Node, graph: &mut GraphBuilder) -> Result<(),
 /// Visit the rows of a child field for a graph: store them if they are entities of the
 /// graph, and visit their own child fields.
 #[doc(hidden)]
-pub fn graph_visit<C: View>(
-    node: &Node,
+pub fn graph_visit<C: ViewDecoder<B>, B: Backend>(
+    node: &Node<B>,
     field_index: usize,
     graph: &mut GraphBuilder,
     entity: bool,
@@ -431,7 +456,7 @@ pub fn graph_visit<C: View>(
     Ok(())
 }
 
-impl Node {
+impl<B: Backend> Node<B> {
     /// The keys of the rows, in row order.
     pub(crate) fn row_keys(&self) -> Result<Vec<Key>, Error> {
         let keys = self.rows.iter().map(|row| self.key(row, KEY_ALIAS)).collect::<Result<Vec<_>, _>>()?;
@@ -441,14 +466,19 @@ impl Node {
 
 /// Decode a required to-one reference of the row.
 #[doc(hidden)]
-pub fn to_one_required<C: View>(row: &PgRow, node: &Node, field_index: usize, ref_alias: &str) -> Result<C, Error> {
+pub fn to_one_required<C: ViewDecoder<B>, B: Backend>(
+    row: &B::Row,
+    node: &Node<B>,
+    field_index: usize,
+    ref_alias: &str,
+) -> Result<C, Error> {
     to_one(row, node, field_index, ref_alias)?.ok_or_else(|| Error::MissingReference {
         view: node.view,
         path: node.child(field_index).map_or_else(String::new, |(child, _)| child.path.clone()),
     })
 }
 
-type NodeFuture<'a> = Pin<Box<dyn Future<Output = Result<Node, Error>> + Send + 'a>>;
+type NodeFuture<'a, B> = Pin<Box<dyn Future<Output = Result<Node<B>, Error>> + Send + 'a>>;
 
 /// Run the query of the plan, then its child queries, on the connection. Queries with an
 /// override in `overrides` run the override instead of the generated SQL.
@@ -457,36 +487,36 @@ type NodeFuture<'a> = Pin<Box<dyn Future<Output = Result<Node, Error>> + Send + 
 /// run them again for the levels of a recursive collection. `entities` says that the rows
 /// are entities of a graph, which are loaded once.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn load<'a>(
-    conn: &'a mut PgConnection,
+pub(crate) fn load<'a, B: Backend>(
+    conn: &'a mut B::Connection,
     plan: &'a QueryPlan,
     options: &'a RootOptions,
-    keys: Option<KeyArray>,
+    keys: Option<KeyList>,
     overrides: Option<&'a Overrides>,
     values: &'a [Bound],
     path: String,
     ancestors: Vec<&'a QueryPlan>,
     identity: Arc<Identity>,
     entities: bool,
-) -> NodeFuture<'a> {
+) -> NodeFuture<'a, B>
+where
+    B::Connection: Send,
+    B::Row: Send + Sync,
+{
     Box::pin(async move {
         let view = plan.shape.name;
         let active = overrides.and_then(|o| o.get(plan.query_name()));
-        let has_keys = keys.is_some();
-        let sql = statement(plan, options, has_keys, active)?;
 
         let rows = match active {
             Some(active) if active.shadow => {
-                let generated: Arc<str> =
-                    sql::select(plan, &RootOptions { by_keys: has_keys, ..options.clone() }).into();
                 let start = Instant::now();
-                let rows = fetch(conn, plan, &sql, keys.clone(), values).await?;
+                let rows = fetch::<B>(conn, plan, options, keys.clone(), values, Some(active)).await?;
                 let override_time = start.elapsed();
                 let start = Instant::now();
-                let expected = fetch(conn, plan, &generated, keys, values).await?;
+                let expected = fetch::<B>(conn, plan, options, keys, values, None).await?;
                 let generated_time = start.elapsed();
                 active.stats.record(override_time, generated_time);
-                if let Err(difference) = compare(plan, &rows, &expected) {
+                if let Err(difference) = compare::<B>(plan, &rows, &expected) {
                     active.stats.mismatch();
                     tracing::warn!(
                         view,
@@ -505,7 +535,7 @@ pub(crate) fn load<'a>(
                 }
                 rows
             }
-            _ => fetch(conn, plan, &sql, keys, values).await?,
+            _ => fetch::<B>(conn, plan, options, keys, values, active).await?,
         };
 
         let mut node = Node::new(path, rows, plan, &identity)?;
@@ -563,12 +593,8 @@ pub(crate) fn load<'a>(
                 }
                 // A variant table is only queried for the rows of the variant
                 if let Some((tag_alias, tag_value)) = tag {
-                    let tag = row.try_get::<Option<&str>, _>(tag_alias).map_err(|source| Error::Decode {
-                        view,
-                        path: node.path_of(tag_alias),
-                        source,
-                    })?;
-                    if tag != Some(tag_value) {
+                    let tag = node.tag_text(row, tag_alias)?;
+                    if tag.as_deref() != Some(tag_value) {
                         continue;
                     }
                 }
@@ -592,11 +618,22 @@ pub(crate) fn load<'a>(
             let child_node = if keys.is_empty() {
                 Node::new(path, Vec::new(), target, &identity)?
             } else {
-                let keys = KeyArray::new(keys).map_err(|_| Error::MixedKeys { view: target.shape.name })?;
+                let keys = KeyList::new(keys).map_err(|_| Error::MixedKeys { view: target.shape.name })?;
                 let ancestors = chain.clone();
                 let identity = identity.clone();
-                load(&mut *conn, target, options, Some(keys), overrides, &[], path, ancestors, identity, graph_edge)
-                    .await?
+                load::<B>(
+                    &mut *conn,
+                    target,
+                    options,
+                    Some(keys),
+                    overrides,
+                    &[],
+                    path,
+                    ancestors,
+                    identity,
+                    graph_edge,
+                )
+                .await?
             };
 
             let by_key = child_node.group(attach_alias(&target.link))?;
@@ -623,7 +660,20 @@ fn attach_alias(link: &Link) -> &'static str {
     }
 }
 
-impl Node {
+impl<B: Backend> Node<B> {
+    /// The text of a tag column, to select the rows of a variant.
+    fn tag_text(&self, row: &B::Row, tag_alias: &str) -> Result<Option<String>, Error> {
+        let Some(ordinal) = B::find_column(row, tag_alias) else {
+            let source = sqlx::Error::ColumnNotFound(tag_alias.to_string());
+            return Err(Error::Decode { view: self.view, path: self.path_of(tag_alias), source });
+        };
+        match B::read_key(row, ordinal, crate::backend::KeyKind::Text) {
+            Ok(Some(Key::Text(tag))) => Ok(Some(tag)),
+            Ok(_) => Ok(None),
+            Err(source) => Err(Error::Decode { view: self.view, path: self.path_of(tag_alias), source }),
+        }
+    }
+
     /// The indices of the rows by the key in the column with the given alias: in the order
     /// of their `$index` column if the rows have one, otherwise in row order.
     fn group(&self, alias: &str) -> Result<HashMap<Key, Vec<usize>>, Error> {
@@ -647,7 +697,7 @@ impl Node {
         shape: &'static ViewShape,
         field_index: usize,
         by_key: &HashMap<Key, Vec<usize>>,
-        children: &Node,
+        children: &Node<B>,
     ) -> Result<(), Error> {
         for (parent, indices) in by_key {
             let keys = indices
@@ -720,85 +770,131 @@ impl Node {
     }
 }
 
-/// The SQL of a query: its override, or the generated SQL.
+/// The SQL of a query: its override, or the generated SQL, rendered for `render.keys` keys.
 fn statement(
     plan: &QueryPlan,
     options: &RootOptions,
     has_keys: bool,
     active: Option<&ActiveOverride>,
+    render: &Render,
 ) -> Result<Arc<str>, Error> {
     let view = plan.shape.name;
+    let dialect = render.dialect;
     match (active, &plan.link) {
-        (None, _) => Ok(sql::select(plan, &RootOptions { by_keys: has_keys, ..options.clone() }).into()),
+        (None, _) => Ok(sql::render(plan, &RootOptions { by_keys: has_keys, ..options.clone() }, render).into()),
         (Some(active), Link::Root) => {
             if active.keys_param && !has_keys {
                 return Err(Error::KeysRequired { view, origin: active.origin.to_string() });
             }
-            let sql = sql::wrap_root(&active.sql, plan, options, has_keys && !active.keys_param)
+            let options = RootOptions { by_keys: has_keys, ..options.clone() };
+            let own = sql::expand_keys(&active.sql, dialect, render.keys);
+            let sql = sql::wrap_root(&own, plan, &options, has_keys && !active.keys_param, render)
                 .map_err(|column| Error::ColumnNotSelected { view, column: column.to_string() })?;
             Ok(sql.into())
         }
-        (Some(active), _) => Ok(active.sql.clone()),
+        (Some(active), _) => Ok(sql::expand_keys(&active.sql, dialect, render.keys).into()),
     }
 }
 
+/// The most keys of one statement on MySQL and SQLite; more keys are split into several
+/// statements, except for the root query.
+const MAX_KEYS: usize = 1000;
+
+/// The number of placeholders for a list of keys on MySQL and SQLite: the next power of
+/// two, so that lists of similar lengths run the same statement.
+fn padded(len: usize) -> usize {
+    len.max(1).next_power_of_two()
+}
+
 /// Count the rows of the root query, see [`sql::count`].
-pub(crate) async fn count(
-    conn: &mut PgConnection,
+pub(crate) async fn count<B: Backend>(
+    conn: &mut B::Connection,
     plan: &QueryPlan,
     options: &RootOptions,
-    keys: Option<KeyArray>,
+    keys: Option<KeyList>,
     overrides: Option<&Overrides>,
     values: Vec<Bound>,
 ) -> Result<i64, Error> {
     let view = plan.shape.name;
     let has_keys = keys.is_some();
+    let (keys, render) = root_keys::<B>(keys);
+    let options = RootOptions {
+        by_keys: has_keys,
+        filter_lists: values.iter().map(Bound::list_len).collect(),
+        ..options.clone()
+    };
     let override_sql = match overrides.and_then(|o| o.get(plan.query_name())) {
         Some(active) if active.keys_param && !has_keys => {
             return Err(Error::KeysRequired { view, origin: active.origin.to_string() });
         }
-        Some(active) => Some((&*active.sql, has_keys && !active.keys_param)),
+        Some(active) => Some((sql::expand_keys(&active.sql, B::DIALECT, render.keys), has_keys && !active.keys_param)),
         None => None,
     };
-    let sql: Arc<str> = sql::count(plan, options, override_sql)
+    let sql: Arc<str> = sql::count(plan, &options, override_sql.as_ref().map(|(s, f)| (s.as_str(), *f)), &render)
         .map_err(|column| Error::ColumnNotSelected { view, column: column.to_string() })?
         .into();
-    let mut query = sqlx::query(AssertSqlSafe(sql.clone()));
-    if let Some(keys) = keys {
-        query = keys.bind(query);
-    }
-    for value in values {
-        query = value.bind(query);
-    }
     let error = |source| Error::Query { view, path: plan.path.clone(), sql: sql.to_string(), source };
-    query.fetch_one(&mut *conn).await.and_then(|row| row.try_get::<i64, _>(0)).map_err(error)
+    B::fetch_count(conn, sql.clone(), keys, values).await.map_err(error)
 }
 
-async fn fetch(
-    conn: &mut PgConnection,
-    plan: &QueryPlan,
-    sql: &Arc<str>,
-    keys: Option<KeyArray>,
-    values: &[Bound],
-) -> Result<Vec<PgRow>, Error> {
-    // Generated SQL only contains quoted identifiers from the static shape of the view and
-    // integer limits. Override SQL comes from configuration and was checked when the
-    // registry was built. All values, including the keys, are bound parameters.
-    let mut query = sqlx::query(AssertSqlSafe(sql.clone()));
-    if let Some(keys) = keys {
-        query = keys.bind(query);
-    }
-    if let Link::Root = plan.link {
-        for value in values {
-            query = value.clone().bind(query);
+/// The keys of the root query, padded on MySQL and SQLite, and how to render for them.
+fn root_keys<B: Backend>(keys: Option<KeyList>) -> (Option<KeyList>, Render) {
+    let render = Render::new(B::DIALECT);
+    match keys {
+        Some(mut keys) if !B::DIALECT.binds_arrays() => {
+            let len = padded(keys.len());
+            keys.pad(len);
+            (Some(keys), render.with_keys(len))
         }
+        keys => (keys, render),
     }
-    query.fetch_all(&mut *conn).await.map_err(|source| Error::Query {
-        view: plan.shape.name,
-        path: plan.path.clone(),
-        sql: sql.to_string(),
-        source,
-    })
+}
+
+/// Run the query of the plan: the override if `active` is given, else the generated SQL.
+async fn fetch<B: Backend>(
+    conn: &mut B::Connection,
+    plan: &QueryPlan,
+    options: &RootOptions,
+    keys: Option<KeyList>,
+    values: &[Bound],
+    active: Option<&ActiveOverride>,
+) -> Result<Vec<B::Row>, Error> {
+    let has_keys = keys.is_some();
+    let root = matches!(plan.link, Link::Root);
+    // Filter values are bound to the root query only
+    let values: Vec<Bound> = if root { values.to_vec() } else { Vec::new() };
+    let options = RootOptions { filter_lists: values.iter().map(Bound::list_len).collect(), ..options.clone() };
+
+    // MySQL and SQLite bind each key: child queries split many keys into several statements,
+    // each padded so that statements are reused
+    let batches: Vec<(Option<KeyList>, Render)> = match keys {
+        Some(keys) if !B::DIALECT.binds_arrays() && !root => keys
+            .chunks(MAX_KEYS)
+            .into_iter()
+            .map(|mut keys| {
+                let len = padded(keys.len());
+                keys.pad(len);
+                (Some(keys), Render::new(B::DIALECT).with_keys(len))
+            })
+            .collect(),
+        keys => vec![root_keys::<B>(keys)],
+    };
+
+    let mut rows = Vec::new();
+    for (keys, render) in batches {
+        // Generated SQL only contains quoted identifiers from the static shape of the view and
+        // integer limits. Override SQL comes from configuration and was checked when the
+        // registry was built. All values, including the keys, are bound parameters.
+        let sql = statement(plan, &options, has_keys, active, &render)?;
+        let batch = B::fetch(conn, sql.clone(), keys, values.clone()).await.map_err(|source| Error::Query {
+            view: plan.shape.name,
+            path: plan.path.clone(),
+            sql: sql.to_string(),
+            source,
+        })?;
+        rows.extend(batch);
+    }
+    Ok(rows)
 }
 
 /// The encoded values of a row, by alias.
@@ -806,20 +902,20 @@ type RowValues = Vec<Option<Vec<u8>>>;
 
 /// Compare the rows of an override with the rows of the generated query, as they are
 /// used: rows of a to-many query in order per parent, other rows by key.
-fn compare(plan: &QueryPlan, actual: &[PgRow], expected: &[PgRow]) -> Result<(), String> {
+fn compare<B: Backend>(plan: &QueryPlan, actual: &[B::Row], expected: &[B::Row]) -> Result<(), String> {
     // Columns an override leaves out are optional and not compared
     let aliases: Vec<&str> = plan
         .columns
         .iter()
         .map(|c| c.alias.as_str())
-        .filter(|alias| actual.first().is_none_or(|row| row.try_column(*alias).is_ok()))
+        .filter(|alias| actual.first().is_none_or(|row| B::find_column(row, alias).is_some()))
         .collect();
     let group_alias = match plan.link {
         Link::Child { .. } => PARENT_ALIAS,
         _ => plan.key_alias.as_str(),
     };
-    let actual = grouped(actual, &aliases, group_alias)?;
-    let expected = grouped(expected, &aliases, group_alias)?;
+    let actual = grouped::<B>(actual, &aliases, group_alias)?;
+    let expected = grouped::<B>(expected, &aliases, group_alias)?;
     if actual.len() != expected.len() {
         return Err(format!("{} groups of rows, expected {}", actual.len(), expected.len()));
     }
@@ -851,15 +947,16 @@ fn compare(plan: &QueryPlan, actual: &[PgRow], expected: &[PgRow]) -> Result<(),
     Ok(())
 }
 
-fn grouped(rows: &[PgRow], aliases: &[&str], group_alias: &str) -> Result<HashMap<Vec<u8>, Vec<RowValues>>, String> {
+fn grouped<B: Backend>(
+    rows: &[B::Row],
+    aliases: &[&str],
+    group_alias: &str,
+) -> Result<HashMap<Vec<u8>, Vec<RowValues>>, String> {
     let mut groups: HashMap<Vec<u8>, Vec<RowValues>> = HashMap::new();
     for row in rows {
         let value = |alias: &str| -> Result<Option<Vec<u8>>, String> {
-            let raw = row.try_get_raw(alias).map_err(|e| e.to_string())?;
-            if raw.is_null() {
-                return Ok(None);
-            }
-            Ok(Some(raw.as_bytes().map_err(|e| e.to_string())?.to_vec()))
+            let ordinal = B::find_column(row, alias).ok_or_else(|| format!("no column {alias}"))?;
+            B::encoded(row, ordinal).map_err(|e| e.to_string())
         };
         let key = value(group_alias)?.unwrap_or_default();
         let values = aliases.iter().map(|alias| value(alias)).collect::<Result<_, _>>()?;

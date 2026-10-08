@@ -1,7 +1,8 @@
-//! PostgreSQL executor for Mabat views, built on SQLx.
+//! The executor of Mabat views, built on SQLx, for PostgreSQL, MySQL and SQLite.
 //!
 //! Use the `mabat` crate, which re-exports this crate together with the derive macro.
 
+pub mod backend;
 mod check;
 mod describe;
 mod error;
@@ -19,9 +20,8 @@ use std::sync::Arc;
 
 use mabat_core::sql::RootOptions;
 use mabat_core::{EmbeddedShape, OrderBy, QueryPlan, ViewShape};
-use sqlx::PgConnection;
-use sqlx::postgres::PgRow;
 
+pub use backend::{Backend, Conn};
 use check::Checked;
 pub use describe::Description;
 pub use error::Error;
@@ -35,36 +35,45 @@ pub use report::{Diagnostic, Report, Severity};
 /// A view: a type whose values are loaded from a table, together with their embedded
 /// structs, to-one references and to-many collections.
 ///
-/// Implemented by `#[derive(View)]`.
+/// Implemented by `#[derive(View)]`, together with [`ViewDecoder`] for each enabled
+/// database.
 pub trait View: Sized + Send + Sync + 'static {
     /// The static description of the view.
     fn shape() -> &'static ViewShape;
+}
 
+/// Decoding a view from the rows of a database. Implemented by `#[derive(View)]` for each
+/// database whose feature is enabled.
+pub trait ViewDecoder<B: Backend>: View {
     /// Decode a value from a row of the view's query and the rows of its child queries.
-    fn decode(row: &PgRow, node: &Node) -> Result<Self, Error>;
+    fn decode(row: &B::Row, node: &Node<B>) -> Result<Self, Error>;
 
     /// Describe the Rust types of the view's columns, to check queries against them.
-    fn describe(description: &mut Description);
+    fn describe(description: &mut Description<B>);
 
     /// Visit the rows of a query for a graph: store them in the graph as entities of this
     /// view if `entity`, and visit the rows of the child fields.
-    fn decode_graph(node: &Node, graph: &mut graph::GraphBuilder, entity: bool) -> Result<(), Error>;
+    fn decode_graph(node: &Node<B>, graph: &mut graph::GraphBuilder, entity: bool) -> Result<(), Error>;
 }
 
 /// A value stored in the row of the view that contains it: a struct whose fields are
 /// columns of the view's table, or an enum.
 ///
-/// Implemented by `#[derive(View)]` for structs with `#[view(embedded)]` and for enums.
+/// Implemented by `#[derive(View)]` for structs with `#[view(embedded)]` and for enums,
+/// together with [`EmbeddedDecoder`] for each enabled database.
 pub trait Embedded: Sized + Send {
     fn shape() -> &'static EmbeddedShape;
+}
 
+/// Decoding an embedded value from the rows of a database.
+pub trait EmbeddedDecoder<B: Backend>: Embedded {
     /// Decode a value from the columns whose aliases start with `prefix`. `field_index` is
     /// the index of the view's field that holds the value, to find the rows of variant
     /// tables.
-    fn decode_embedded(row: &PgRow, node: &Node, prefix: &str, field_index: usize) -> Result<Self, Error>;
+    fn decode_embedded(row: &B::Row, node: &Node<B>, prefix: &str, field_index: usize) -> Result<Self, Error>;
 
     /// Describe the Rust types of the columns, whose aliases start with `prefix`.
-    fn describe_embedded(description: &mut Description, prefix: &str, field_index: usize);
+    fn describe_embedded(description: &mut Description<B>, prefix: &str, field_index: usize);
 }
 
 /// The query plan of a view.
@@ -170,16 +179,19 @@ impl<T: View> Load<T> {
     }
 
     /// The plan and overrides to run, the keys, the root options and the filter values.
-    fn prepare(self) -> Result<Option<Prepared>, Error> {
+    fn prepare<B: Backend>(self) -> Result<Option<Prepared>, Error> {
         let view = T::shape().name;
         let (plan, overrides) = match self.source {
             Source::Generated => (Arc::new(plan::<T>()?), None),
+            Source::Registered(checked) if checked.backend != B::NAME => {
+                return Err(Error::WrongBackend { view, registry: checked.backend, connection: B::NAME });
+            }
             Source::Registered(checked) => (checked.plan.clone(), Some(checked)),
             Source::NotRegistered => return Err(Error::NotRegistered { view }),
         };
         let keys = match self.keys {
             Some(keys) if keys.is_empty() => return Ok(None),
-            Some(keys) => Some(key::KeyArray::new(keys).map_err(|_| Error::MixedKeys { view })?),
+            Some(keys) => Some(key::KeyList::new(keys).map_err(|_| Error::MixedKeys { view })?),
             None => None,
         };
         let (filter, values) = match self.condition {
@@ -197,12 +209,15 @@ impl<T: View> Load<T> {
     ///
     /// A view with references into a graph (`Ref<T>` fields) is loaded with
     /// [`Load::graph`] instead.
-    pub async fn all(self, conn: &mut PgConnection) -> Result<Vec<T>, Error> {
-        let Some(load) = self.prepare()? else { return Ok(Vec::new()) };
+    pub async fn all<C: Conn>(self, conn: &mut C) -> Result<Vec<T>, Error>
+    where
+        T: ViewDecoder<C::Backend>,
+    {
+        let Some(load) = self.prepare::<C::Backend>()? else { return Ok(Vec::new()) };
         if load.plan.has_graph_edges() {
             return Err(Error::GraphRequired { view: T::shape().name });
         }
-        let node = load.run(conn, graph::Identity::new(false)).await?;
+        let node = load.run::<C::Backend>(conn.connection(), graph::Identity::new(false)).await?;
         node.rows().iter().map(|row| T::decode(row, &node)).collect()
     }
 
@@ -212,12 +227,15 @@ impl<T: View> Load<T> {
     /// Each entity is fetched once and each collection of an entity is loaded once, so
     /// cycles end by themselves: a graph needs no `depth`. All the entities reachable through
     /// references are loaded, so a graph view should only reference what it needs.
-    pub async fn graph(self, conn: &mut PgConnection) -> Result<Graph<T>, Error> {
+    pub async fn graph<C: Conn>(self, conn: &mut C) -> Result<Graph<T>, Error>
+    where
+        T: ViewDecoder<C::Backend>,
+    {
         let identity = graph::Identity::new(true);
-        let Some(load) = self.prepare()? else {
+        let Some(load) = self.prepare::<C::Backend>()? else {
             return graph::GraphBuilder::new(identity).finish(Vec::new());
         };
-        let node = load.run(conn, identity.clone()).await?;
+        let node = load.run::<C::Backend>(conn.connection(), identity.clone()).await?;
         let mut builder = graph::GraphBuilder::new(identity);
         T::decode_graph(&node, &mut builder, true)?;
         builder.finish(node.row_keys()?)
@@ -225,21 +243,27 @@ impl<T: View> Load<T> {
 
     /// Count the matching values, ignoring `order_by`, `limit` and `offset`. Runs only the
     /// root query, as `SELECT count(*)`.
-    pub async fn count(self, conn: &mut PgConnection) -> Result<i64, Error> {
-        let Some(load) = self.prepare()? else { return Ok(0) };
+    pub async fn count<C: Conn>(self, conn: &mut C) -> Result<i64, Error> {
+        let Some(load) = self.prepare::<C::Backend>()? else { return Ok(0) };
         let overrides = load.overrides.as_ref().map(|c| &c.overrides);
-        node::count(conn, &load.plan, &load.options, load.keys, overrides, load.values).await
+        node::count::<C::Backend>(conn.connection(), &load.plan, &load.options, load.keys, overrides, load.values).await
     }
 
     /// Load exactly one value: [`Error::NotFound`] if there is none, [`Error::TooManyRows`]
     /// if there is more than one.
-    pub async fn one(self, conn: &mut PgConnection) -> Result<T, Error> {
+    pub async fn one<C: Conn>(self, conn: &mut C) -> Result<T, Error>
+    where
+        T: ViewDecoder<C::Backend>,
+    {
         let view = T::shape().name;
         self.optional(conn).await?.ok_or(Error::NotFound { view })
     }
 
     /// Load at most one value: [`Error::TooManyRows`] if there is more than one.
-    pub async fn optional(self, conn: &mut PgConnection) -> Result<Option<T>, Error> {
+    pub async fn optional<C: Conn>(self, conn: &mut C) -> Result<Option<T>, Error>
+    where
+        T: ViewDecoder<C::Backend>,
+    {
         let view = T::shape().name;
         let mut values = self.all(conn).await?;
         match values.len() {
@@ -254,19 +278,20 @@ impl<T: View> Load<T> {
 struct Prepared {
     plan: Arc<QueryPlan>,
     overrides: Option<Arc<Checked>>,
-    keys: Option<key::KeyArray>,
+    keys: Option<key::KeyList>,
     options: RootOptions,
     values: Vec<filter::Bound>,
 }
 
 impl Prepared {
-    async fn run(self, conn: &mut PgConnection, identity: Arc<graph::Identity>) -> Result<Node, Error> {
+    async fn run<B: Backend>(self, conn: &mut B::Connection, identity: Arc<graph::Identity>) -> Result<Node<B>, Error> {
         let overrides = self.overrides.as_ref().map(|c| &c.overrides);
         let plan = &*self.plan;
         let path = String::new();
         let entities = identity.graph;
         let values = &self.values;
-        node::load(conn, plan, &self.options, self.keys, overrides, values, path, Vec::new(), identity, entities).await
+        node::load::<B>(conn, plan, &self.options, self.keys, overrides, values, path, Vec::new(), identity, entities)
+            .await
     }
 }
 
@@ -284,6 +309,10 @@ pub mod __private {
         Child, EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, Recursion, SumShape, SumStrategy, Through,
         Variant, VariantData, ViewShape,
     };
-    pub use sqlx::postgres::PgRow;
+    pub use sqlx::Database;
+    #[cfg(feature = "postgres")]
+    pub use sqlx::Postgres;
+    #[cfg(feature = "sqlite")]
+    pub use sqlx::Sqlite;
     pub use sqlx::types::Json;
 }

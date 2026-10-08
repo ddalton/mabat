@@ -6,6 +6,35 @@
 
 use std::fmt::Write;
 
+use crate::sql::Dialect;
+
+/// How the parameters of a filter are written.
+#[derive(Debug, Clone, Copy)]
+pub struct Params<'a> {
+    pub dialect: Dialect,
+    /// The PostgreSQL placeholder number of slot 0.
+    pub first: usize,
+    /// The number of values of each list slot, for MySQL and SQLite, which bind each value.
+    pub lists: &'a [usize],
+}
+
+impl Params<'_> {
+    fn one(&self, slot: usize) -> String {
+        self.dialect.placeholder(self.first + slot)
+    }
+
+    /// `column` is one of the values of a list slot.
+    fn list(&self, column: &str, slot: usize) -> String {
+        match self.dialect {
+            Dialect::Postgres => format!("{column} = ANY(${})", self.first + slot),
+            Dialect::MySql | Dialect::Sqlite => {
+                let count = self.lists.get(slot).copied().unwrap_or(1).max(1);
+                format!("{column} IN ({})", vec!["?"; count].join(", "))
+            }
+        }
+    }
+}
+
 /// A comparison operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareOp {
@@ -94,21 +123,21 @@ impl Filter {
     }
 
     /// Render the filter. `column` renders a column reference, or returns `None` for a
-    /// column that cannot be referred to, which is then the error. Slot `n` is rendered as
-    /// the placeholder `$(first_param + n)`.
+    /// column that cannot be referred to, which is then the error. Slots are rendered in
+    /// order, which is the order MySQL and SQLite bind their values in.
     pub fn render<'a>(
         &'a self,
         out: &mut String,
         column: &dyn Fn(&str) -> Option<String>,
-        first_param: usize,
+        params: &Params<'_>,
     ) -> Result<(), &'a str> {
         let col = |name: &'a str| column(name).ok_or(name);
         match self {
             Filter::Compare { column, op, param } => {
-                let _ = write!(out, "{} {} ${}", col(column)?, op.sql(), first_param + param);
+                let _ = write!(out, "{} {} {}", col(column)?, op.sql(), params.one(*param));
             }
             Filter::In { column, param, negated } => {
-                let condition = format!("{} = ANY(${})", col(column)?, first_param + param);
+                let condition = params.list(&col(column)?, *param);
                 let _ = if *negated { write!(out, "NOT ({condition})") } else { write!(out, "{condition}") };
             }
             Filter::Null { column, negated } => {
@@ -116,8 +145,13 @@ impl Filter {
                 let _ = write!(out, "{} IS{not} NULL", col(column)?);
             }
             Filter::Like { column, param, case_insensitive } => {
-                let like = if *case_insensitive { "ILIKE" } else { "LIKE" };
-                let _ = write!(out, "{} {like} ${}", col(column)?, first_param + param);
+                let column = col(column)?;
+                let placeholder = params.one(*param);
+                let _ = match (case_insensitive, params.dialect) {
+                    (false, _) => write!(out, "{column} LIKE {placeholder}"),
+                    (true, Dialect::Postgres) => write!(out, "{column} ILIKE {placeholder}"),
+                    (true, _) => write!(out, "LOWER({column}) LIKE LOWER({placeholder})"),
+                };
             }
             Filter::And(filters) | Filter::Or(filters) => {
                 let (separator, empty) =
@@ -130,13 +164,13 @@ impl Filter {
                         out.push_str(separator);
                     }
                     out.push('(');
-                    filter.render(out, column, first_param)?;
+                    filter.render(out, column, params)?;
                     out.push(')');
                 }
             }
             Filter::Not(filter) => {
                 out.push_str("NOT (");
-                filter.render(out, column, first_param)?;
+                filter.render(out, column, params)?;
                 out.push(')');
             }
         }
@@ -150,7 +184,8 @@ mod tests {
 
     fn render(filter: &Filter, first_param: usize) -> String {
         let mut out = String::new();
-        filter.render(&mut out, &|c| Some(format!("t.\"{c}\"")), first_param).unwrap();
+        let params = Params { dialect: Dialect::Postgres, first: first_param, lists: &[] };
+        filter.render(&mut out, &|c| Some(format!("t.\"{c}\"")), &params).unwrap();
         out
     }
 
@@ -185,6 +220,7 @@ mod tests {
     fn unknown_columns_are_the_error() {
         let filter = Filter::Null { column: "missing".into(), negated: true };
         let mut out = String::new();
-        assert_eq!(filter.render(&mut out, &|_| None, 1), Err("missing"));
+        let params = Params { dialect: Dialect::Postgres, first: 1, lists: &[] };
+        assert_eq!(filter.render(&mut out, &|_| None, &params), Err("missing"));
     }
 }

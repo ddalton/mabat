@@ -1,11 +1,11 @@
 //! Typed aggregate reads for Rust, with SQL you can tune without changing code.
 //!
-//! Mabat loads nested, typed data from PostgreSQL. The shape of the result is declared
-//! with Rust types deriving [`View`], and Mabat plans and runs the queries that fill it:
-//! one query for the root rows, plus one batched query (`WHERE fk = ANY($1)`) per collection
-//! and per reference, so loading never runs one query per row. Any of those queries can be
-//! replaced with hand-tuned SQL from a file, checked against the views and the database at
-//! startup.
+//! Mabat loads nested, typed data from PostgreSQL or SQLite. The shape of the result is
+//! declared with Rust types deriving [`View`], and Mabat plans and runs the queries that
+//! fill it: one query for the root rows, plus one batched query (`WHERE fk = ANY($1)` on
+//! PostgreSQL, `WHERE fk IN (?, …)` on SQLite) per collection and per reference, so loading
+//! never runs one query per row. Any of those queries can be replaced with hand-tuned SQL
+//! from a file, checked against the views and the database at startup.
 //!
 //! # Views
 //!
@@ -48,7 +48,9 @@
 //!     name: String,
 //! }
 //!
-//! # async fn example(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<(), mabat::Error> {
+//! # #[cfg(feature = "postgres")] type Conn = sqlx::PgConnection;
+//! # #[cfg(not(feature = "postgres"))] type Conn = sqlx::SqliteConnection;
+//! # async fn example(conn: &mut Conn, id: Uuid) -> Result<(), mabat::Error> {
 //! use mabat::filter::col;
 //!
 //! let task = mabat::load::<TaskView>().by_key(id).one(conn).await?;
@@ -67,6 +69,18 @@
 //! Every query of a load runs on the connection you pass, so it sees the uncommitted
 //! changes of its transaction: pass `&mut *tx` for a transaction and `&mut *conn` for a
 //! pooled connection.
+//!
+//! # Databases
+//!
+//! The features `postgres` (the default) and `sqlite` enable the databases. A view is
+//! decoded on each enabled database, and a load runs on the database of the connection it
+//! is given. When a view has field types that not every enabled database decodes, such as
+//! a PostgreSQL array or `rust_decimal::Decimal` on SQLite, `#[view(databases = "postgres")]`
+//! limits it to the databases listed.
+//!
+//! In override SQL, `:keys` stands for the keys of a batched query on any database: it
+//! becomes `$1` on PostgreSQL, to use as `= ANY(:keys)`, and a list of parameters on SQLite,
+//! to use as `IN (:keys)`.
 //!
 //! # Collections, recursion and enums
 //!
@@ -137,7 +151,9 @@
 //!     pub reports: Vec<Ref<Employee>>,
 //! }
 //!
-//! # async fn example(conn: &mut sqlx::PgConnection) -> Result<(), mabat::Error> {
+//! # #[cfg(feature = "postgres")] type Conn = sqlx::PgConnection;
+//! # #[cfg(not(feature = "postgres"))] type Conn = sqlx::SqliteConnection;
+//! # async fn example(conn: &mut Conn) -> Result<(), mabat::Error> {
 //! let graph = mabat::load::<Employee>().by_key(4_i64).graph(conn).await?;
 //! let me = graph.root().unwrap();
 //! if let Some(manager) = me.manager(&graph) {
@@ -159,7 +175,9 @@
 //! # #[derive(View)]
 //! # #[view(table = "task")]
 //! # struct TaskView { name: String }
-//! # async fn example(conn: &mut sqlx::PgConnection) -> Result<(), mabat::Error> {
+//! # #[cfg(feature = "postgres")] type Conn = sqlx::PgConnection;
+//! # #[cfg(not(feature = "postgres"))] type Conn = sqlx::SqliteConnection;
+//! # async fn example(conn: &mut Conn) -> Result<(), mabat::Error> {
 //! use mabat::Mabat;
 //!
 //! let mabat = Mabat::builder()
@@ -184,8 +202,8 @@
 
 pub use mabat_derive::View;
 pub use mabat_sqlx::{
-    Builder, Diagnostic, Embedded, Error, Graph, Key, Load, Mabat, Node, OnInvalid, Origin, Ref, Reloaded, Report,
-    Severity, ShadowSummary, View, load, plan, scaffold,
+    Backend, Builder, Conn, Diagnostic, Embedded, EmbeddedDecoder, Error, Graph, Key, Load, Mabat, Node, OnInvalid,
+    Origin, Ref, Reloaded, Report, Severity, ShadowSummary, View, ViewDecoder, load, plan, scaffold,
 };
 pub use mabat_sqlx::{filter, manifest};
 
@@ -197,3 +215,42 @@ pub mod query {
 
 #[doc(hidden)]
 pub use mabat_sqlx::__private;
+
+// The derive generates a decoder for every database; these keep the decoders of the databases
+// whose feature is enabled. They are defined here so that the features of this crate decide,
+// not those of the crate using the derive.
+
+#[cfg(feature = "postgres")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __if_postgres {
+    ($($item:item)*) => { $($item)* };
+}
+
+#[cfg(not(feature = "postgres"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __if_postgres {
+    ($($item:item)*) => {};
+}
+
+// MySQL is not supported yet
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __if_mysql {
+    ($($item:item)*) => {};
+}
+
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __if_sqlite {
+    ($($item:item)*) => { $($item)* };
+}
+
+#[cfg(not(feature = "sqlite"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __if_sqlite {
+    ($($item:item)*) => {};
+}

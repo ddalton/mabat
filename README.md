@@ -5,14 +5,14 @@ Typed aggregate reads for Rust, with SQL you can tune without changing code.
 *Mabat* (מבט) is Hebrew for "view": you declare the view of the data you want, and the queries that fill it
 can be tuned separately.
 
-> **Status:** early development, not published yet. Milestones 1 to 5 are implemented: struct views on
-> PostgreSQL, enums with data, overrides checked at startup, collections and recursive views, and shared and
-> cyclic graphs. See the [design document](docs/design.md) for the
-> plan.
+> **Status:** early development, not published yet. Milestones 1 to 5 are implemented: struct views, enums
+> with data, overrides checked at startup, collections and recursive views, and shared and cyclic graphs, on
+> PostgreSQL and SQLite. See the [design document](docs/design.md) for the plan.
 
-Mabat loads nested, typed data from PostgreSQL. The shape of the result is declared with ordinary Rust structs,
-and Mabat plans and runs the queries that fill it: one query for the root rows, plus one batched query
-(`WHERE fk = ANY($1)`) per collection and per reference. It never runs one query per row.
+Mabat loads nested, typed data from PostgreSQL or SQLite. The shape of the result is declared with ordinary Rust
+structs, and Mabat plans and runs the queries that fill it: one query for the root rows, plus one batched query
+(`WHERE fk = ANY($1)` on PostgreSQL, `WHERE fk IN (?, …)` on SQLite) per collection and per reference. It
+never runs one query per row.
 
 ```rust
 use mabat::View;
@@ -317,6 +317,8 @@ ORDER BY n.id;
 | Ordered lists, maps, many-to-many, recursive views | Done (M4) |
 | Shared (`Arc`) and graph (`Ref<T>`) representations for cyclic data | Done (M5) |
 | DBA tooling: view manifest and `mabat check` / `explain` / `scaffold` CLI | Done |
+| SQLite | Done (M6) |
+| MySQL, pooled snapshot concurrency | Planned (M6) |
 | GraphQL selection sets | Planned (M7) |
 
 Loading 1,000 tasks with 10 subtasks each takes about 8% longer than hand-written SQLx code running the same two
@@ -330,13 +332,25 @@ mabat = "0.1"
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
 ```
 
+For SQLite, enable its feature, with or without `postgres`:
+
+```toml
+mabat = { version = "0.1", default-features = false, features = ["sqlite"] }
+sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio"] }
+```
+
+A view is decoded on each enabled database, and a load runs on the database of the connection it is given.
+With both enabled, `#[view(databases = "postgres")]` limits a view whose field types only one database decodes,
+such as a PostgreSQL array. In override SQL, `:keys` stands for the keys of a batched query on either database:
+`= ANY(:keys)` on PostgreSQL, `IN (:keys)` on SQLite.
+
 The derive macro also works when the crate is renamed in `Cargo.toml`, for example
 `views = { package = "mabat", version = "0.1" }`.
 
 ## Requirements
 
 - **Rust:** 1.94 or later.
-- **Database:** PostgreSQL, through SQLx 0.9 with the Tokio runtime.
+- **Database:** PostgreSQL or SQLite, through SQLx 0.9 with the Tokio runtime.
 - **Changes:** see [CHANGELOG.md](CHANGELOG.md) for what each version adds.
 
 ## Development
@@ -349,7 +363,8 @@ scripts/with-postgres.sh                                                   # car
 scripts/with-postgres.sh cargo run --release -p mabat --example parity   # benchmark
 ```
 
-Without a database (`MABAT_TEST_DATABASE_URL` unset), the database tests are skipped.
+Without a database (`MABAT_TEST_DATABASE_URL` unset), the PostgreSQL tests are skipped. The SQLite tests need no
+server and always run, in in-memory databases.
 
 ### End-to-end tests
 
@@ -368,6 +383,7 @@ every load with an independent answer computed in SQL:
   - the recursive employee hierarchy, loaded as trees in both modes
   - employees, customers and invoices as a graph
   - albums in maps and playlists of tracks
+  - all of the above on SQLite too, with a playlist of 3,290 tracks that needs several statements of keys
 
 Each dataset is loaded once per database into a schema named after a hash of its SQL (`mabat_e2e_pagila_…`,
 `mabat_e2e_chinook_…`), and the tests only read it. `scripts/with-postgres.sh` starts with an empty database

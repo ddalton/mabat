@@ -32,6 +32,10 @@ use syn::{Data, DataEnum, DeriveInput, Fields, GenericArgument, Ident, LitStr, P
 /// - `#[view(embed)]` or `#[view(embed(prefix = "..."))]`: an embedded struct or an enum,
 ///   with an optional common column prefix
 /// - `#[view(json)]`: a column decoded from JSON with `serde`
+///
+/// On any of these, `#[view(databases = "postgres, sqlite")]` limits the decoders to the
+/// listed databases, for a view whose field types not every enabled database can decode.
+/// By default a view is decoded on each database whose feature is enabled.
 #[proc_macro_derive(View, attributes(view))]
 pub fn derive_view(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
@@ -169,17 +173,17 @@ fn expand_items(input: DeriveInput) -> syn::Result<TokenStream2> {
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new(input.generics.span(), "a view cannot have generic parameters"));
     }
-    let target = parse_target(&input)?;
+    let (target, databases) = parse_target(&input)?;
     match (&input.data, target) {
         (Data::Struct(data), Target::View { table, key }) => {
-            expand_view(&input.ident, &table, &key, &struct_fields(&input.ident, &data.fields)?)
+            expand_view(&input.ident, &table, &key, &struct_fields(&input.ident, &data.fields)?, databases)
         }
         (Data::Struct(data), Target::Embedded) => {
-            expand_embedded(&input.ident, &struct_fields(&input.ident, &data.fields)?)
+            expand_embedded(&input.ident, &struct_fields(&input.ident, &data.fields)?, databases)
         }
         (Data::Enum(data), Target::Sum { tag, strategy, lenient }) => {
             let variants = parse_variants(data, strategy)?;
-            expand_sum(&input.ident, &tag, strategy, lenient, &variants)
+            expand_sum(&input.ident, &tag, strategy, lenient, &variants, databases)
         }
         (Data::Union(_), _) => Err(syn::Error::new(input.ident.span(), "a union cannot derive View")),
         _ => unreachable!("parse_target matches the kind of item"),
@@ -193,8 +197,9 @@ fn struct_fields(ident: &Ident, fields: &Fields) -> syn::Result<Vec<ViewField>> 
     }
 }
 
-fn parse_target(input: &DeriveInput) -> syn::Result<Target> {
+fn parse_target(input: &DeriveInput) -> syn::Result<(Target, Databases)> {
     let is_enum = matches!(input.data, Data::Enum(_));
+    let mut databases = Databases::ALL;
     let mut table = None;
     let mut key = None;
     let mut embedded = false;
@@ -203,7 +208,9 @@ fn parse_target(input: &DeriveInput) -> syn::Result<Target> {
     let mut lenient = false;
     for attr in input.attrs.iter().filter(|a| a.path().is_ident("view")) {
         attr.parse_nested_meta(|meta| {
-            if is_enum {
+            if meta.path.is_ident("databases") {
+                databases = Databases::parse(&meta.value()?.parse::<LitStr>()?)?;
+            } else if is_enum {
                 if meta.path.is_ident("tag") {
                     tag = Some(meta.value()?.parse::<LitStr>()?.value());
                 } else if meta.path.is_ident("strategy") {
@@ -216,9 +223,9 @@ fn parse_target(input: &DeriveInput) -> syn::Result<Target> {
                 } else if meta.path.is_ident("lenient") {
                     lenient = true;
                 } else {
-                    return Err(
-                        meta.error("unknown view attribute for an enum, expected `tag`, `strategy` or `lenient`")
-                    );
+                    return Err(meta.error(
+                        "unknown view attribute for an enum, expected `tag`, `strategy`, `lenient` or `databases`",
+                    ));
                 }
             } else if meta.path.is_ident("table") {
                 table = Some(meta.value()?.parse::<LitStr>()?.value());
@@ -227,7 +234,7 @@ fn parse_target(input: &DeriveInput) -> syn::Result<Target> {
             } else if meta.path.is_ident("embedded") {
                 embedded = true;
             } else {
-                return Err(meta.error("unknown view attribute, expected `table`, `key` or `embedded`"));
+                return Err(meta.error("unknown view attribute, expected `table`, `key`, `embedded` or `databases`"));
             }
             Ok(())
         })?;
@@ -237,17 +244,20 @@ fn parse_target(input: &DeriveInput) -> syn::Result<Target> {
         let tag = tag.ok_or_else(|| {
             syn::Error::new(input.ident.span(), "missing `#[view(tag = \"...\")]`, the column that names the variant")
         })?;
-        return Ok(Target::Sum { tag, strategy: strategy.unwrap_or(Strategy::Tag), lenient });
+        return Ok((Target::Sum { tag, strategy: strategy.unwrap_or(Strategy::Tag), lenient }, databases));
     }
-    match (embedded, table) {
-        (true, None) if key.is_none() => Ok(Target::Embedded),
-        (true, _) => Err(syn::Error::new(input.ident.span(), "an embedded struct has no `table` or `key`")),
-        (false, Some(table)) => Ok(Target::View { table, key: key.unwrap_or_else(|| "id".to_string()) }),
-        (false, None) => Err(syn::Error::new(
-            input.ident.span(),
-            "missing `#[view(table = \"...\")]`, or `#[view(embedded)]` for an embedded struct",
-        )),
-    }
+    let target = match (embedded, table) {
+        (true, None) if key.is_none() => Target::Embedded,
+        (true, _) => return Err(syn::Error::new(input.ident.span(), "an embedded struct has no `table` or `key`")),
+        (false, Some(table)) => Target::View { table, key: key.unwrap_or_else(|| "id".to_string()) },
+        (false, None) => {
+            return Err(syn::Error::new(
+                input.ident.span(),
+                "missing `#[view(table = \"...\")]`, or `#[view(embedded)]` for an embedded struct",
+            ));
+        }
+    };
+    Ok((target, databases))
 }
 
 fn parse_variants(data: &DataEnum, strategy: Strategy) -> syn::Result<Vec<VariantSpec>> {
@@ -698,41 +708,43 @@ fn decode_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStrea
     let alias = scope.alias(name);
     match &field.spec {
         FieldSpec::Column { .. } => match generic_argument(ty, "Option") {
-            Some(inner) => quote! { __mabat::__private::optional_column::<#inner>(row, node, #alias)? },
-            None => quote! { __mabat::__private::column::<#ty>(row, node, #alias)? },
+            Some(inner) => quote! { __mabat::__private::optional_column::<#inner, __Backend>(row, node, #alias)? },
+            None => quote! { __mabat::__private::column::<#ty, __Backend>(row, node, #alias)? },
         },
         FieldSpec::Json { .. } => match generic_argument(ty, "Option") {
             Some(inner) => quote! {
-                __mabat::__private::optional_column::<__mabat::__private::Json<#inner>>(row, node, #alias)?
+                __mabat::__private::optional_column::<__mabat::__private::Json<#inner>, __Backend>(row, node, #alias)?
                     .map(|json| json.0)
             },
-            None => quote! { __mabat::__private::column::<__mabat::__private::Json<#ty>>(row, node, #alias)?.0 },
+            None => {
+                quote! { __mabat::__private::column::<__mabat::__private::Json<#ty>, __Backend>(row, node, #alias)?.0 }
+            }
         },
         FieldSpec::Embed { ty, .. } => {
             let prefix = scope.embed_prefix(name);
             let field_index = scope.field_index(index);
-            quote! { <#ty as __mabat::Embedded>::decode_embedded(row, node, #prefix, #field_index)? }
+            quote! { <#ty as __mabat::EmbeddedDecoder<__Backend>>::decode_embedded(row, node, #prefix, #field_index)? }
         }
         FieldSpec::Child(child) => {
             let element = &child.element;
             match (&child.map_key_type, child.form) {
-                (Some(key), _) => quote! { __mabat::__private::map::<#key, #element, #ty>(row, node, #index)? },
-                (None, Form::Owned) => quote! { __mabat::__private::children::<#element>(row, node, #index)? },
+                (Some(key), _) => quote! { __mabat::__private::map::<#key, #element, #ty, _>(row, node, #index)? },
+                (None, Form::Owned) => quote! { __mabat::__private::children::<#element, _>(row, node, #index)? },
                 (None, Form::Shared) => {
-                    quote! { __mabat::__private::shared_children::<#element>(row, node, #index)? }
+                    quote! { __mabat::__private::shared_children::<#element, _>(row, node, #index)? }
                 }
-                (None, Form::Graph) => quote! { __mabat::__private::references::<#element>(row, node, #index)? },
+                (None, Form::Graph) => quote! { __mabat::__private::references::<#element, _>(row, node, #index)? },
             }
         }
         FieldSpec::ToOne { optional, target, form, .. } => {
             let ref_alias = format!("$ref.{name}");
             let helper = match (form, optional) {
-                (Form::Owned, true) => quote! { to_one::<#target>(row, node, #index, #ref_alias) },
-                (Form::Owned, false) => quote! { to_one_required::<#target>(row, node, #index, #ref_alias) },
-                (Form::Shared, true) => quote! { shared_to_one::<#target>(row, node, #index, #ref_alias) },
-                (Form::Shared, false) => quote! { shared_to_one_required::<#target>(row, node, #index, #ref_alias) },
-                (Form::Graph, true) => quote! { reference::<#target>(row, node, #ref_alias) },
-                (Form::Graph, false) => quote! { reference_required::<#target>(row, node, #ref_alias) },
+                (Form::Owned, true) => quote! { to_one::<#target, _>(row, node, #index, #ref_alias) },
+                (Form::Owned, false) => quote! { to_one_required::<#target, _>(row, node, #index, #ref_alias) },
+                (Form::Shared, true) => quote! { shared_to_one::<#target, _>(row, node, #index, #ref_alias) },
+                (Form::Shared, false) => quote! { shared_to_one_required::<#target, _>(row, node, #index, #ref_alias) },
+                (Form::Graph, true) => quote! { reference::<#target, _>(row, node, #ref_alias) },
+                (Form::Graph, false) => quote! { reference_required::<#target, _>(row, node, #ref_alias) },
             };
             quote! { __mabat::__private::#helper? }
         }
@@ -755,7 +767,7 @@ fn describe_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStr
         FieldSpec::Embed { ty, .. } => {
             let prefix = scope.embed_prefix(name);
             let field_index = scope.field_index(index);
-            quote! { <#ty as __mabat::Embedded>::describe_embedded(description, #prefix, #field_index); }
+            quote! { <#ty as __mabat::EmbeddedDecoder<__Backend>>::describe_embedded(description, #prefix, #field_index); }
         }
         FieldSpec::Child(child) => {
             let element = &child.element;
@@ -784,7 +796,53 @@ fn construct(path: TokenStream2, style: Style, fields: &[ViewField], scope: Scop
     }
 }
 
-fn expand_view(ident: &Ident, table: &str, key: &str, fields: &[ViewField]) -> syn::Result<TokenStream2> {
+/// The databases decoders are generated for: the name in `#[view(databases = "...")]`, the
+/// facade's macro that keeps the decoder when the database's feature is enabled, and the
+/// database type.
+const BACKENDS: [(&str, &str, &str); 3] =
+    [("postgres", "__if_postgres", "Postgres"), ("mysql", "__if_mysql", "MySql"), ("sqlite", "__if_sqlite", "Sqlite")];
+
+/// The databases a view is decoded on, by their position in [`BACKENDS`].
+#[derive(Clone, Copy)]
+struct Databases([bool; 3]);
+
+impl Databases {
+    const ALL: Databases = Databases([true; 3]);
+
+    fn parse(lit: &LitStr) -> syn::Result<Databases> {
+        let mut databases = [false; 3];
+        for name in lit.value().split(',').map(str::trim) {
+            let position = BACKENDS.iter().position(|(n, _, _)| *n == name).ok_or_else(|| {
+                syn::Error::new(
+                    lit.span(),
+                    format!("unknown database `{name}`, expected `postgres`, `mysql` or `sqlite`"),
+                )
+            })?;
+            databases[position] = true;
+        }
+        Ok(Databases(databases))
+    }
+}
+
+/// An item for each database, kept by the facade only for the enabled ones. `make` gets the
+/// path of the database type; generated bodies refer to it as `__Backend`.
+fn per_backend(databases: Databases, make: impl Fn(&TokenStream2) -> TokenStream2) -> TokenStream2 {
+    let items = BACKENDS.iter().zip(databases.0).filter(|(_, on)| *on).map(|((_, gate, ty), _)| {
+        let gate = Ident::new(gate, Span::call_site());
+        let ty = Ident::new(ty, Span::call_site());
+        let item = make(&quote! { __mabat::__private::#ty });
+        quote! { __mabat::#gate! { #item } }
+    });
+    quote! { #(#items)* }
+}
+
+fn expand_view(
+    ident: &Ident,
+    table: &str,
+    key: &str,
+    fields: &[ViewField],
+    databases: Databases,
+) -> syn::Result<TokenStream2> {
     let view_name = ident.to_string();
     let count = fields.len();
     let shapes = fields.iter().map(field_shape);
@@ -796,9 +854,46 @@ fn expand_view(ident: &Ident, table: &str, key: &str, fields: &[ViewField]) -> s
             FieldSpec::ToOne { target, form, .. } => (target, *form == Form::Graph),
             _ => return None,
         };
-        Some(quote! { __mabat::__private::graph_visit::<#target>(node, #index, graph, #entity)?; })
+        Some(quote! { __mabat::__private::graph_visit::<#target, _>(node, #index, graph, #entity)?; })
     });
     let navigation = navigation(ident, fields);
+
+    let describers: Vec<TokenStream2> = describers.collect();
+    let visits: Vec<TokenStream2> = visits.collect();
+    let decoders = per_backend(databases, |backend| {
+        quote! {
+            impl __mabat::ViewDecoder<#backend> for #ident {
+                fn decode(
+                    row: &<#backend as __mabat::__private::Database>::Row,
+                    node: &__mabat::Node<#backend>,
+                ) -> ::core::result::Result<Self, __mabat::Error> {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    ::core::result::Result::Ok(#value)
+                }
+
+                #[allow(unused_variables)]
+                fn describe(description: &mut __mabat::__private::Description<#backend>) {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    #(#describers)*
+                }
+
+                #[allow(unused_variables)]
+                fn decode_graph(
+                    node: &__mabat::Node<#backend>,
+                    graph: &mut __mabat::__private::GraphBuilder,
+                    entity: bool,
+                ) -> ::core::result::Result<(), __mabat::Error> {
+                    if entity {
+                        __mabat::__private::graph_store::<Self, _>(node, graph)?;
+                    }
+                    #(#visits)*
+                    ::core::result::Result::Ok(())
+                }
+            }
+        }
+    });
 
     Ok(quote! {
         #navigation
@@ -814,32 +909,9 @@ fn expand_view(ident: &Ident, table: &str, key: &str, fields: &[ViewField]) -> s
                 };
                 &SHAPE
             }
-
-            fn decode(
-                row: &__mabat::__private::PgRow,
-                node: &__mabat::Node,
-            ) -> ::core::result::Result<Self, __mabat::Error> {
-                ::core::result::Result::Ok(#value)
-            }
-
-            #[allow(unused_variables)]
-            fn describe(description: &mut __mabat::__private::Description) {
-                #(#describers)*
-            }
-
-            #[allow(unused_variables)]
-            fn decode_graph(
-                node: &__mabat::Node,
-                graph: &mut __mabat::__private::GraphBuilder,
-                entity: bool,
-            ) -> ::core::result::Result<(), __mabat::Error> {
-                if entity {
-                    __mabat::__private::graph_store::<Self>(node, graph)?;
-                }
-                #(#visits)*
-                ::core::result::Result::Ok(())
-            }
         }
+
+        #decoders
     })
 }
 
@@ -889,7 +961,7 @@ fn navigation(owner: &Ident, fields: &[ViewField]) -> TokenStream2 {
     }
 }
 
-fn expand_embedded(ident: &Ident, fields: &[ViewField]) -> syn::Result<TokenStream2> {
+fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) -> syn::Result<TokenStream2> {
     for field in fields {
         if matches!(field.spec, FieldSpec::Child(_) | FieldSpec::ToOne { .. }) {
             return Err(syn::Error::new(
@@ -906,6 +978,36 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField]) -> syn::Result<TokenStre
     let value = construct(quote! { Self }, Style::Named, fields, scope);
     let describers = fields.iter().enumerate().map(|(index, field)| describe_value(field, index, scope));
 
+    let describers: Vec<TokenStream2> = describers.collect();
+    let decoders = per_backend(databases, |backend| {
+        quote! {
+            impl __mabat::EmbeddedDecoder<#backend> for #ident {
+                #[allow(unused_variables)]
+                fn decode_embedded(
+                    row: &<#backend as __mabat::__private::Database>::Row,
+                    node: &__mabat::Node<#backend>,
+                    prefix: &str,
+                    field_index: usize,
+                ) -> ::core::result::Result<Self, __mabat::Error> {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    ::core::result::Result::Ok(#value)
+                }
+
+                #[allow(unused_variables)]
+                fn describe_embedded(
+                    description: &mut __mabat::__private::Description<#backend>,
+                    prefix: &str,
+                    field_index: usize,
+                ) {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    #(#describers)*
+                }
+            }
+        }
+    });
+
     Ok(quote! {
         impl __mabat::Embedded for #ident {
             fn shape() -> &'static __mabat::__private::EmbeddedShape {
@@ -916,26 +1018,9 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField]) -> syn::Result<TokenStre
                 };
                 &SHAPE
             }
-
-            #[allow(unused_variables)]
-            fn decode_embedded(
-                row: &__mabat::__private::PgRow,
-                node: &__mabat::Node,
-                prefix: &str,
-                field_index: usize,
-            ) -> ::core::result::Result<Self, __mabat::Error> {
-                ::core::result::Result::Ok(#value)
-            }
-
-            #[allow(unused_variables)]
-            fn describe_embedded(
-                description: &mut __mabat::__private::Description,
-                prefix: &str,
-                field_index: usize,
-            ) {
-                #(#describers)*
-            }
         }
+
+        #decoders
     })
 }
 
@@ -945,6 +1030,7 @@ fn expand_sum(
     strategy: Strategy,
     lenient: bool,
     variants: &[VariantSpec],
+    databases: Databases,
 ) -> syn::Result<TokenStream2> {
     let enum_name = ident.to_string();
 
@@ -1037,9 +1123,48 @@ fn expand_sum(
             Some(_) => {
                 let fields = variant.fields.iter().enumerate().map(|(i, field)| describe_value(field, i, Scope::Row));
                 quote! {
-                    description.variant_table(field_index, #name, |description: &mut __mabat::__private::Description| {
+                    description.variant_table(field_index, #name, |description: &mut __mabat::__private::Description<__Backend>| {
                         #(#fields)*
                     });
+                }
+            }
+        }
+    });
+
+    let arms: Vec<TokenStream2> = arms.collect();
+    let tag_values: Vec<&String> = tag_values.collect();
+    let describers: Vec<TokenStream2> = describers.collect();
+    let decoders = per_backend(databases, |backend| {
+        quote! {
+            impl __mabat::EmbeddedDecoder<#backend> for #ident {
+                #[allow(unused_variables)]
+                fn decode_embedded(
+                    row: &<#backend as __mabat::__private::Database>::Row,
+                    node: &__mabat::Node<#backend>,
+                    prefix: &str,
+                    field_index: usize,
+                ) -> ::core::result::Result<Self, __mabat::Error> {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    let tag = __mabat::__private::tag(row, node, prefix)?;
+                    match tag.as_str() {
+                        #(#arms)*
+                        other => ::core::result::Result::Err(
+                            __mabat::__private::unknown_tag(node, prefix, other, &[#(#tag_values),*]),
+                        ),
+                    }
+                }
+
+                #[allow(unused_variables)]
+                fn describe_embedded(
+                    description: &mut __mabat::__private::Description<#backend>,
+                    prefix: &str,
+                    field_index: usize,
+                ) {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    description.column::<::std::string::String>(::std::format!("{}$tag", prefix), false);
+                    #(#describers)*
                 }
             }
         }
@@ -1061,32 +1186,8 @@ fn expand_sum(
                 };
                 &SHAPE
             }
-
-            #[allow(unused_variables)]
-            fn decode_embedded(
-                row: &__mabat::__private::PgRow,
-                node: &__mabat::Node,
-                prefix: &str,
-                field_index: usize,
-            ) -> ::core::result::Result<Self, __mabat::Error> {
-                let tag = __mabat::__private::tag(row, node, prefix)?;
-                match tag.as_str() {
-                    #(#arms)*
-                    other => ::core::result::Result::Err(
-                        __mabat::__private::unknown_tag(node, prefix, other, &[#(#tag_values),*]),
-                    ),
-                }
-            }
-
-            #[allow(unused_variables)]
-            fn describe_embedded(
-                description: &mut __mabat::__private::Description,
-                prefix: &str,
-                field_index: usize,
-            ) {
-                description.column::<::std::string::String>(::std::format!("{}$tag", prefix), false);
-                #(#describers)*
-            }
         }
+
+        #decoders
     })
 }

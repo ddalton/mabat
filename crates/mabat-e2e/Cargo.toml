@@ -12,9 +12,9 @@ publish = false
 
 [dependencies]
 chrono.workspace = true
-mabat.workspace = true
+mabat = { workspace = true, features = ["sqlite"] }
 rust_decimal = "1"
-sqlx = { workspace = true, features = ["rust_decimal"] }
+sqlx = { workspace = true, features = ["rust_decimal", "sqlite"] }
 
 [dev-dependencies]
 tokio.workspace = true

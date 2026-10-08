@@ -1,7 +1,7 @@
 struct NotAColumn;
 
 #[derive(mabat::View)]
-#[view(table = "task")]
+#[view(table = "task", databases = "postgres")]
 struct Task {
     value: NotAColumn,
 }

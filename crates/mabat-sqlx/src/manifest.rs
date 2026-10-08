@@ -22,12 +22,13 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use mabat_core::sql::{self, Layout, RootOptions};
+use mabat_core::sql::{self, Layout, Render, RootOptions};
 use mabat_core::{INDEX_ALIAS, KEY_ALIAS, Link, MAP_KEY_ALIAS, PARENT_ALIAS, PlanError, QueryPlan, REF_ALIAS_PREFIX};
 use serde::{Deserialize, Serialize};
-use sqlx::PgConnection;
+use sqlx::Database;
 
 use crate::Error;
+use crate::backend::{Backend, Conn};
 use crate::check::{self, ViewEntry};
 use crate::describe::{ColumnType, DescribeFn, Description, short_type_name};
 use crate::overrides::OverrideFile;
@@ -41,6 +42,9 @@ pub const FORMAT: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub format: u32,
+    /// The database the views are described for: `PostgreSQL`, `MySQL` or `SQLite`, as
+    /// `sqlx::Database::NAME`. Column types and the generated SQL depend on it.
+    pub backend: String,
     pub views: Vec<ViewManifest>,
 }
 
@@ -131,13 +135,6 @@ impl From<&ColumnType> for TypeManifest {
     }
 }
 
-impl TypeManifest {
-    /// Whether a column of the type can be decoded. A domain is decoded as its base type.
-    pub(crate) fn accepts(&self, ty: &sqlx::postgres::PgTypeInfo) -> bool {
-        crate::describe::accepts(&self.accepts, ty)
-    }
-}
-
 impl Manifest {
     /// The manifest as pretty JSON.
     pub fn to_json(&self) -> String {
@@ -171,10 +168,13 @@ impl Manifest {
 
     /// Check the override files of the directories against the views and the database, as
     /// the application does at startup.
-    pub async fn check(&self, conn: &mut PgConnection, overrides: &[PathBuf]) -> Result<Report, Error> {
+    pub async fn check<C: Conn>(&self, conn: &mut C, overrides: &[PathBuf]) -> Result<Report, Error> {
+        if self.backend != C::Backend::NAME {
+            return Err(Error::ManifestBackend { manifest: self.backend.clone(), connection: C::Backend::NAME });
+        }
         let mut report = Report::default();
         let files = registry::read_override_files(overrides, &[], &mut report);
-        check::check(conn, self, files, &mut report).await.map_err(Error::Check)?;
+        check::check::<C::Backend>(conn.connection(), self, files, &mut report).await.map_err(Error::Check)?;
         Ok(report)
     }
 
@@ -195,7 +195,8 @@ impl Manifest {
     /// An override file for a view, with the generated SQL of every query, as a starting
     /// point for tuning.
     pub fn scaffold(&self, view: &str, format: ScaffoldFormat) -> Option<String> {
-        self.view(view).map(|view| scaffold(view, format))
+        let arrays = self.backend == "PostgreSQL";
+        self.view(view).map(|view| scaffold(view, format, arrays))
     }
 }
 
@@ -207,21 +208,21 @@ pub enum ScaffoldFormat {
 }
 
 /// Build the manifest of a view and its plan.
-pub(crate) fn build(view: &ViewEntry) -> Result<(ViewManifest, QueryPlan), PlanError> {
+pub(crate) fn build<B: Backend>(view: &ViewEntry<B>) -> Result<(ViewManifest, QueryPlan), PlanError> {
     let plan = QueryPlan::build(view.shape)?;
     let mut queries = Vec::new();
-    add_query(&mut queries, &plan, view.describe, None, None);
+    add_query::<B>(&mut queries, &plan, view.describe, None, None);
     Ok((ViewManifest { name: view.shape.name.to_string(), queries }, plan))
 }
 
-fn add_query(
+fn add_query<B: Backend>(
     queries: &mut Vec<QueryManifest>,
     plan: &QueryPlan,
-    describe: DescribeFn,
+    describe: DescribeFn<B>,
     map_key: Option<&ColumnType>,
     parent: Option<usize>,
 ) {
-    let mut description = Description::default();
+    let mut description = Description::<B>::default();
     describe(&mut description);
 
     let columns = plan
@@ -259,7 +260,11 @@ fn add_query(
         parent,
         link,
         key_alias: plan.key_alias.clone(),
-        sql: sql::select_with(plan, &RootOptions::default(), Layout::Multiline),
+        sql: sql::render(
+            plan,
+            &RootOptions::default(),
+            &Render::new(B::DIALECT).with_layout(Layout::Multiline).with_keys_token(),
+        ),
         columns,
     });
     let index = queries.len() - 1;
@@ -272,7 +277,7 @@ fn add_query(
             Some(variant) => description.variant(child.field_index, variant).map(|describe| (describe, None)),
         }
         .expect("the description and the shape of a view have the same fields");
-        add_query(queries, child_plan, describe, map_key, Some(index));
+        add_query::<B>(queries, child_plan, describe, map_key, Some(index));
     }
 }
 
@@ -313,8 +318,14 @@ fn explain_view(out: &mut String, view: &ViewManifest, file: Option<&OverrideFil
     }
 }
 
-fn scaffold(view: &ViewManifest, format: ScaffoldFormat) -> String {
+fn scaffold(view: &ViewManifest, format: ScaffoldFormat, arrays: bool) -> String {
     let name = &view.name;
+    let keys = if arrays { "the array of root keys as $1" } else { "the root keys as IN (:keys)" };
+    let child_keys = if arrays {
+        "the array of the keys they are\nselected by as $1"
+    } else {
+        "the keys they are selected by as\nIN (:keys)"
+    };
     let intro = [
         format!("Overrides for {name}."),
         String::new(),
@@ -322,10 +333,17 @@ fn scaffold(view: &ViewManifest, format: ScaffoldFormat) -> String {
         "by column alias, so keep the aliases; joins, ordering, hints and the tables themselves".to_string(),
         format!("can change. Every query is checked against {name} at startup and by `mabat check`."),
         String::new(),
-        "$root takes no parameter, and is then filtered, ordered and paged as a subquery, or".to_string(),
-        "the array of root keys as $1. The other queries take the array of the keys they are".to_string(),
-        "selected by as $1. Mark a query shadowed to also run the generated query and compare.".to_string(),
+        format!("$root takes no keys, and is then filtered, ordered and paged as a subquery, or {keys}."),
+        format!(
+            "The other queries take {child_keys}. Mark a query shadowed to also run the generated query and compare."
+        ),
     ];
+    let intro: Vec<String> = intro
+        .iter()
+        .flat_map(|line| {
+            line.lines().map(str::to_string).collect::<Vec<_>>().into_iter().chain(line.is_empty().then(String::new))
+        })
+        .collect();
     let mut out = String::new();
     match format {
         ScaffoldFormat::Toml => {

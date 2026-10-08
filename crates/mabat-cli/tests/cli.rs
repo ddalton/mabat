@@ -18,7 +18,7 @@ impl Workspace {
     fn new() -> Workspace {
         let dir = std::env::temp_dir().join(format!("mabat-cli-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(dir.join("overrides")).unwrap();
-        let manifest = Mabat::builder().register::<TaskView>().manifest().unwrap();
+        let manifest = Mabat::<sqlx::Postgres>::builder().register::<TaskView>().manifest().unwrap();
         assert!(manifest.write(dir.join("views.json")).unwrap());
         std::fs::write(dir.join("schema.sql"), SCHEMA).unwrap();
         Workspace(dir)
@@ -273,4 +273,43 @@ fn checks_sample_databases_from_schema_files() {
     assert_eq!((out.code, out.stdout.as_str()), (0, "0 error(s), 0 warning(s)\n"), "{}", out.stderr);
 
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn checks_a_sqlite_manifest_in_memory() {
+    use mabat_e2e::{Dataset, chinook_sqlite};
+
+    // No database is needed: the schema is created in a new in-memory database
+    let workspace = Workspace::new();
+    let manifest = Mabat::<sqlx::Sqlite>::builder()
+        .register::<chinook_sqlite::InvoiceView>()
+        .register::<chinook_sqlite::EmployeeTree>()
+        .manifest()
+        .unwrap();
+    assert!(manifest.write(workspace.0.join("chinook.json")).unwrap());
+    std::fs::write(workspace.0.join("chinook.sql"), Dataset::Chinook.sqlite_sql()).unwrap();
+    let check = |workspace: &Workspace| {
+        mabat(&[
+            "check",
+            "--manifest",
+            &workspace.path("chinook.json"),
+            "--overrides",
+            &workspace.path("overrides"),
+            "--schema",
+            &workspace.path("chinook.sql"),
+        ])
+    };
+
+    let output = check(&workspace);
+    assert_eq!(output.code, 0, "{}{}", output.stdout, output.stderr);
+
+    workspace.write_override("InvoiceView.sql", "-- mabat: query lines\nSELECT 1 AS \"$parent\" FROM invoice_line\n");
+    let output = check(&workspace);
+    assert_eq!(output.code, 1, "{}{}", output.stdout, output.stderr);
+    assert!(output.stdout.contains("InvoiceView.lines"), "{}", output.stdout);
+
+    // A URL is needed without a schema
+    let output = mabat(&["check", "--manifest", &workspace.path("chinook.json")]);
+    assert_eq!(output.code, 2, "{}", output.stderr);
+    assert!(output.stderr.contains("--schema"), "{}", output.stderr);
 }

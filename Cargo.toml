@@ -14,7 +14,7 @@ homepage = "https://github.com/ddalton/mabat"
 [workspace.dependencies]
 mabat-core = { path = "crates/mabat-core", version = "0.1.0" }
 mabat-derive = { path = "crates/mabat-derive", version = "0.1.0" }
-mabat-sqlx = { path = "crates/mabat-sqlx", version = "0.1.0" }
+mabat-sqlx = { path = "crates/mabat-sqlx", version = "0.1.0", default-features = false }
 mabat = { path = "crates/mabat" }
 mabat-e2e = { path = "crates/mabat-e2e" }
 
@@ -23,11 +23,12 @@ proc-macro-crate = "3"
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "uuid", "chrono", "json"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "uuid", "chrono", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Its `offline` feature makes SQLx's built-in types deserializable, see mabat-sqlx's describe.rs
+# Their `offline` features make SQLx's built-in types deserializable, for the type catalogs
 sqlx-postgres = { version = "0.9", default-features = false, features = ["offline"] }
+sqlx-sqlite = { version = "0.9", default-features = false, features = ["offline"] }
 thiserror = "2"
 toml = { version = "1", default-features = false, features = ["parse", "serde", "display"] }
 tracing = "0.1"

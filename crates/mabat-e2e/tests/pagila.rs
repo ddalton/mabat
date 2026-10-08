@@ -326,7 +326,7 @@ async fn films_and_actors_form_one_large_graph() {
 async fn every_view_and_scaffold_passes_the_checks() {
     let Some(mut conn) = pagila().await else { return };
 
-    fn views() -> mabat::Builder {
+    fn views() -> mabat::Builder<sqlx::Postgres> {
         Mabat::builder()
             .register::<FilmView>()
             .register::<CustomerView>()
