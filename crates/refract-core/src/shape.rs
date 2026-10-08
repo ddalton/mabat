@@ -92,7 +92,19 @@ pub enum FieldKind {
     /// this view by a link table.
     Child(Child),
     /// A to-one reference: the `fk` column of this view references the key of the target view.
-    ToOne { fk: &'static str, optional: bool, shape: fn() -> &'static ViewShape },
+    /// With `graph`, the value is a reference into a graph (`Ref<T>`), not an owned value.
+    ToOne { fk: &'static str, optional: bool, shape: fn() -> &'static ViewShape, graph: bool },
+}
+
+impl FieldKind {
+    /// `true` for a relationship to entities of a graph, see [`Child::graph`].
+    pub fn is_graph_edge(&self) -> bool {
+        match self {
+            FieldKind::Child(child) => child.graph,
+            FieldKind::ToOne { graph, .. } => *graph,
+            _ => false,
+        }
+    }
 }
 
 /// A to-many collection, see [`FieldKind::Child`].
@@ -113,12 +125,14 @@ pub struct Child {
     pub map_key: Option<&'static str>,
     /// The collection contains the view it is a field of, directly or indirectly.
     pub recursion: Option<Recursion>,
+    /// The elements are references into a graph (`Vec<Ref<T>>`), not owned values.
+    pub graph: bool,
 }
 
 impl Child {
     /// A collection whose `fk` column references the key of the containing view.
     pub const fn new(fk: &'static str, shape: fn() -> &'static ViewShape) -> Child {
-        Child { fk, order_by: &[], shape, through: None, index: None, map_key: None, recursion: None }
+        Child { fk, order_by: &[], shape, through: None, index: None, map_key: None, recursion: None, graph: false }
     }
 }
 

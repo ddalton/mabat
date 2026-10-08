@@ -1,0 +1,5 @@
+error: a graph collection loads the whole graph by itself; it takes no `depth` or `recursive`
+ --> tests/ui/graph_collection_with_depth.rs:4:12
+  |
+4 |     #[view(child(fk = "parent_id", depth = 3))]
+  |            ^^^^^

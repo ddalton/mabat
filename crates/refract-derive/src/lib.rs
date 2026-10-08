@@ -55,10 +55,11 @@ enum FieldSpec {
     Json { column: String },
     Embed { prefix: String, ty: Type },
     Child(Box<ChildSpec>),
-    ToOne { fk: String, optional: bool, target: Type },
+    ToOne { fk: String, optional: bool, target: Type, form: Form },
 }
 
 struct ChildSpec {
+    form: Form,
     fk: String,
     order_by: Vec<(String, bool)>,
     /// The view of the elements.
@@ -70,6 +71,28 @@ struct ChildSpec {
     index: Option<String>,
     map_key: Option<String>,
     recursion: Option<RecursionSpec>,
+}
+
+/// How a related view is held.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Form {
+    /// An owned value, `T`.
+    Owned,
+    /// A value shared by everything that references the same entity, `Arc<T>`.
+    Shared,
+    /// A reference into a graph, `Ref<T>`.
+    Graph,
+}
+
+/// The form of `ty` and the view it holds: `Arc<T>`, `Ref<T>` or `T`.
+fn form_of(ty: &Type) -> (Form, Type) {
+    if let Some(inner) = generic_argument(ty, "Arc") {
+        (Form::Shared, inner.clone())
+    } else if let Some(inner) = generic_argument(ty, "Ref") {
+        (Form::Graph, inner.clone())
+    } else {
+        (Form::Owned, ty.clone())
+    }
 }
 
 enum RecursionSpec {
@@ -84,6 +107,7 @@ enum Member {
 }
 
 struct ViewField {
+    vis: syn::Visibility,
     member: Member,
     /// The path segment: the field name, or the position of a tuple field.
     name: String,
@@ -252,6 +276,20 @@ fn parse_variants(data: &DataEnum, strategy: Strategy) -> syn::Result<Vec<Varian
             }
         }
 
+        for field in &fields {
+            let graph = match &field.spec {
+                FieldSpec::Child(child) => child.form == Form::Graph,
+                FieldSpec::ToOne { form, .. } => *form == Form::Graph,
+                _ => false,
+            };
+            if graph {
+                return Err(syn::Error::new(
+                    field.span,
+                    "references into a graph (`Ref<T>`) are not supported in variants",
+                ));
+            }
+        }
+
         let tag_value = tag_value.unwrap_or_else(|| variant.ident.unraw().to_string());
         if variants.iter().any(|v| v.tag_value == tag_value) {
             return Err(syn::Error::new(span, format!("two variants have the tag value {tag_value:?}")));
@@ -308,11 +346,12 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
                     Ok(())
                 })?;
                 let fk = fk.ok_or_else(|| syn::Error::new(span, "`to_one` needs `fk = \"...\"`"))?;
-                let (optional, target) = match generic_argument(&ty, "Option") {
+                let (optional, held) = match generic_argument(&ty, "Option") {
                     Some(inner) => (true, inner.clone()),
                     None => (false, ty.clone()),
                 };
-                set(&mut spec, FieldSpec::ToOne { fk, optional, target }, span)?;
+                let (form, target) = form_of(&held);
+                set(&mut spec, FieldSpec::ToOne { fk, optional, target, form }, span)?;
             } else if meta.path.is_ident("embed") {
                 let mut prefix = String::new();
                 if meta.input.peek(syn::token::Paren) {
@@ -355,7 +394,7 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
         }
     };
 
-    Ok(ViewField { member, name, span, ty, spec })
+    Ok(ViewField { vis: field.vis.clone(), member, name, span, ty, spec })
 }
 
 fn parse_child(meta: &syn::meta::ParseNestedMeta<'_>, ty: &Type) -> syn::Result<ChildSpec> {
@@ -441,7 +480,17 @@ fn parse_child(meta: &syn::meta::ParseNestedMeta<'_>, ty: &Type) -> syn::Result<
         (Some(depth), false) => Some(RecursionSpec::Depth(depth)),
         (None, false) => None,
     };
-    Ok(ChildSpec { fk, order_by, element, map_key_type, through, index, map_key, recursion })
+    let (form, element) = form_of(&element);
+    if form != Form::Owned && map_key_type.is_some() {
+        return Err(syn::Error::new(ty.span(), "the values of a map collection need to be owned views"));
+    }
+    if form == Form::Graph && recursion.is_some() {
+        return Err(syn::Error::new(
+            span,
+            "a graph collection loads the whole graph by itself; it takes no `depth` or `recursive`",
+        ));
+    }
+    Ok(ChildSpec { form, fk, order_by, element, map_key_type, through, index, map_key, recursion })
 }
 
 /// The key and value types of `BTreeMap<K, V>` or `HashMap<K, V>`.
@@ -505,7 +554,8 @@ fn field_shape(field: &ViewField) -> TokenStream2 {
             }
         },
         FieldSpec::Child(child) => {
-            let ChildSpec { fk, order_by, element, through, index, map_key, recursion, .. } = &**child;
+            let ChildSpec { fk, order_by, element, through, index, map_key, recursion, form, .. } = &**child;
+            let graph = *form == Form::Graph;
             let order_by = order_by.iter().map(|(column, descending)| {
                 quote! { ::refract::__private::OrderBy { column: #column, descending: #descending } }
             });
@@ -543,16 +593,21 @@ fn field_shape(field: &ViewField) -> TokenStream2 {
                     index: #index,
                     map_key: #map_key,
                     recursion: #recursion,
+                    graph: #graph,
                 })
             }
         }
-        FieldSpec::ToOne { fk, optional, target } => quote! {
-            ::refract::__private::FieldKind::ToOne {
-                fk: #fk,
-                optional: #optional,
-                shape: <#target as ::refract::View>::shape,
+        FieldSpec::ToOne { fk, optional, target, form } => {
+            let graph = *form == Form::Graph;
+            quote! {
+                ::refract::__private::FieldKind::ToOne {
+                    fk: #fk,
+                    optional: #optional,
+                    shape: <#target as ::refract::View>::shape,
+                    graph: #graph,
+                }
             }
-        },
+        }
     };
     quote! { ::refract::__private::Field { name: #name, kind: #kind } }
 }
@@ -626,18 +681,26 @@ fn decode_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStrea
         }
         FieldSpec::Child(child) => {
             let element = &child.element;
-            match &child.map_key_type {
-                None => quote! { ::refract::__private::children::<#element>(row, node, #index)? },
-                Some(key) => quote! { ::refract::__private::map::<#key, #element, #ty>(row, node, #index)? },
+            match (&child.map_key_type, child.form) {
+                (Some(key), _) => quote! { ::refract::__private::map::<#key, #element, #ty>(row, node, #index)? },
+                (None, Form::Owned) => quote! { ::refract::__private::children::<#element>(row, node, #index)? },
+                (None, Form::Shared) => {
+                    quote! { ::refract::__private::shared_children::<#element>(row, node, #index)? }
+                }
+                (None, Form::Graph) => quote! { ::refract::__private::references::<#element>(row, node, #index)? },
             }
         }
-        FieldSpec::ToOne { optional, target, .. } => {
+        FieldSpec::ToOne { optional, target, form, .. } => {
             let ref_alias = format!("$ref.{name}");
-            if *optional {
-                quote! { ::refract::__private::to_one::<#target>(row, node, #index, #ref_alias)? }
-            } else {
-                quote! { ::refract::__private::to_one_required::<#target>(row, node, #index, #ref_alias)? }
-            }
+            let helper = match (form, optional) {
+                (Form::Owned, true) => quote! { to_one::<#target>(row, node, #index, #ref_alias) },
+                (Form::Owned, false) => quote! { to_one_required::<#target>(row, node, #index, #ref_alias) },
+                (Form::Shared, true) => quote! { shared_to_one::<#target>(row, node, #index, #ref_alias) },
+                (Form::Shared, false) => quote! { shared_to_one_required::<#target>(row, node, #index, #ref_alias) },
+                (Form::Graph, true) => quote! { reference::<#target>(row, node, #ref_alias) },
+                (Form::Graph, false) => quote! { reference_required::<#target>(row, node, #ref_alias) },
+            };
+            quote! { ::refract::__private::#helper? }
         }
     }
 }
@@ -693,8 +756,19 @@ fn expand_view(ident: &Ident, table: &str, key: &str, fields: &[ViewField]) -> s
     let shapes = fields.iter().map(field_shape);
     let value = construct(quote! { Self }, Style::Named, fields, Scope::Row);
     let describers = fields.iter().enumerate().map(|(index, field)| describe_value(field, index, Scope::Row));
+    let visits = fields.iter().enumerate().filter_map(|(index, field)| {
+        let (target, entity) = match &field.spec {
+            FieldSpec::Child(child) => (&child.element, child.form == Form::Graph),
+            FieldSpec::ToOne { target, form, .. } => (target, *form == Form::Graph),
+            _ => return None,
+        };
+        Some(quote! { ::refract::__private::graph_visit::<#target>(node, #index, graph, #entity)?; })
+    });
+    let navigation = navigation(ident, fields);
 
     Ok(quote! {
+        #navigation
+
         impl ::refract::View for #ident {
             fn shape() -> &'static ::refract::__private::ViewShape {
                 static FIELDS: [::refract::__private::Field; #count] = [#(#shapes),*];
@@ -718,8 +792,67 @@ fn expand_view(ident: &Ident, table: &str, key: &str, fields: &[ViewField]) -> s
             fn describe(description: &mut ::refract::__private::Description) {
                 #(#describers)*
             }
+
+            #[allow(unused_variables)]
+            fn decode_graph(
+                node: &::refract::Node,
+                graph: &mut ::refract::__private::GraphBuilder,
+                entity: bool,
+            ) -> ::core::result::Result<(), ::refract::Error> {
+                if entity {
+                    ::refract::__private::graph_store::<Self>(node, graph)?;
+                }
+                #(#visits)*
+                ::core::result::Result::Ok(())
+            }
         }
     })
+}
+
+/// Methods that follow the references of a view's fields into a graph, named after the
+/// fields: `task.parent(&graph)` for `parent: Option<Ref<Task>>`.
+fn navigation(owner: &Ident, fields: &[ViewField]) -> TokenStream2 {
+    let methods: Vec<TokenStream2> = fields
+        .iter()
+        .filter_map(|field| {
+            let Member::Named(ident) = &field.member else { return None };
+            let vis = &field.vis;
+            let doc = format!("Follow `{}` in the graph.", field.name);
+            let method = match &field.spec {
+                FieldSpec::ToOne { form: Form::Graph, optional: true, target, .. } => quote! {
+                    #vis fn #ident<'g, R>(&'g self, graph: &'g ::refract::Graph<R>) -> ::core::option::Option<&'g #target> {
+                        self.#ident.map(|r| graph.get(r))
+                    }
+                },
+                FieldSpec::ToOne { form: Form::Graph, optional: false, target, .. } => quote! {
+                    #vis fn #ident<'g, R>(&'g self, graph: &'g ::refract::Graph<R>) -> &'g #target {
+                        graph.get(self.#ident)
+                    }
+                },
+                FieldSpec::Child(child) if child.form == Form::Graph => {
+                    let target = &child.element;
+                    quote! {
+                        #vis fn #ident<'g, R>(
+                            &'g self,
+                            graph: &'g ::refract::Graph<R>,
+                        ) -> impl ::core::iter::Iterator<Item = &'g #target> + 'g {
+                            self.#ident.iter().map(move |r| graph.get(*r))
+                        }
+                    }
+                }
+                _ => return None,
+            };
+            Some(quote! { #[doc = #doc] #method })
+        })
+        .collect();
+    if methods.is_empty() {
+        return TokenStream2::new();
+    }
+    quote! {
+        impl #owner {
+            #(#methods)*
+        }
+    }
 }
 
 fn expand_embedded(ident: &Ident, fields: &[ViewField]) -> syn::Result<TokenStream2> {

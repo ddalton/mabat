@@ -2,8 +2,9 @@
 
 Typed aggregate reads for Rust, with SQL you can tune without changing code.
 
-> **Status:** early development, not published yet. Milestones 1 (struct views, PostgreSQL, reads), 2 (enums
-> with data), 3 (overrides checked at startup) and 4 (collections and recursive views) are implemented. See the [design document](docs/design.md) for the
+> **Status:** early development, not published yet. Milestones 1 to 5 are implemented: struct views on
+> PostgreSQL, enums with data, overrides checked at startup, collections and recursive views, and shared and
+> cyclic graphs. See the [design document](docs/design.md) for the
 > plan.
 
 Refract loads nested, typed data from PostgreSQL. The shape of the result is declared with ordinary Rust structs,
@@ -117,6 +118,40 @@ Recursive views are owned trees, so they need no `Rc` or `RefCell`.
   products, say) load with one query for all levels.
 - **Cycles:** rows whose parents form a cycle can't be a tree, and loading them is an error rather than an
   endless loop.
+
+## Shared values and graphs, without `Rc` or `RefCell`
+
+A field of type `Arc<T>` is decoded once per entity and shared: every task with the same assignee holds the
+same `Arc`.
+
+Cycles, such as a manager and their reports or a team and its members, use `Ref<T>` fields. A `Ref<T>` is a
+typed, `Copy` index into a `Graph`. The derive macro generates a method per reference to follow it:
+
+```rust
+#[derive(View)]
+#[view(table = "employee")]
+pub struct Employee {
+    pub name: String,
+    #[view(to_one(fk = "manager_id"))]
+    pub manager: Option<Ref<Employee>>,
+    #[view(child(fk = "manager_id", order_by = "name"))]
+    pub reports: Vec<Ref<Employee>>,
+    #[view(to_one(fk = "team_id"))]
+    pub team: Ref<Team>,
+}
+
+let graph = refract::load::<Employee>().by_key(id).graph(&mut *conn).await?;
+let me = graph.root().unwrap();
+for colleague in me.manager(&graph).unwrap().reports(&graph) {
+    println!("{} in {}", colleague.name, colleague.team(&graph).name);
+}
+```
+
+- **What a graph load fetches:** every entity reachable through the `Ref` fields. Each entity is fetched once,
+  and each relationship is loaded once, with batched queries. Cycles end by themselves, with no `depth`.
+- **Navigation:** borrows the `Graph`, so there are no runtime borrow checks. Changes go through
+  `graph.get_mut(r)`.
+- **Threads:** `Graph` is `Send + Sync`.
 
 ## Enums with data
 
@@ -248,7 +283,8 @@ ORDER BY n.id;
 | Filters on the root query, counting | Done |
 | SQL overrides checked at startup, shadow mode, scaffolding, reloading | Done (M3) |
 | Ordered lists, maps, many-to-many, recursive views | Done (M4) |
-| Shared (`Arc`) and graph (`Ref<T>`) representations for cyclic data | Planned (M5) |
+| Shared (`Arc`) and graph (`Ref<T>`) representations for cyclic data | Done (M5) |
+| DBA tooling: view manifest and `refract check` CLI | Planned |
 | GraphQL selection sets | Planned (M7) |
 
 Loading 1,000 tasks with 10 subtasks each takes about 8% longer than hand-written SQLx code running the same two

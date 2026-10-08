@@ -151,6 +151,8 @@ impl SelectColumn {
 
 /// A query being planned, to find cycles.
 struct Frame {
+    /// The field leads to entities of a graph.
+    graph: bool,
     /// The field or variant that leads to this query, by address; `None` for the root.
     entered_by: Option<usize>,
     /// The recursion of the collection that leads to this query.
@@ -170,6 +172,7 @@ struct Entry {
     child: Option<&'static Child>,
     entered_by: usize,
     recursion: Option<Recursion>,
+    graph: bool,
 }
 
 /// A query of a variant table found while adding the columns of a view.
@@ -193,7 +196,7 @@ struct Row<'a> {
 impl QueryPlan {
     /// Plan the queries for a view.
     pub fn build(shape: &'static ViewShape) -> Result<QueryPlan, PlanError> {
-        let mut stack = vec![Frame { entered_by: None, recursion: None }];
+        let mut stack = vec![Frame { graph: false, entered_by: None, recursion: None }];
         Self::build_inner(shape, String::new(), Link::Root, Vec::new(), None, &mut stack)
     }
 
@@ -248,10 +251,11 @@ impl QueryPlan {
                         child: Some(spec),
                         entered_by: address(field),
                         recursion: spec.recursion,
+                        graph: spec.graph,
                     };
                     children.push(ChildPlan { field_index, variant: None, query: Self::child_query(entry, stack)? });
                 }
-                FieldKind::ToOne { fk, shape: target, .. } => {
+                FieldKind::ToOne { fk, shape: target, graph, .. } => {
                     let ref_alias = format!("{REF_ALIAS_PREFIX}{}", field.name);
                     columns.push(SelectColumn::new(*fk, ref_alias.clone()));
                     let entry = Entry {
@@ -262,6 +266,7 @@ impl QueryPlan {
                         child: None,
                         entered_by: address(field),
                         recursion: None,
+                        graph: *graph,
                     };
                     children.push(ChildPlan { field_index, variant: None, query: Self::child_query(entry, stack)? });
                 }
@@ -277,6 +282,7 @@ impl QueryPlan {
                 child: None,
                 entered_by: address(query.shape),
                 recursion: None,
+                graph: false,
             };
             let query_plan = Self::child_query(entry, stack)?;
             children.push(ChildPlan {
@@ -312,7 +318,11 @@ impl QueryPlan {
         if let Some(position) = stack.iter().rposition(|f| f.entered_by == Some(entry.entered_by)) {
             let up = stack.len() - 1 - position;
             let recursion = entry.recursion.or_else(|| stack[position + 1..].iter().rev().find_map(|f| f.recursion));
+            // A cycle through a reference into a graph ends by itself: the load never fetches an
+            // entity or expands a relationship of it twice
+            let graph = entry.graph || stack[position + 1..].iter().any(|f| f.graph);
             return match recursion {
+                None if graph => Ok(ChildQuery::Repeat { up, depth: u32::MAX }),
                 None => Err(PlanError::Recursive { view: entry.shape.name, path: entry.path }),
                 Some(Recursion::Depth(depth)) => Ok(ChildQuery::Repeat { up, depth }),
                 Some(Recursion::Cte { .. }) if up == 0 && entry.recursion.is_some() => {
@@ -334,7 +344,7 @@ impl QueryPlan {
             };
         }
 
-        stack.push(Frame { entered_by: Some(entry.entered_by), recursion: entry.recursion });
+        stack.push(Frame { graph: entry.graph, entered_by: Some(entry.entered_by), recursion: entry.recursion });
         let plan = Self::build_inner(entry.shape, entry.path, entry.link, entry.order_by, entry.child, stack);
         stack.pop();
         Ok(ChildQuery::Query(Box::new(plan?)))
@@ -354,6 +364,14 @@ impl QueryPlan {
                 plan.walk(visit);
             }
         }
+    }
+
+    /// `true` if the view or a view below it has references into a graph, so it needs to be
+    /// loaded as a graph.
+    pub fn has_graph_edges(&self) -> bool {
+        let mut found = false;
+        self.walk(&mut |plan| found |= plan.shape.fields.iter().any(|f| f.kind.is_graph_edge()));
+        found
     }
 
     /// Number of queries in the plan, including this one.
@@ -561,7 +579,10 @@ mod tests {
     static TASK_FIELDS: [Field; 4] = [
         Field { name: "name", kind: FieldKind::Column { column: "name" } },
         Field { name: "address", kind: FieldKind::Embedded { column_prefix: "addr_", shape: || &ADDRESS } },
-        Field { name: "assignee", kind: FieldKind::ToOne { fk: "assignee_id", optional: true, shape: || &PERSON } },
+        Field {
+            name: "assignee",
+            kind: FieldKind::ToOne { fk: "assignee_id", optional: true, shape: || &PERSON, graph: false },
+        },
         Field {
             name: "children",
             kind: FieldKind::Child(Child { order_by: &CHILD_ORDER, ..Child::new("parent_id", || &SUBTASK) }),
@@ -921,5 +942,29 @@ mod tests {
 
         let err = QueryPlan::build(&C).unwrap_err();
         assert!(matches!(err, PlanError::UnsupportedRecursion { view: "D", .. }), "{err}");
+    }
+    // struct Node { parent: Option<Ref<Node>>, children: Vec<Ref<Node>> }: cycles of a graph
+    static NODE_FIELDS: [Field; 2] = [
+        Field {
+            name: "parent",
+            kind: FieldKind::ToOne { fk: "parent_id", optional: true, shape: || &NODE, graph: true },
+        },
+        Field { name: "children", kind: FieldKind::Child(Child { graph: true, ..Child::new("parent_id", || &NODE) }) },
+    ];
+    static NODE: ViewShape = ViewShape { name: "Node", table: "task", key_column: "id", fields: &NODE_FIELDS };
+
+    #[test]
+    fn graph_cycles_need_no_annotation() {
+        let plan = QueryPlan::build(&NODE).unwrap();
+        assert!(plan.has_graph_edges());
+        assert!(!QueryPlan::build(&TASK).unwrap().has_graph_edges());
+        let parent = plan.children[0].plan().unwrap();
+        assert!(matches!(parent.children[0].query, ChildQuery::Repeat { up: 0, depth: u32::MAX }));
+        // parent.children enters children for the first time, children.children repeats it
+        let children = parent.children[1].plan().unwrap();
+        assert_eq!(children.query_name(), "parent.children");
+        assert!(matches!(children.children[1].query, ChildQuery::Repeat { up: 0, depth: u32::MAX }));
+        // the root, parent, parent.children, children and children.parent; deeper levels repeat these
+        assert_eq!(plan.query_count(), 5);
     }
 }
