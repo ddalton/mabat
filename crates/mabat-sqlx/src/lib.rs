@@ -398,8 +398,8 @@ pub mod __private {
         unknown_tag, variant,
     };
     pub use mabat_core::{
-        Child, EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, Recursion, SumShape, SumStrategy, Through,
-        Variant, VariantData, ViewShape,
+        Child, EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, Recursion, Scalar, SumShape, SumStrategy,
+        Through, ValueType, Variant, VariantData, ViewShape,
     };
     pub use serde_json::Value as JsonValue;
     pub use sqlx::Database;

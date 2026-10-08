@@ -229,7 +229,35 @@ let tasks: Vec<serde_json::Value> = mabat::load::<TaskView>().select(selection).
 Columns are written with the `Serialize` implementation of their Rust type, enums as objects whose `__typename`
 names the variant. A collection or reference selected by name alone loads the columns of its view. A selection
 has a finite depth, so recursive views and graph views load as trees as deep as it asks. Overrides apply as for
-typed loads. This is the base of the GraphQL integration (M7).
+typed loads.
+
+## GraphQL
+
+The `mabat-graphql` crate generates an [async-graphql](https://crates.io/crates/async-graphql) schema from the
+views. Each root field is one load of the fields the query selects:
+
+```rust
+let schema = mabat_graphql::schema(&pool)
+    .list::<TaskView>("tasks")   // tasks(where: TaskViewWhere, orderBy: [TaskViewOrderBy!], limit: Int, offset: Int)
+    .by_key::<TaskView>("task")  // task(key: UUID!): TaskView
+    .finish()?;
+```
+
+```graphql
+{
+  tasks(where: { name: { ilike: "%release%" } }, orderBy: [{ name: ASC }], limit: 10) {
+    name
+    assignee { name }          # one batched query for the assignees, none for the other collections
+  }
+}
+```
+
+Views and embedded structs become object types, enums with data become unions (`... on StateBlocked { reason }`),
+enums without data become GraphQL enums, and maps become lists of `{ key, value }` entries. A `where` argument
+filters the columns of the view with `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `in`, `notIn`, `isNull`, `like` and
+`ilike`, combined with `and`, `or` and `not`. Overrides of a registry apply with `.registry(..)`, and
+`.connections(n)` runs the queries of a level concurrently. `cargo run -p mabat-graphql --example chinook` serves
+the Chinook music store with GraphiQL.
 
 ## Concurrent loads on a pool
 
@@ -356,7 +384,8 @@ ORDER BY n.id;
 | SQLite and MySQL | Done (M6) |
 | Concurrent loads on a pool, with a shared snapshot on PostgreSQL | Done (M6) |
 | JSON loads and selections of fields | Done (M7) |
-| GraphQL schema generated from views | Planned (M7) |
+| GraphQL schema generated from views (`mabat-graphql`) | Done (M7) |
+| Arguments on nested GraphQL fields (filters and paging of collections) | Planned |
 
 Loading 1,000 tasks with 10 subtasks each takes about 8% longer than hand-written SQLx code running the same two
 queries (`crates/mabat/examples/parity.rs`).

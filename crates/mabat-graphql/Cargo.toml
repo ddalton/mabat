@@ -1,0 +1,38 @@
+[package]
+name = "mabat-graphql"
+description = "A GraphQL schema generated from Mabat views, with async-graphql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+homepage.workspace = true
+keywords = ["graphql", "sql", "sqlx", "views", "async-graphql"]
+categories = ["database", "web-programming"]
+readme = "README.md"
+
+[features]
+default = ["postgres"]
+postgres = ["mabat/postgres"]
+mysql = ["mabat/mysql"]
+sqlite = ["mabat/sqlite"]
+
+[dependencies]
+async-graphql = { version = "7.2.1", default-features = false, features = ["dynamic-schema"] }
+chrono.workspace = true
+mabat.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+chrono = { workspace = true, features = ["serde"] }
+mabat = { workspace = true, features = ["sqlite"] }
+sqlx = { workspace = true, features = ["sqlite"] }
+tokio = { workspace = true, features = ["net"] }
+# The example server
+async-graphql = { version = "7.2.1", default-features = false, features = ["dynamic-schema", "graphiql"] }
+async-graphql-axum = "7.2.1"
+axum = "0.8"
+mabat-e2e.workspace = true

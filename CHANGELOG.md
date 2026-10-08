@@ -60,6 +60,10 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **JSON and selections (M7).** `Load::json` loads views as JSON, and `Load::select` with a `Selection`
   (built in code or parsed from GraphQL-like text) loads only the selected fields: only their columns are
   selected and only their child queries run. Recursive and graph views load as trees as deep as the selection.
+- **GraphQL (M7).** The `mabat-graphql` crate generates an async-graphql schema from views: object types,
+  unions for enums with data, GraphQL enums, map entries, and root fields with `where`, `orderBy`, `limit`,
+  `offset` and lookup by key. Each root field is one load of the selected fields. An example server serves
+  Chinook with GraphiQL.
 - **Concurrent loads (M6).** `Pooled::snapshot` (PostgreSQL) and `Pooled::read_committed` (any database) run
   the queries of each level of a load at the same time on connections of a pool, in a snapshot that the
   connections share or reading what is committed. Loads, counts, checks and registries take a `Pooled` where
