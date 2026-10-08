@@ -24,6 +24,21 @@ impl Backend for MySql {
         add_each_key(args, keys)
     }
 
+    fn insert_generated<'c>(
+        conn: &'c mut MySqlConnection,
+        sql: String,
+        args: <MySql as sqlx::Database>::Arguments,
+    ) -> super::BoxFuture<'c, Result<Key, sqlx::Error>> {
+        Box::pin(async move {
+            let done = sqlx::query_with(sqlx::AssertSqlSafe(sql), args).execute(conn).await?;
+            let key = i64::try_from(done.last_insert_id()).map_err(|e| sqlx::Error::ColumnDecode {
+                index: "LAST_INSERT_ID()".to_string(),
+                source: Box::new(e),
+            })?;
+            Ok(Key::Int(key))
+        })
+    }
+
     common_methods!(MySql, MySqlConnection, MySqlRow);
 
     fn key_kind(ty: &MySqlTypeInfo) -> Option<KeyKind> {

@@ -97,6 +97,14 @@ pub trait Backend: Database + Sized {
         args: Self::Arguments,
     ) -> BoxFuture<'c, Result<u64, sqlx::Error>>;
 
+    /// Run an insert whose key the database generates (`insert_generated` of
+    /// `mabat_core::write`), and read the key it generated.
+    fn insert_generated<'c>(
+        conn: &'c mut Self::Connection,
+        sql: String,
+        args: Self::Arguments,
+    ) -> BoxFuture<'c, Result<Key, sqlx::Error>>;
+
     /// Run a query with arguments and fetch its rows.
     fn fetch_args<'c>(
         conn: &'c mut Self::Connection,
@@ -427,6 +435,19 @@ macro_rules! bind_each {
 
 #[allow(unused_imports)]
 pub(crate) use {bind_each, common_methods, connection};
+
+/// The key in the first column of a row an insert returned.
+pub(crate) fn returned_key<B: Backend>(row: &B::Row) -> Result<Key, sqlx::Error> {
+    let ty = B::column_type(row, 0);
+    let kind = B::key_kind(ty).ok_or_else(|| sqlx::Error::ColumnDecode {
+        index: "0".to_string(),
+        source: format!("the database generated a key of type {}, expected an integer", B::type_name(ty)).into(),
+    })?;
+    B::read_key(row, 0, kind)?.ok_or_else(|| sqlx::Error::ColumnDecode {
+        index: "0".to_string(),
+        source: "the database generated a NULL key".into(),
+    })
+}
 
 #[cfg(feature = "mysql")]
 mod mysql;

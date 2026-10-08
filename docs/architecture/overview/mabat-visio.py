@@ -1163,7 +1163,7 @@ def fig_contract(doc):
            "areas define details no capability names on its own."
            % (len(caps), len(covered), len(AREAS),
               sum(1 for r in rules if "-DOC-" in r),
-              sum(1 for r in rules if "-NOT-" in r), len(loose)),
+              len(index["unsupported"]), len(loose)),
            size=7.8, color=SUB)
     return p
 

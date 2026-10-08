@@ -1,0 +1,5 @@
+error: `generated` applies to the key field, the field of the key column `id`
+ --> tests/ui/generated_not_key.rs:8:5
+  |
+8 |     number: Option<i64>,
+  |     ^^^^^^

@@ -24,6 +24,17 @@ impl Backend for Postgres {
         }
     }
 
+    fn insert_generated<'c>(
+        conn: &'c mut PgConnection,
+        sql: String,
+        args: <Postgres as sqlx::Database>::Arguments,
+    ) -> super::BoxFuture<'c, Result<Key, sqlx::Error>> {
+        Box::pin(async move {
+            let row = sqlx::query_with(sqlx::AssertSqlSafe(sql), args).fetch_one(conn).await?;
+            super::returned_key::<Self>(&row)
+        })
+    }
+
     common_methods!(Postgres, PgConnection, PgRow);
 
     fn key_kind(ty: &PgTypeInfo) -> Option<KeyKind> {
