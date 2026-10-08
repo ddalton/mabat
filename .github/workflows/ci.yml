@@ -24,10 +24,10 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      REFRACT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      MABAT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
-      # Pinned: the compile error snapshots in crates/refract/tests/ui depend on the
+      # Pinned: the compile error snapshots in crates/mabat/tests/ui depend on the
       # compiler version. Bless them again (TRYBUILD=overwrite) when moving the pin.
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -37,3 +37,15 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - run: cargo publish --workspace --dry-run
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The minimum supported Rust version, rust-version in Cargo.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets

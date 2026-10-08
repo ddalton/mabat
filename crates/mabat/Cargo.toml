@@ -1,0 +1,26 @@
+[package]
+name = "mabat"
+description = "Typed aggregate reads for Rust, with SQL you can tune without changing code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+homepage.workspace = true
+keywords = ["sql", "postgres", "sqlx", "orm", "views"]
+categories = ["database", "asynchronous"]
+readme = "../../README.md"
+
+[dependencies]
+mabat-core.workspace = true
+mabat-derive.workspace = true
+mabat-sqlx.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+serde.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+trybuild.workspace = true
+uuid = { workspace = true, features = ["v4"] }

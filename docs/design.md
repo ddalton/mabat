@@ -1,4 +1,4 @@
-# Refract design
+# Mabat design
 
 | | |
 | --- | --- |
@@ -34,12 +34,12 @@
 
 ## 1. Summary
 
-Refract loads typed aggregates from a relational database. The shape of the result is declared with ordinary
-Rust types: structs, enums, `Option`, `Vec`, maps and recursive types. Refract plans and runs the queries that
+Mabat loads typed aggregates from a relational database. The shape of the result is declared with ordinary
+Rust types: structs, enums, `Option`, `Vec`, maps and recursive types. Mabat plans and runs the queries that
 fill that shape.
 
 The query behind a view can be **replaced in configuration**, without code changes, by hand-tuned SQL written
-by a DBA. Refract checks every replacement against the Rust type at startup, so tuning can't silently corrupt
+by a DBA. Mabat checks every replacement against the Rust type at startup, so tuning can't silently corrupt
 results.
 
 Three things set it apart from existing Rust database crates:
@@ -51,8 +51,8 @@ Three things set it apart from existing Rust database crates:
 - **Queries that are separate from the shape.** A view defines *what* is returned. The query that produces it
   can be generated, overridden, split or reordered without touching the application.
 
-The name comes from optics and light: in functional programming a *prism* focuses on one variant of a sum
-type, and refraction is the same light (the data) bent through different media (queries) to the same place.
+The name is the Hebrew word *mabat* (מבט), "a view": the library is built around views, the shape of the data
+an application wants to see, independent of the queries that produce it.
 
 ## 2. Motivation
 
@@ -65,7 +65,7 @@ for user OQL, native SQL or a stored procedure. A DBA could tune production quer
 
 Building XOR also showed where that design goes wrong. The most important lessons:
 
-| Lesson from XOR | Consequence for Refract |
+| Lesson from XOR | Consequence for Mabat |
 | --- | --- |
 | Native query columns were mapped by position, so swapping two same-typed columns silently corrupted data | Columns are mapped **by name**. Mapping by position is an explicit opt-in |
 | Configuration errors appeared only when a query ran | Every override is checked **at startup** and in CI |
@@ -148,7 +148,7 @@ flowchart LR
 ### 5.1 A first view
 
 ```rust
-use refract::{View, Ref};
+use mabat::{View, Ref};
 use uuid::Uuid;
 
 #[derive(View, Debug)]
@@ -187,10 +187,10 @@ pub struct TaskSummary {
 
 ### 5.2 Loading
 
-> **M1:** loading is the free function `refract::load::<T>()`, with `by_key`, `by_keys`, `order_by`,
+> **M1:** loading is the free function `mabat::load::<T>()`, with `by_key`, `by_keys`, `order_by`,
 > `order_by_desc`, `limit` and `offset`, run with `all`, `one` or `optional` on a `&mut PgConnection`.
 >
-> **Filters:** filters use a small API of Refract's own, `refract::filter`, not SeaQuery.
+> **Filters:** filters use a small API of Mabat's own, `mabat::filter`, not SeaQuery.
 >
 > - **Why not SeaQuery:** a SeaQuery expression renders its own placeholders and needs its own SQLx binder,
 >   which may not support SQLx 0.9 yet, while the keys are already bound as `$1`.
@@ -207,22 +207,22 @@ pub struct TaskSummary {
 >   arguments (section 13).
 >
 > **M3:** the registry takes no pool. `build(&mut conn)` checks the views on the connection it is given and
-> returns an immutable `Refract`; every load still takes its own connection or transaction. The free function
-> `refract::load` remains for loading with the generated queries only.
+> returns an immutable `Mabat`; every load still takes its own connection or transaction. The free function
+> `mabat::load` remains for loading with the generated queries only.
 
 ```rust
-let refract = Refract::builder()
+let mabat = Mabat::builder()
     .pool(pool)                                  // sqlx::PgPool
     .register::<TaskView>()
-    .overrides_dir("refract/overrides")          // optional, section 9
+    .overrides_dir("mabat/overrides")          // optional, section 9
     .build()
     .await?;                                     // validates the overrides
 
 // by key
-let task: TaskView = refract.load::<TaskView>().by_key(task_id).one(&mut tx).await?;
+let task: TaskView = mabat.load::<TaskView>().by_key(task_id).one(&mut tx).await?;
 
 // with a filter on the root
-let open: Vec<TaskView> = refract
+let open: Vec<TaskView> = mabat
     .load::<TaskView>()
     .filter(col("status_kind").eq("open"))
     .order_by("name")
@@ -352,7 +352,7 @@ variant that is present, keyed by the parent ids that have that tag. Statistics 
 
 ## 7. Recursion, sharing and cycles
 
-A relational schema is a graph, while the most convenient Rust value is a tree. Refract makes the
+A relational schema is a graph, while the most convenient Rust value is a tree. Mabat makes the
 representation an explicit, per-view choice.
 
 ```mermaid
@@ -448,7 +448,7 @@ pub struct Task {
     pub assignee: Ref<Person>,
 }
 
-let g: Graph = refract.load::<Task>().by_key(root_id).graph(&mut tx).await?;
+let g: Graph = mabat.load::<Task>().by_key(root_id).graph(&mut tx).await?;
 
 let root = g.root::<Task>();
 for child in root.children(&g) {                 // generated: impl Iterator<Item = &Task>
@@ -520,8 +520,8 @@ Rules:
    batched `IN` lists sized to the database's limit.
 4. Queries at the same depth are independent and can run concurrently (section 11).
 5. Generated SQL is built from an AST, never by editing strings.
-   **As built:** a small internal renderer (`refract_core::sql`) builds the statements from the plan and the
-   filter tree (`refract_core::filter`), with every identifier quoted and every value bound. Refract needs
+   **As built:** a small internal renderer (`mabat_core::sql`) builds the statements from the plan and the
+   filter tree (`mabat_core::filter`), with every identifier quoted and every value bound. Mabat needs
    only SELECT, `= ANY($n)`, simple conditions, ORDER BY, LIMIT, OFFSET and `count(*)`, so it doesn't depend
    on SeaQuery.
 6. Every selected column gets an alias equal to its path. The key column is selected once: under the alias of
@@ -531,7 +531,7 @@ Rules:
 ### 8.2 Plan inspection
 
 ```rust
-let plan = refract.plan::<TaskView>();
+let plan = mabat.plan::<TaskView>();
 println!("{}", plan.explain());       // the query tree with SQL and the paths each query fills
 plan.write_mermaid("plan.mmd")?;      // diagram for docs or reviews
 ```
@@ -544,7 +544,7 @@ Overrides live in a directory, one file per view, either TOML or plain SQL with 
 plan is addressed by its path (`$root`, `children`, `dependants`, ...).
 
 ```toml
-# refract/overrides/TaskView.toml
+# mabat/overrides/TaskView.toml
 [query."$root"]
 sql = """
 SELECT t.id                AS "id",
@@ -593,10 +593,10 @@ System columns:
 > `children.notes`. Both formats are implemented:
 >
 > - **TOML:** `TaskView.toml`, with a `[query."<name>"]` table per query.
-> - **SQL:** `TaskView.sql`, with a `-- refract: query <name>` line before each query, optionally followed by
+> - **SQL:** `TaskView.sql`, with a `-- mabat: query <name>` line before each query, optionally followed by
 >   `, shadow`. Each query may end with `;`, so the file can be run in `psql` as is.
 >
-> A view has at most one override file. `refract::scaffold::<T>()` writes a TOML file with the generated SQL of
+> A view has at most one override file. `mabat::scaffold::<T>()` writes a TOML file with the generated SQL of
 > every query.
 
 ### 9.2 Contract
@@ -617,13 +617,13 @@ System columns:
 > - **Key columns:** they must hold integer, text or uuid values. A `$parent` column must hold the same kind of
 >   key as its parent, and a referenced view's key the same kind as the reference.
 > - **`Option` fields:** an `Option` path may be left out. It is then always `None`, and the check warns
->   (`R0105`).
+>   (`M0105`).
 > - **Nullability:** it is not checked, because a prepared statement does not report it. A `NULL` in a
 >   non-`Option` field fails when it is decoded, with the path of the field.
 
 ### 9.3 Validation
 
-At startup, and with `refract check` in CI, Refract:
+At startup, and with `mabat check` in CI, Mabat:
 
 1. prepares each override statement on the database (`sqlx::Executor::prepare`) without running it,
 2. reads the column names and types from the prepared statement,
@@ -631,8 +631,8 @@ At startup, and with `refract check` in CI, Refract:
 4. fails with a report listing every problem in every view.
 
 ```text
-error[R0102]: override for TaskView.$root does not match the view
-  --> refract/overrides/TaskView.toml:3
+error[M0102]: override for TaskView.$root does not match the view
+  --> mabat/overrides/TaskView.toml:3
    | column 5 "status.Blocked.reasn" is not a path in TaskView (did you mean "status.Blocked.reason"?)
    | path "status.Blocked.since" is not covered
    | column 2 "name" has type INT4, expected TEXT for String
@@ -649,7 +649,7 @@ back to the generated query.
 >   a view that cannot be planned always fails.
 > - **Transactions:** each statement is prepared in a transaction, or a savepoint inside the caller's, that is
 >   rolled back, so checking does not abort a transaction.
-> - **CI:** the application can run `Refract::builder()...check(&mut conn)` as a test.
+> - **CI:** the application can run `Mabat::builder()...check(&mut conn)` as a test.
 >
 > **DBA tooling:**
 >
@@ -661,7 +661,7 @@ back to the generated query.
 >     manifest is written
 > - **One checker:** the startup check runs on the same manifest, so the application and the tool report the
 >   same problems.
-> - **The `refract` tool** (crate `refract-cli`) runs `check`, `explain` and `scaffold` on a manifest with no
+> - **The `mabat` tool** (crate `mabat-cli`) runs `check`, `explain` and `scaffold` on a manifest with no
 >   Rust toolchain.
 > - **`check --schema file.sql`:** creates the schema in a temporary schema inside a transaction that is
 >   rolled back, so a DBA can check overrides against any scratch database.
@@ -670,12 +670,12 @@ back to the generated query.
 >
 > | Code | Problem |
 > | --- | --- |
-> | `R0100` | An override file could not be read or parsed |
-> | `R0101` | A file or query does not address a registered view or query |
-> | `R0102` | Columns do not match the view |
-> | `R0103` | The statement does not prepare |
-> | `R0104` | Wrong parameters |
-> | `R0105` | An optional path is not selected (warning) |
+> | `M0100` | An override file could not be read or parsed |
+> | `M0101` | A file or query does not address a registered view or query |
+> | `M0102` | Columns do not match the view |
+> | `M0103` | The statement does not prepare |
+> | `M0104` | Wrong parameters |
+> | `M0105` | An optional path is not selected (warning) |
 
 ### 9.4 Shadow mode
 
@@ -689,7 +689,7 @@ equivalent before switching to it.
 >   every column the override selects:
 >   - to-many rows in order per parent,
 >   - other rows by key.
-> - **Where results go:** a mismatch is a `tracing` warning, and `Refract::shadow_stats()` returns runs,
+> - **Where results go:** a mismatch is a `tracing` warning, and `Mabat::shadow_stats()` returns runs,
 >   mismatches and the total time of each query. The override's rows are used.
 > - **Known gap:** shadow mode is the only check that catches two columns of the same type swapped in an
 >   override.
@@ -701,9 +701,9 @@ swapped into the registry atomically (`ArcSwap`). An invalid change never replac
 
 > **M3:** reloading is always available, with no feature flag, and the application triggers it:
 >
-> - **Triggering:** `Refract::reload(&mut conn)` reads the files again. It returns `Reloaded::Unchanged` when
+> - **Triggering:** `Mabat::reload(&mut conn)` reads the files again. It returns `Reloaded::Unchanged` when
 >   they are the same as at the last attempt, so it is cheap to call on a timer, on `SIGHUP` or from an admin
->   endpoint. Refract does not watch files itself, which would need a file watcher and a connection pool of
+>   endpoint. Mabat does not watch files itself, which would need a file watcher and a connection pool of
 >   its own.
 > - **All or nothing:** a reload with any error changes nothing and returns the report, whatever `OnInvalid`
 >   is.
@@ -734,7 +734,7 @@ aliases. Per row, decoding is plain indexed access with no hashing of names.
 > **M1:** field columns are decoded by alias through SQLx (`Row::try_get(&str)`), the same lookup hand-written
 > SQLx code uses. Key columns are resolved once per query result. With this, loading 1,000 tasks with 10
 > subtasks each takes about 8% longer than hand-written SQLx running the same queries
-> (`crates/refract/examples/parity.rs`). Positional decoding is the next optimization.
+> (`crates/mabat/examples/parity.rs`). Positional decoding is the next optimization.
 
 Large results can be streamed: `.stream()` yields root values once the child queries for each batch of roots
 have finished. Roots are processed in batches of a configurable size.
@@ -752,14 +752,14 @@ have finished. Roots are processed in batches of a configurable size.
 
 ## 12. Errors
 
-All errors are `refract::Error`, using `thiserror`, and carry the view, path and SQL involved.
+All errors are `mabat::Error`, using `thiserror`, and carry the view, path and SQL involved.
 
 | Code | When |
 | --- | --- |
-| `R01xx` | Override validation (unknown alias, missing path, type mismatch) |
-| `R02xx` | Decoding (unknown tag, column of another variant, duplicate map key, multiple rows for `Option`) |
-| `R03xx` | Planning (cycle without `graph` representation, recursive view without `depth` or `cte`) |
-| `R04xx` | Execution (SQLx errors, wrapped with context) |
+| `M01xx` | Override validation (unknown alias, missing path, type mismatch) |
+| `M02xx` | Decoding (unknown tag, column of another variant, duplicate map key, multiple rows for `Option`) |
+| `M03xx` | Planning (cycle without `graph` representation, recursive view without `depth` or `cte`) |
+| `M04xx` | Execution (SQLx errors, wrapped with context) |
 
 Nothing is swallowed. Lenient behaviors (such as `#[view(lenient)]`) are opt-in and logged.
 
@@ -775,7 +775,7 @@ flowchart LR
     SH --> PL["Planner"] --> EX["Executor"] --> OUT["Typed value or serde_json::Value"]
 ```
 
-- `refract-graphql` turns an `async-graphql` look-ahead into a **sub-shape** of a registered view. Only the
+- `mabat-graphql` turns an `async-graphql` look-ahead into a **sub-shape** of a registered view. Only the
   selected fields are queried, and only the needed child queries run.
 - Overrides still apply: when a sub-shape is covered by an override, the override is used and its unselected
   columns are ignored.
@@ -801,19 +801,19 @@ Writes never go through override SQL. Overrides are for reads.
 
 | Crate | Contents | Depends on |
 | --- | --- | --- |
-| `refract-core` | Shape IR, paths, planner, decoder runtime, `Graph`/`Ref`, errors | none (no database) |
-| `refract-derive` | `#[derive(View)]` proc macro; generates the static shape and the decoder | `syn`, `quote` |
-| `refract-sqlx` | Executor, filters, validation, overrides, shadow mode | `sqlx` 0.9 |
-| `refract-cli` | `refract check`, `refract explain`, `refract scaffold` (generate an override from the generated SQL), on a manifest written by the application | `refract-sqlx` |
-| `refract-graphql` | Sub-shapes from `async-graphql` look-ahead | `async-graphql` 7.x |
-| `refract` | Facade that re-exports the above behind features | all |
+| `mabat-core` | Shape IR, paths, planner, decoder runtime, `Graph`/`Ref`, errors | none (no database) |
+| `mabat-derive` | `#[derive(View)]` proc macro; generates the static shape and the decoder | `syn`, `quote` |
+| `mabat-sqlx` | Executor, filters, validation, overrides, shadow mode | `sqlx` 0.9 |
+| `mabat-cli` | `mabat check`, `mabat explain`, `mabat scaffold` (generate an override from the generated SQL), on a manifest written by the application | `mabat-sqlx` |
+| `mabat-graphql` | Sub-shapes from `async-graphql` look-ahead | `async-graphql` 7.x |
+| `mabat` | Facade that re-exports the above | all |
 
-The derive macro stays thin. All logic lives in `refract-core`, so it can be unit-tested without macros or a
+The derive macro stays thin. All logic lives in `mabat-core`, so it can be unit-tested without macros or a
 database.
 
 ## 16. Testing and benchmarks
 
-- **Unit tests** in `refract-core`: path resolution, planning, decoding (including the sum-type strictness
+- **Unit tests** in `mabat-core`: path resolution, planning, decoding (including the sum-type strictness
   rules), list placement, map keys, graph resolution.
 - **Macro tests** with `trybuild` for compile errors.
 - **Integration tests** against PostgreSQL in containers (`testcontainers`), covering every strategy and
@@ -831,7 +831,7 @@ database.
 | --- | --- | --- | --- |
 | M1 | Core reads (**done**) | Structs, `Option`, `Vec`, embedded structs, generated SQL, name-based decoding, PostgreSQL | Integration tests; parity benchmark |
 | M2 | Sum types (**done**) | `tag`, `table_per_variant`, `json`; nested sums; strict decoding | Every strategy tested with generated SQL |
-| M3 | Overrides (**done**) | Override files, startup validation, `refract check`, shadow mode | Mutation-style checks pass |
+| M3 | Overrides (**done**) | Override files, startup validation, `mabat check`, shadow mode | Mutation-style checks pass |
 | M4 | Collections and recursion (**done**) | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
 | M5 | Shared and graph (**done**; `$id`/`$ref` JSON moves to M7) | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
 | M6 | More databases, concurrency | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |
@@ -845,7 +845,7 @@ database.
 | XOR (Java) | Origin of the view and override concept, query splitting, ordering writes with SCC and topological sort |
 | Blaze-Persistence Entity Views (Java) | Typed views over JPA; no runtime-swappable SQL |
 | MyBatis (Java) | SQL kept outside the code with result maps; no checking against types, flat or manually nested |
-| Diesel, SeaORM, SQLx (Rust) | Foundations and neighbors; Refract builds on SQLx |
+| Diesel, SeaORM, SQLx (Rust) | Foundations and neighbors; Mabat builds on SQLx |
 | Ecto / Elixir preloads | Batched child queries per association; inspiration for the planner |
 | petgraph, slotmap (Rust) | Arena and typed-index patterns behind the graph representation |
 | Haskell `lens` prisms | The optics vocabulary for sum types |
@@ -854,12 +854,11 @@ database.
 
 | Risk | Mitigation |
 | --- | --- |
-| Rust users expect compile-time SQL checks | State plainly that overrides are checked at startup and in CI; generated SQL is correct by construction; `refract check` in CI |
-| Overlap with SeaORM and Diesel | Position Refract as a read layer for aggregates that works alongside them, not a replacement |
-| Complexity of the proc macro | Thin macro, logic in `refract-core`, `trybuild` tests |
+| Rust users expect compile-time SQL checks | State plainly that overrides are checked at startup and in CI; generated SQL is correct by construction; `mabat check` in CI |
+| Overlap with SeaORM and Diesel | Position Mabat as a read layer for aggregates that works alongside them, not a replacement |
+| Complexity of the proc macro | Thin macro, logic in `mabat-core`, `trybuild` tests |
 | Sum-type strategies don't match legacy schemas | `json` strategy and overrides as escape hatches; tag value mapping per variant |
 | Planner picks poor strategies | `explain`, per-field strategy attributes, and overrides; a planner that uses statistics only later |
-| Name: the `refract` crate is a placeholder owned by someone else | Request a transfer; publish `refract-*` crates meanwhile |
 
 ## 20. Open questions
 
