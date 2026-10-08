@@ -55,7 +55,8 @@ pub fn select_with(plan: &QueryPlan, root: &RootOptions, layout: Layout) -> Stri
         if i > 0 {
             sql.push_str(column_separator);
         }
-        let _ = write!(sql, "{TABLE_ALIAS}.{} AS {}", quote_ident(&column.column), quote_ident(&column.alias));
+        let cast = if column.as_text { "::text" } else { "" };
+        let _ = write!(sql, "{TABLE_ALIAS}.{}{cast} AS {}", quote_ident(&column.column), quote_ident(&column.alias));
     }
     let _ = write!(sql, "{clause}FROM {} AS {TABLE_ALIAS}", quote_ident(plan.shape.table));
 
@@ -71,7 +72,7 @@ pub fn select_with(plan: &QueryPlan, root: &RootOptions, layout: Layout) -> Stri
             let _ = write!(sql, "{clause}WHERE {TABLE_ALIAS}.{} = ANY($1)", quote_ident(fk));
             &plan.order_by
         }
-        Link::ToOne { .. } => {
+        Link::ToOne { .. } | Link::Variant { .. } => {
             let _ = write!(sql, "{clause}WHERE {TABLE_ALIAS}.{key} = ANY($1)");
             &[]
         }

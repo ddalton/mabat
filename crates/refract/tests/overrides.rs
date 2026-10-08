@@ -22,7 +22,7 @@ impl Parts {
         let filter = match &plan.link {
             Link::Root => String::new(),
             Link::Child { fk } => format!(" WHERE t0.\"{fk}\" = ANY($1)"),
-            Link::ToOne { .. } => format!(" WHERE t0.\"{}\" = ANY($1)", plan.shape.key_column),
+            Link::ToOne { .. } | Link::Variant { .. } => format!(" WHERE t0.\"{}\" = ANY($1)", plan.shape.key_column),
         };
         Parts { columns, from: format!("FROM \"{}\" AS t0{filter}", plan.shape.table) }
     }
@@ -90,7 +90,7 @@ fn mutations(plan: &QueryPlan, parts: &Parts) -> Vec<(String, String)> {
             scalar.from.push_str(" WHERE t0.\"id\" = $1");
             add("take a single key".into(), scalar);
         }
-        Link::Child { .. } | Link::ToOne { .. } => {
+        Link::Child { .. } | Link::ToOne { .. } | Link::Variant { .. } => {
             let mut unfiltered = parts.clone();
             unfiltered.from = unfiltered.from.replace(" = ANY($1)", " IS NOT NULL");
             add("ignore the keys".into(), unfiltered);

@@ -6,7 +6,7 @@ use sqlx::{Postgres, Type, TypeInfo};
 use crate::View;
 
 /// The `describe` function of a view.
-pub(crate) type DescribeFn = fn(&mut Description);
+pub type DescribeFn = fn(&mut Description);
 
 /// The columns of a view with their Rust types, and the views of its child queries.
 ///
@@ -16,6 +16,9 @@ pub struct Description {
     pub(crate) columns: Vec<ColumnType>,
     /// Describe functions of the views of child and to-one fields, by field index.
     pub(crate) children: Vec<(usize, DescribeFn)>,
+    /// Describe functions of the variants of enums stored in a table per variant, by field
+    /// index and variant.
+    pub(crate) variants: Vec<(usize, &'static str, DescribeFn)>,
 }
 
 /// A column of a view and the Rust type it is decoded as.
@@ -54,6 +57,16 @@ impl Description {
     /// A child or to-one field whose values are views of type `C`.
     pub fn view<C: View>(&mut self, field_index: usize) {
         self.children.push((field_index, C::describe));
+    }
+
+    /// The variant `variant` of an enum stored in a table per variant in the field
+    /// `field_index`, whose columns are described by `describe`.
+    pub fn variant_table(&mut self, field_index: usize, variant: &'static str, describe: DescribeFn) {
+        self.variants.push((field_index, variant, describe));
+    }
+
+    pub(crate) fn variant(&self, field_index: usize, variant: &str) -> Option<DescribeFn> {
+        self.variants.iter().find(|(i, v, _)| *i == field_index && *v == variant).map(|(_, _, describe)| *describe)
     }
 
     pub(crate) fn column_type(&self, alias: &str) -> Option<&ColumnType> {

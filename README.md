@@ -2,8 +2,8 @@
 
 Typed aggregate reads for Rust, with SQL you can tune without changing code.
 
-> **Status:** early development, not published yet. Milestone 1 (struct views, PostgreSQL, reads) and
-> milestone 3 (overrides checked at startup) are implemented. See the [design document](docs/design.md) for the
+> **Status:** early development, not published yet. Milestones 1 (struct views, PostgreSQL, reads), 2 (enums
+> with data) and 3 (overrides checked at startup) are implemented. See the [design document](docs/design.md) for the
 > plan.
 
 Refract loads nested, typed data from PostgreSQL. The shape of the result is declared with ordinary Rust structs,
@@ -66,6 +66,65 @@ let page = refract::load::<TaskView>().order_by("name").limit(20).offset(40).all
 // The queries Refract runs
 println!("{}", refract::plan::<TaskView>()?.explain());
 ```
+
+## Enums with data
+
+Enums map to tables in one of two ways. With the `tag` strategy (the default), a tag column names the variant
+and the variants' fields are columns of the same row:
+
+```rust
+#[derive(View)]
+#[view(tag = "state")]                       // any column type, e.g. a PostgreSQL enum
+enum State {
+    #[view(tag_value = "open")]
+    Open,
+    #[view(tag_value = "assigned")]
+    Assigned { assignee: String },
+    #[view(tag_value = "blocked")]
+    Blocked {
+        #[view(embed(prefix = "blocked_reason_"))]
+        reason: Reason,                      // enums nest
+        #[view(column = "blocked_since")]
+        since: Option<DateTime<Utc>>,
+    },
+    #[view(tag_value = "closed")]
+    Closed(#[view(column = "closed_resolution")] String),
+}
+```
+
+With `strategy = "table_per_variant"`, each variant's data is in its own table, keyed by the key of the
+containing view. Refract loads each variant table with one batched query, using only the keys whose tag
+names that variant:
+
+```rust
+#[derive(View)]
+#[view(tag = "kind", strategy = "table_per_variant")]
+enum Payment {
+    #[view(tag_value = "none")]
+    Unpaid,
+    #[view(tag_value = "card", table = "card_payment", key = "issue_id")]
+    Card { last4: String, #[view(to_one(fk = "holder_id"))] holder: Option<PersonView> },
+    #[view(tag_value = "bank", table = "bank_payment", key = "issue_id")]
+    Bank { iban: String, #[view(child(fk = "bank_payment_id"))] notes: Vec<PaymentNote> },
+}
+
+#[derive(View)]
+#[view(table = "issue")]
+struct IssueView {
+    id: i64,
+    #[view(embed)]
+    state: State,
+    #[view(embed(prefix = "payment_"))]
+    payment: Payment,
+    #[view(json)]
+    metadata: Option<Metadata>,              // any serde type, from a JSON or JSONB column
+}
+```
+
+Decoding is strict. An unknown tag is an error, and so is a missing variant row. A column of another variant
+that isn't NULL is also an error, unless the enum is marked `lenient`. Variant fields have paths that name
+the variant, such as `state.Blocked.reason.$tag` or `state.Closed.0`, and overrides use them like any other
+path.
 
 ## Tuning without code changes
 
@@ -134,7 +193,8 @@ ORDER BY n.id;
 | Struct views, embedded structs, `Option` columns | Done (M1) |
 | To-many children and to-one references, nested, batched | Done (M1) |
 | Decoding by column alias, errors that name the view and path | Done (M1) |
-| Enums with data (sum types) | Planned (M2) |
+| Enums with data: `tag` and `table_per_variant` strategies, nested enums, JSON fields | Done (M2) |
+| Filters on the root query | Planned |
 | SQL overrides checked at startup, shadow mode, scaffolding, reloading | Done (M3) |
 | Ordered lists, maps, many-to-many, recursive views | Planned (M4) |
 | Shared (`Arc`) and graph (`Ref<T>`) representations for cyclic data | Planned (M5) |

@@ -16,13 +16,62 @@ pub struct ViewShape {
     pub fields: &'static [Field],
 }
 
-/// The shape of a struct whose fields are columns of the enclosing view's table.
+/// The shape of a value stored in the row of the enclosing view: a struct whose fields are
+/// columns of the view's table, or an enum.
 #[derive(Debug)]
 pub struct EmbeddedShape {
     /// Name of the Rust type, used in error messages.
     pub name: &'static str,
-    /// Only [`FieldKind::Column`] and [`FieldKind::Embedded`] fields.
-    pub fields: &'static [Field],
+    pub kind: EmbeddedKind,
+}
+
+#[derive(Debug)]
+pub enum EmbeddedKind {
+    /// A struct. Only [`FieldKind::Column`] and [`FieldKind::Embedded`] fields.
+    Product { fields: &'static [Field] },
+    /// An enum.
+    Sum(SumShape),
+}
+
+/// The shape of an enum: a tag column that names the variant, and the data of each variant.
+#[derive(Debug)]
+pub struct SumShape {
+    /// Column holding the tag value of the variant, selected as text.
+    pub tag_column: &'static str,
+    pub strategy: SumStrategy,
+    /// Ignore non-null columns of other variants than the tag names, instead of failing.
+    pub lenient: bool,
+    pub variants: &'static [Variant],
+}
+
+/// Where the data of the variants of an enum is stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SumStrategy {
+    /// In columns of the enclosing view's table, next to the tag column.
+    Tag,
+    /// In a table per variant, whose key is the key of the enclosing view.
+    TablePerVariant,
+}
+
+#[derive(Debug)]
+pub struct Variant {
+    /// Name of the Rust variant, which is also its path segment.
+    pub name: &'static str,
+    /// Value of the tag column for the variant.
+    pub tag_value: &'static str,
+    pub data: VariantData,
+}
+
+#[derive(Debug)]
+pub enum VariantData {
+    /// No data.
+    Unit,
+    /// Columns of the enclosing view's table ([`SumStrategy::Tag`]). Tuple fields are named
+    /// `0`, `1`, ...
+    Columns { fields: &'static [Field] },
+    /// A row of the variant's table, keyed by the key of the enclosing view
+    /// ([`SumStrategy::TablePerVariant`]).
+    Table { shape: fn() -> &'static ViewShape },
 }
 
 #[derive(Debug)]
@@ -36,7 +85,7 @@ pub struct Field {
 pub enum FieldKind {
     /// A column of the view's table.
     Column { column: &'static str },
-    /// A struct stored in columns of the view's table, optionally with a common column prefix.
+    /// A struct or an enum stored in the view's row, optionally with a common column prefix.
     Embedded { column_prefix: &'static str, shape: fn() -> &'static EmbeddedShape },
     /// A to-many collection loaded by a child query: rows of the child table whose `fk`
     /// column references the key of this view.

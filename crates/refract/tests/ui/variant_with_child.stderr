@@ -1,0 +1,5 @@
+error: a variant stored in columns can only contain columns, embedded values and json fields; use `strategy = "table_per_variant"` for child collections and references
+  --> tests/ui/variant_with_child.rs:13:9
+   |
+13 |         notes: Vec<Note>,
+   |         ^^^^^

@@ -188,7 +188,8 @@ pub struct TaskSummary {
 
 > **M1:** loading is the free function `refract::load::<T>()`, with `by_key`, `by_keys`, `order_by`,
 > `order_by_desc`, `limit` and `offset`, run with `all`, `one` or `optional` on a `&mut PgConnection`.
-> Filters with SeaQuery expressions arrive in M2.
+> Filters with SeaQuery expressions aren't implemented yet. They were planned for M2, which became sum types
+> only.
 >
 > **M3:** the registry takes no pool. `build(&mut conn)` checks the views on the connection it is given and
 > returns an immutable `Refract`; every load still takes its own connection or transaction. The free function
@@ -279,6 +280,27 @@ pub enum Payment {
 }
 ```
 
+> **M2:** as implemented:
+>
+> - **Marking enum fields:** a field holding an enum is marked `#[view(embed)]`, like an embedded struct,
+>   optionally with a column `prefix` for the tag and the variant columns. The struct's derive can't tell
+>   an enum from a column type, so the attribute is needed.
+> - **Tags:**
+>   - The tag column is selected as `text`, so it can be a text column, a PostgreSQL enum or a number.
+>   - `tag_value` defaults to the variant name.
+>   - Two variants with the same tag value are a compile error.
+> - **`json`:** a field attribute that works for any `serde` type, not a strategy of enums.
+> - **`table_per_variant`:**
+>   - Each variant with data is a view of its own table, named `Enum::Variant`. Its key column (`key`,
+>     `id` by default) holds the key of the containing view.
+>   - Its fields can be child collections and to-one references.
+>   - It needs to be a direct field of a view, not nested in an embedded struct or another enum.
+>   - Variants stored in columns can't hold child collections or references; the macro says to use
+>     `table_per_variant`.
+> - **Not supported yet:**
+>   - `Option<Enum>` fields. A unit variant can stand for "none".
+>   - `#[view(variant_fetch = "join")]` (section 6.5): variant tables are always loaded by queries.
+
 ### 6.3 Paths for sum types
 
 Variant fields have paths that name the variant explicitly, which keeps alias-based mapping unambiguous:
@@ -298,11 +320,20 @@ Variant fields have paths that name the variant explicitly, which keeps alias-ba
 - A unit variant needs only the tag.
 - Nested sums (`enum A { X(B) }` where `B` is an enum) compose: each level has its own `$tag` path.
 
+> **M2:** the columns that must be NULL for a variant are the columns of the other variants, without the
+> columns it shares with them (two variants can map a field to the same column). A nested enum's columns
+> belong to the variant that contains it. With `lenient`, nothing is checked. Columns an override doesn't
+> select aren't checked either.
+
 ### 6.5 Planning for `table_per_variant`
 
 The planner either LEFT JOINs every variant table (few variants, small rows), or runs one child query per
 variant that is present, keyed by the parent ids that have that tag. Statistics or an attribute
 (`#[view(variant_fetch = "join" | "query")]`) choose between them.
+
+> **M2:** only the query strategy is implemented. Each variant table is a child query named after the
+> variant's path, such as `payment.Card`, so it can be overridden, including with a join. It runs only
+> for the keys of rows whose tag names the variant, and not at all when no row does.
 
 ## 7. Recursion, sharing and cycles
 
@@ -501,7 +532,7 @@ System columns:
 > - **Root query:** it takes either no parameter or the array of root keys as `$1`. Without a parameter, it is
 >   used as a subquery, which `by_keys`, `order_by`, `limit` and `offset` filter, order and page. `order_by`
 >   then refers to columns the view selects. With `$1`, the load needs `by_key` or `by_keys`. Named filters
->   arrive with filters in M2.
+>   arrive with filters, which are not implemented yet.
 > - **Other queries:** they take the array of the keys they are selected by as `$1`.
 > - **Key columns:** they must hold integer, text or uuid values. A `$parent` column must hold the same kind of
 >   key as its parent, and a referenced view's key the same kind as the reference.
@@ -699,7 +730,7 @@ database.
 | # | Milestone | Scope | Exit criteria |
 | --- | --- | --- | --- |
 | M1 | Core reads (**done**) | Structs, `Option`, `Vec`, embedded structs, generated SQL, name-based decoding, PostgreSQL | Integration tests; parity benchmark |
-| M2 | Sum types | `tag`, `table_per_variant`, `json`; nested sums; strict decoding | Every strategy tested with generated SQL |
+| M2 | Sum types (**done**) | `tag`, `table_per_variant`, `json`; nested sums; strict decoding | Every strategy tested with generated SQL |
 | M3 | Overrides (**done**) | Override files, startup validation, `refract check`, shadow mode | Mutation-style checks pass |
 | M4 | Collections and recursion | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
 | M5 | Shared and graph | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |

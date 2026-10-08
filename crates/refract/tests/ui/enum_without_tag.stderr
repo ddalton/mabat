@@ -1,0 +1,5 @@
+error: missing `#[view(tag = "...")]`, the column that names the variant
+ --> tests/ui/enum_without_tag.rs:2:6
+  |
+2 | enum Status {
+  |      ^^^^^^

@@ -26,6 +26,18 @@ pub enum Error {
     #[error("{view}: the to-one reference `{path}` points to a row that was not found")]
     MissingReference { view: &'static str, path: String },
 
+    #[error("{view}: the tag `{path}` is NULL")]
+    NullTag { view: &'static str, path: String },
+
+    #[error("{view}: the tag `{path}` is {tag:?}, which is not one of {expected:?}")]
+    UnknownTag { view: &'static str, path: String, tag: String, expected: Vec<&'static str> },
+
+    #[error("{view}: `{path}` belongs to another variant than {tag:?}, but is not NULL")]
+    OtherVariantColumn { view: &'static str, path: String, tag: String },
+
+    #[error("{view}: the row of the variant table `{path}` was not found")]
+    MissingVariant { view: &'static str, path: String },
+
     #[error("{view}: the keys to load have different types")]
     MixedKeys { view: &'static str },
 

@@ -833,6 +833,7 @@ dependencies = [
  "refract-core",
  "refract-derive",
  "refract-sqlx",
+ "serde",
  "sqlx",
  "tokio",
  "trybuild",
