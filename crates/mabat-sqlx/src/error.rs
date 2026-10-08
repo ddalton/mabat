@@ -50,6 +50,10 @@ pub enum Error {
     #[error("{view} has references into a graph (`Ref<T>`); load it with `.graph(..)`")]
     GraphRequired { view: &'static str },
 
+    /// Optimistic locking: the row was changed or deleted since the value was loaded.
+    #[error("{view}: the row with key {key} was changed or deleted since it was loaded")]
+    Conflict { view: &'static str, key: String },
+
     #[error("{view} cannot be written: {message}")]
     Write { view: &'static str, message: String },
 

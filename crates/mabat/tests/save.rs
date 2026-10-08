@@ -10,7 +10,7 @@ use mabat::{Error, View};
 async fn tasks_round_trip() {
     let Some(mut db) = setup("save_tasks").await else { return };
 
-    let task = TaskView {
+    let mut task = TaskView {
         id: id(0x99),
         name: "Benchmark".into(),
         description: Some("Measure the parser".into()),
@@ -23,20 +23,20 @@ async fn tasks_round_trip() {
         assignee: Some(PersonView { id: 2, name: "Alan Turing".into(), email: None }),
         children: Vec::new(),
     };
-    mabat::save(&task, &mut db.conn).await.unwrap();
+    mabat::save(&mut task, &mut db.conn).await.unwrap();
     let loaded = mabat::load::<TaskView>().by_key(id(0x99)).one(&mut db.conn).await.unwrap();
     assert_eq!(loaded, task);
 
     // The referenced person is a separate aggregate: its row is not written
     let mut renamed = task;
     renamed.assignee = Some(PersonView { id: 2, name: "Someone else".into(), email: None });
-    mabat::save(&renamed, &mut db.conn).await.unwrap();
+    mabat::save(&mut renamed, &mut db.conn).await.unwrap();
     let person = mabat::load::<PersonView>().by_key(2_i64).one(&mut db.conn).await.unwrap();
     assert_eq!(person.name, "Alan Turing");
 
     // A collection of a view without a key field cannot be saved
     renamed.children = vec![SubtaskView { name: "Profile".into(), position: 0, notes: Vec::new() }];
-    let error = mabat::save(&renamed, &mut db.conn).await.unwrap_err();
+    let error = mabat::save(&mut renamed, &mut db.conn).await.unwrap_err();
     assert_eq!(
         error.to_string(),
         "SubtaskView cannot be written: it has no key field, so its collection cannot be saved"
@@ -71,9 +71,9 @@ struct TagCode {
 #[tokio::test]
 async fn columns_without_encode_fail_when_saved() {
     let Some(mut db) = setup("save_encode").await else { return };
-    let tag = mabat::load::<TagCode>().by_key("bug").one(&mut db.conn).await.unwrap();
+    let mut tag = mabat::load::<TagCode>().by_key("bug").one(&mut db.conn).await.unwrap();
     assert_eq!(tag.label, "Bug");
-    let error = mabat::save(&tag, &mut db.conn).await.unwrap_err();
+    let error = mabat::save(&mut tag, &mut db.conn).await.unwrap_err();
     assert!(matches!(error, Error::Write { view: "TagCode", .. }), "{error}");
     assert!(error.to_string().contains("save::Code does not implement sqlx::Encode"), "{error}");
     db.drop().await;

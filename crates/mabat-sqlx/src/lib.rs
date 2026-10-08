@@ -36,7 +36,7 @@ pub use overrides::Origin;
 pub use pooled::Pooled;
 pub use registry::{Builder, Mabat, OnInvalid, Reloaded, ShadowSummary, scaffold};
 pub use report::{Diagnostic, Report, Severity};
-pub use write::{EmbeddedEncoder, RowWrite, ViewEncoder};
+pub use write::{EmbeddedEncoder, RowWrite, ViewEncoder, Written};
 
 /// A view: a type whose values are loaded from a table, together with their embedded
 /// structs, to-one references and to-many collections.
@@ -128,7 +128,13 @@ pub fn load<T: View>() -> Load<T> {
 /// Keys are assigned by the application: the view and the views of its collections need a
 /// key field. Views with references into a graph (`Ref<T>`) cannot be saved yet. Writes never
 /// use overrides.
-pub async fn save<T, C>(value: &T, conn: &mut C) -> Result<(), Error>
+///
+/// A view with a `#[view(version)]` field is locked optimistically: its row is updated only
+/// if it still has the value's version, which it increments, and inserted only if no row has
+/// its key. Otherwise the save fails with [`Error::Conflict`]. The new versions are written
+/// back into the value, and into the elements of its owned collections, so it can be saved
+/// again.
+pub async fn save<T, C>(value: &mut T, conn: &mut C) -> Result<(), Error>
 where
     T: ViewEncoder<C::Backend>,
     C: Conn,
@@ -138,8 +144,39 @@ where
     let row = value.write()?;
     let mut conn = conn.source().single().await?;
     let mut tx = conn.begin().await.map_err(Error::Connection)?;
-    write::save_row::<C::Backend>(&mut tx, row, None).await?;
-    tx.commit().await.map_err(Error::Connection)
+    let written = write::save_row::<C::Backend>(&mut tx, row, None).await?;
+    tx.commit().await.map_err(Error::Connection)?;
+    value.written(&written)
+}
+
+/// Save what changed from `before`, as it was loaded, to `after`, in a transaction: only
+/// the columns that differ are updated, elements of owned collections that are new are
+/// saved whole and those that are gone are deleted with what they own, and links are
+/// replaced only if they differ. Rows that did not change are not written.
+///
+/// Values are compared with `PartialEq`, and a value whose type does not implement it is
+/// written as if it changed. Elements of collections are matched by key. A row that was
+/// deleted since, or whose version changed, fails the save with [`Error::Conflict`]; new
+/// versions are written back into `after`.
+pub async fn save_changes<T, C>(before: &T, after: &mut T, conn: &mut C) -> Result<(), Error>
+where
+    T: ViewEncoder<C::Backend>,
+    C: Conn,
+    <C::Backend as sqlx::Database>::Connection: Send,
+{
+    use sqlx::Connection;
+    if before.key() != after.key() {
+        return Err(Error::Write {
+            view: T::shape().name,
+            message: "the values have different keys; save_changes compares two versions of one value".to_string(),
+        });
+    }
+    let row = after.write_changes(before)?;
+    let mut conn = conn.source().single().await?;
+    let mut tx = conn.begin().await.map_err(Error::Connection)?;
+    let written = write::save_row::<C::Backend>(&mut tx, row, None).await?;
+    tx.commit().await.map_err(Error::Connection)?;
+    after.written(&written)
 }
 
 /// Delete the aggregate of a view with the key, in a transaction: the row and what it owns,
@@ -563,11 +600,12 @@ pub mod __private {
         references, shared_children, shared_to_one, shared_to_one_required, strict, tag, to_one, to_one_required,
         unknown_tag, variant,
     };
-    pub use crate::write::{EmbeddedEncoder, RowWrite, ViewEncoder};
     pub use crate::write::{
-        JsonWriteFallback, JsonWriteProbe, JsonWriteViaSerialize, KeyFallback, KeyProbe, KeyViaInto, WriteFallback,
-        WriteProbe, WriteViaEncode, target_key, variant_table,
+        ChangeFallback, ChangeProbe, ChangeViaEq, JsonWriteFallback, JsonWriteProbe, JsonWriteViaSerialize,
+        KeyFallback, KeyProbe, KeyViaInto, WriteFallback, WriteProbe, WriteViaEncode, Written, changes, target_key,
+        variant_table,
     };
+    pub use crate::write::{EmbeddedEncoder, RowWrite, ViewEncoder};
     pub use mabat_core::{
         Child, EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, Recursion, Scalar, SumShape, SumStrategy,
         Through, ValueType, Variant, VariantData, ViewShape,

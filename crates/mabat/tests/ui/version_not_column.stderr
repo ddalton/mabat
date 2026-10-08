@@ -1,0 +1,5 @@
+error: `version` applies to an integer column field
+ --> tests/ui/version_not_column.rs:6:5
+  |
+6 |     sections: Vec<Section>,
+  |     ^^^^^^^^

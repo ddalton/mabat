@@ -60,6 +60,10 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **JSON and selections (M7).** `Load::json` loads views as JSON, and `Load::select` with a `Selection`
   (built in code or parsed from GraphQL-like text) loads only the selected fields: only their columns are
   selected and only their child queries run. Recursive and graph views load as trees as deep as the selection.
+- **Saving changes and optimistic locking (M8).** `mabat::save_changes(&before, &mut after, conn)` writes only
+  what changed: the columns that differ, new and removed elements, and links that differ. `#[view(version)]`
+  versions rows; a stale version fails with `Error::Conflict`, and new versions are written back into the value.
+  `mabat::save` now takes the value by `&mut`.
 - **Saving aggregates (M8).** `mabat::save` upserts a value and makes its owned collections, links and variant
   tables match it, in one transaction; `mabat::delete` deletes an aggregate with all it owns. On every database.
 - **Arguments of nested collections.** `Load::nested` with a `Nested` filters, orders and pages the elements

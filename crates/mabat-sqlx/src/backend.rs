@@ -104,6 +104,9 @@ pub trait Backend: Database + Sized {
         args: Self::Arguments,
     ) -> BoxFuture<'c, Result<Vec<Self::Row>, sqlx::Error>>;
 
+    /// A copy of arguments, to run a statement again with them.
+    fn clone_args(args: &Self::Arguments) -> Self::Arguments;
+
     /// Add a key to the arguments of a statement.
     fn add_key(args: &mut Self::Arguments, key: &Key) -> Result<(), sqlx::error::BoxDynError>;
 
@@ -295,6 +298,10 @@ macro_rules! common_methods {
             args: <$db as sqlx::Database>::Arguments,
         ) -> crate::backend::BoxFuture<'c, Result<Vec<$row>, sqlx::Error>> {
             Box::pin(async move { sqlx::query_with(sqlx::AssertSqlSafe(sql), args).fetch_all(conn).await })
+        }
+
+        fn clone_args(args: &<$db as sqlx::Database>::Arguments) -> <$db as sqlx::Database>::Arguments {
+            args.clone()
         }
 
         fn add_key(

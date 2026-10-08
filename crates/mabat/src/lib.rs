@@ -138,7 +138,9 @@
 //!
 //! [`save`] writes a value with what it owns, and [`delete`] deletes it, in a transaction:
 //! rows are upserted by key, owned collections are made equal to the value's, and
-//! references and many-to-many links write foreign keys only.
+//! references and many-to-many links write foreign keys only. [`save_changes`] writes only
+//! what changed between two values, and a `#[view(version)]` field locks rows
+//! optimistically.
 //!
 //! # JSON and selections
 //!
@@ -226,7 +228,7 @@ pub use mabat_derive::View;
 pub use mabat_sqlx::{
     Backend, Builder, Conn, Diagnostic, Embedded, EmbeddedDecoder, EmbeddedEncoder, Error, Graph, Key, Load, Mabat,
     Nested, Node, OnInvalid, Origin, Pooled, Ref, Reloaded, Report, RowWrite, Selection, SelectionError, Severity,
-    ShadowSummary, View, ViewDecoder, ViewEncoder, delete, load, plan, save, scaffold,
+    ShadowSummary, View, ViewDecoder, ViewEncoder, Written, delete, load, plan, save, save_changes, scaffold,
 };
 pub use mabat_sqlx::{filter, manifest};
 

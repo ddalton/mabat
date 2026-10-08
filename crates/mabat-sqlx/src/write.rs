@@ -31,6 +31,45 @@ pub struct RowWrite<B: Backend> {
     links: Vec<(usize, Vec<RowWrite<B>>)>,
     /// Enums stored in a table per variant: the field, the variant, and its row.
     variants: Vec<(usize, &'static str, Option<RowWrite<B>>)>,
+    /// Insert or update the whole row, or update the columns given only.
+    mode: Mode,
+    /// The version column and the version of the value, for optimistic locking.
+    version: Option<(String, i64)>,
+    /// For an update: the keys of the elements of owned collections that are gone.
+    removed: Vec<(usize, Vec<Key>)>,
+    /// For an update of an element of an ordered list: its position before.
+    previous_position: Option<usize>,
+}
+
+/// How a row is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// [`crate::save`]: the whole row, inserted or updated.
+    Upsert,
+    /// [`crate::save_changes`]: the columns that changed, of a row that exists.
+    Update,
+}
+
+/// What saving a row produced: its new version, and what the rows of its owned collections
+/// produced, in order. Generated code writes it back into the value.
+#[derive(Debug, Default)]
+pub struct Written {
+    version: Option<i64>,
+    collections: Vec<(usize, Vec<Written>)>,
+}
+
+impl Written {
+    /// The version of the row after saving it, for a view with a version column.
+    #[doc(hidden)]
+    pub fn version(&self) -> Option<i64> {
+        self.version
+    }
+
+    /// What the elements of the collection `field_index` produced, in order.
+    #[doc(hidden)]
+    pub fn collection(&self, field_index: usize) -> &[Written] {
+        self.collections.iter().find(|(i, _)| *i == field_index).map(|(_, w)| w.as_slice()).unwrap_or(&[])
+    }
 }
 
 impl<B: Backend> RowWrite<B> {
@@ -44,7 +83,31 @@ impl<B: Backend> RowWrite<B> {
             collections: Vec::new(),
             links: Vec::new(),
             variants: Vec::new(),
+            mode: Mode::Upsert,
+            version: None,
+            removed: Vec::new(),
+            previous_position: None,
         }
+    }
+
+    /// Write the columns given only, to a row that exists: for [`crate::save_changes`].
+    #[doc(hidden)]
+    pub fn update(&mut self) {
+        self.mode = Mode::Update;
+    }
+
+    /// The version column of the row, with the version of the value.
+    #[doc(hidden)]
+    pub fn version<V: TryInto<i64> + Copy>(&mut self, column: &str, version: V) -> Result<(), Error> {
+        let version = version.try_into().map_err(|_| self.error(format!("the version `{column}` is out of range")))?;
+        self.version = Some((column.to_string(), version));
+        Ok(())
+    }
+
+    /// The keys of the elements of an owned collection that are gone, for an update.
+    #[doc(hidden)]
+    pub fn removed(&mut self, field_index: usize, keys: Vec<Key>) {
+        self.removed.push((field_index, keys));
     }
 
     fn error(&self, message: String) -> Error {
@@ -159,6 +222,13 @@ pub trait ViewEncoder<B: Backend>: ViewDecoder<B> {
 
     /// The row of the value, with what it owns.
     fn write(&self) -> Result<RowWrite<B>, Error>;
+
+    /// The changes from `before` to the value, as rows to update, insert and delete.
+    fn write_changes(&self, before: &Self) -> Result<RowWrite<B>, Error>;
+
+    /// Write back what saving produced: the new versions of the value and of the elements
+    /// of its owned collections.
+    fn written(&mut self, written: &Written) -> Result<(), Error>;
 }
 
 /// Writing an embedded value to the row of the value that contains it.
@@ -176,6 +246,45 @@ pub fn variant_table(shape: &'static EmbeddedShape, variant: &str) -> &'static V
         Some(VariantData::Table { shape }) => shape(),
         _ => unreachable!("{}::{variant} has no table", shape.name),
     }
+}
+
+/// The rows of the elements of a collection for [`crate::save_changes`], with the keys of
+/// the elements that are gone: elements found in `before` by key are updated with what
+/// changed, the others are saved whole. `extra` adds columns to the row of an element: its
+/// index in `after` and in `before`.
+#[doc(hidden)]
+pub fn changes<'a, E, B>(
+    after: Vec<&'a E>,
+    before: Vec<&'a E>,
+    extra: impl Fn(&mut RowWrite<B>, usize, Option<usize>) -> Result<(), Error>,
+) -> Result<(Vec<RowWrite<B>>, Vec<Key>), Error>
+where
+    E: ViewEncoder<B> + 'a,
+    B: Backend,
+{
+    let before_keys = before.iter().map(|element| target_key::<E, B>(element)).collect::<Result<Vec<_>, _>>()?;
+    let mut kept = vec![false; before.len()];
+    let mut rows = Vec::with_capacity(after.len());
+    for (i, element) in after.iter().enumerate() {
+        let key = target_key::<E, B>(element)?;
+        let row = match before_keys.iter().position(|k| *k == key) {
+            Some(j) => {
+                kept[j] = true;
+                let mut row = element.write_changes(before[j])?;
+                row.previous_position = Some(j);
+                extra(&mut row, i, Some(j))?;
+                row
+            }
+            None => {
+                let mut row = element.write()?;
+                extra(&mut row, i, None)?;
+                row
+            }
+        };
+        rows.push(row);
+    }
+    let removed = before_keys.into_iter().zip(kept).filter(|(_, kept)| !kept).map(|(key, _)| key).collect();
+    Ok((rows, removed))
 }
 
 /// The key of a referenced or linked value, which needs a key field.
@@ -219,6 +328,37 @@ impl<T, B: Backend> WriteFallback<T, B> for &WriteProbe<T, B> {
     fn write_column(&self, row: &mut RowWrite<B>, column: String, _: &T) -> Result<(), Error> {
         let ty = std::any::type_name::<T>();
         Err(row.error(format!("`{column}` cannot be written: {ty} does not implement sqlx::Encode")))
+    }
+}
+
+/// Selects how two values of type `T` are compared for [`crate::save_changes`]: with
+/// `PartialEq` if `T` implements it, else they are taken to differ.
+#[doc(hidden)]
+pub struct ChangeProbe<T>(PhantomData<fn() -> T>);
+
+impl<T> ChangeProbe<T> {
+    pub const NEW: ChangeProbe<T> = ChangeProbe(PhantomData);
+}
+
+#[doc(hidden)]
+pub trait ChangeViaEq<T> {
+    fn changed(&self, after: &T, before: &T) -> bool;
+}
+
+impl<T: PartialEq> ChangeViaEq<T> for ChangeProbe<T> {
+    fn changed(&self, after: &T, before: &T) -> bool {
+        after != before
+    }
+}
+
+#[doc(hidden)]
+pub trait ChangeFallback<T> {
+    fn changed(&self, after: &T, before: &T) -> bool;
+}
+
+impl<T> ChangeFallback<T> for &ChangeProbe<T> {
+    fn changed(&self, _: &T, _: &T) -> bool {
+        true
     }
 }
 
@@ -307,32 +447,110 @@ fn query_error(shape: &ViewShape, sql: &str, source: sqlx::Error) -> Error {
     Error::Query { view: shape.name, path: String::new(), sql: sql.to_string(), source }
 }
 
-/// Upsert the row, then make what it owns match it.
+/// Write the row, then make what it owns match it: what changed, for an update.
 pub(crate) fn save_row<'c, B: Backend>(
     conn: &'c mut B::Connection,
     row: RowWrite<B>,
     parent: Option<Parent>,
-) -> BoxFuture<'c, Result<(), Error>>
+) -> BoxFuture<'c, Result<Written, Error>>
 where
     B::Connection: Send,
 {
     Box::pin(async move {
-        let RowWrite { shape, key, mut columns, mut args, collections, links, variants } = row;
+        let RowWrite {
+            shape,
+            key,
+            mut columns,
+            mut args,
+            collections,
+            links,
+            variants,
+            mode,
+            version,
+            removed,
+            previous_position,
+        } = row;
         let key = key.ok_or_else(|| Error::Write {
             view: shape.name,
             message: "it has no key field, so it cannot be saved".to_string(),
         })?;
         let encode = |e: sqlx::error::BoxDynError| Error::Write { view: shape.name, message: e.to_string() };
-        if let Some(parent) = parent {
-            B::add_key(&mut args, &parent.key).map_err(encode)?;
-            columns.push((parent.fk.to_string(), ColumnValue::Bound));
-            if let Some((column, index)) = parent.index {
-                B::add_key(&mut args, &Key::Int(index)).map_err(encode)?;
-                columns.push((column.to_string(), ColumnValue::Bound));
+        let conflict = || Error::Conflict { view: shape.name, key: format!("{key:?}") };
+        let mut written = Written::default();
+
+        match mode {
+            Mode::Upsert => {
+                if let Some(parent) = &parent {
+                    B::add_key(&mut args, &parent.key).map_err(encode)?;
+                    columns.push((parent.fk.to_string(), ColumnValue::Bound));
+                    if let Some((column, index)) = parent.index {
+                        B::add_key(&mut args, &Key::Int(index)).map_err(encode)?;
+                        columns.push((column.to_string(), ColumnValue::Bound));
+                    }
+                }
+                match &version {
+                    None => {
+                        let sql = statement::upsert(B::DIALECT, shape.table, shape.key_column, &columns);
+                        B::execute_args(&mut *conn, sql.clone(), args)
+                            .await
+                            .map_err(|e| query_error(shape, &sql, e))?;
+                    }
+                    // The row with the version is updated, else a row is inserted unless one has the key
+                    Some((column, current)) => {
+                        let mut update_args = B::clone_args(&args);
+                        B::add_key(&mut update_args, &key).map_err(encode)?;
+                        B::add_key(&mut update_args, &Key::Int(*current)).map_err(encode)?;
+                        let sql = statement::update(B::DIALECT, shape.table, shape.key_column, &columns, Some(column));
+                        let updated = B::execute_args(&mut *conn, sql.clone(), update_args)
+                            .await
+                            .map_err(|e| query_error(shape, &sql, e))?;
+                        if updated > 0 {
+                            written.version = Some(current + 1);
+                        } else {
+                            B::add_key(&mut args, &Key::Int(*current)).map_err(encode)?;
+                            columns.push((column.clone(), ColumnValue::Bound));
+                            if B::DIALECT == mabat_core::sql::Dialect::MySql {
+                                B::add_key(&mut args, &key).map_err(encode)?;
+                            }
+                            let sql = statement::insert_if_absent(B::DIALECT, shape.table, shape.key_column, &columns);
+                            let inserted = B::execute_args(&mut *conn, sql.clone(), args)
+                                .await
+                                .map_err(|e| query_error(shape, &sql, e))?;
+                            if inserted == 0 {
+                                return Err(conflict());
+                            }
+                            written.version = Some(*current);
+                        }
+                    }
+                }
+            }
+            Mode::Update => {
+                // A moved element of an ordered list writes its new position
+                if let Some(Parent { index: Some((column, index)), .. }) = &parent
+                    && previous_position != Some(*index as usize)
+                {
+                    B::add_key(&mut args, &Key::Int(*index)).map_err(encode)?;
+                    columns.push((column.to_string(), ColumnValue::Bound));
+                }
+                written.version = version.as_ref().map(|(_, current)| *current);
+                // Nothing changed: no statement, and the version stays
+                if !columns.is_empty() {
+                    B::add_key(&mut args, &key).map_err(encode)?;
+                    if let Some((_, current)) = &version {
+                        B::add_key(&mut args, &Key::Int(*current)).map_err(encode)?;
+                    }
+                    let version_column = version.as_ref().map(|(column, _)| column.as_str());
+                    let sql = statement::update(B::DIALECT, shape.table, shape.key_column, &columns, version_column);
+                    let updated = B::execute_args(&mut *conn, sql.clone(), args)
+                        .await
+                        .map_err(|e| query_error(shape, &sql, e))?;
+                    if updated == 0 {
+                        return Err(conflict());
+                    }
+                    written.version = version.as_ref().map(|(_, current)| current + 1);
+                }
             }
         }
-        let sql = statement::upsert(B::DIALECT, shape.table, shape.key_column, &columns);
-        B::execute_args(&mut *conn, sql.clone(), args).await.map_err(|e| query_error(shape, &sql, e))?;
 
         // The variant tables: the row of the variant, and none in the others
         for (field_index, chosen, variant_row) in variants {
@@ -349,28 +567,40 @@ where
                 B::add_key(&mut variant_row.args, &key).map_err(encode)?;
                 variant_row.columns.push((table.key_column.to_string(), ColumnValue::Bound));
                 variant_row.key = Some(key.clone());
+                variant_row.mode = Mode::Upsert;
                 save_row::<B>(&mut *conn, variant_row, None).await?;
             }
         }
 
-        // Owned collections: delete the elements that are gone, then upsert the others
+        // Owned collections: delete the elements that are gone, then save the others
         for (field_index, rows) in collections {
             let FieldKind::Child(child) = &shape.fields[field_index].kind else { continue };
             let target = (child.shape)();
-            let mut keys = Vec::new();
-            for row in &rows {
-                keys.push(row.key.clone().ok_or_else(|| Error::Write {
-                    view: target.name,
-                    message: "it has no key field, so its collection cannot be saved".to_string(),
-                })?);
-            }
-            let existing = select_keys::<B>(&mut *conn, target, target.key_column, child.fk, vec![key.clone()]).await?;
-            let gone: Vec<Key> = existing.into_iter().filter(|k| !keys.contains(k)).collect();
+            let gone = match mode {
+                Mode::Update => {
+                    removed.iter().find(|(i, _)| *i == field_index).map(|(_, k)| k.clone()).unwrap_or_default()
+                }
+                Mode::Upsert => {
+                    let mut keys = Vec::new();
+                    for row in &rows {
+                        keys.push(row.key.clone().ok_or_else(|| Error::Write {
+                            view: target.name,
+                            message: "it has no key field, so its collection cannot be saved".to_string(),
+                        })?);
+                    }
+                    let existing =
+                        select_keys::<B>(&mut *conn, target, target.key_column, child.fk, vec![key.clone()]).await?;
+                    existing.into_iter().filter(|k| !keys.contains(k)).collect()
+                }
+            };
             delete_tree::<B>(&mut *conn, target, gone).await?;
+            let mut elements = Vec::with_capacity(rows.len());
             for (position, row) in rows.into_iter().enumerate() {
                 let index = child.index.map(|column| (column, position as i64));
-                save_row::<B>(&mut *conn, row, Some(Parent { fk: child.fk, key: key.clone(), index })).await?;
+                let parent = Parent { fk: child.fk, key: key.clone(), index };
+                elements.push(save_row::<B>(&mut *conn, row, Some(parent)).await?);
             }
+            written.collections.push((field_index, elements));
         }
 
         // Many-to-many collections: the links of the row
@@ -397,7 +627,7 @@ where
                 B::execute_args(&mut *conn, sql.clone(), args).await.map_err(|e| query_error(shape, &sql, e))?;
             }
         }
-        Ok(())
+        Ok(written)
     })
 }
 
