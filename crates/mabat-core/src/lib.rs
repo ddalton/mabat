@@ -4,6 +4,7 @@
 //! - [`plan`]: the tree of queries that fills a view
 //! - [`selection`]: the fields of a view to load
 //! - [`filter`]: conditions on the rows of the root query
+//! - [`write`]: the statements that write aggregates
 //! - [`sql`]: rendering a query plan as PostgreSQL
 
 pub mod filter;
@@ -11,6 +12,7 @@ pub mod plan;
 pub mod selection;
 pub mod shape;
 pub mod sql;
+pub mod write;
 
 pub use plan::{ChildPlan, ChildQuery, Cte, Link, PlanError, QueryPlan, SelectColumn};
 pub use plan::{SumPlan, VariantPlan};

@@ -18,6 +18,13 @@ bind_each!(Sqlite);
 impl Backend for Sqlite {
     const DIALECT: Dialect = Dialect::Sqlite;
 
+    fn add_keys(
+        args: &mut <Sqlite as sqlx::Database>::Arguments,
+        keys: &crate::key::KeyList,
+    ) -> Result<(), sqlx::error::BoxDynError> {
+        add_each_key(args, keys)
+    }
+
     common_methods!(Sqlite, SqliteConnection, SqliteRow);
 
     fn key_kind(ty: &SqliteTypeInfo) -> Option<KeyKind> {

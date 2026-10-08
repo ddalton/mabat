@@ -215,6 +215,28 @@ that isn't NULL is also an error, unless the enum is marked `lenient`. Variant f
 the variant, such as `state.Blocked.reason.$tag` or `state.Closed.0`, and overrides use them like any other
 path.
 
+## Saving aggregates
+
+A view also saves: `mabat::save` writes a value and everything it owns, in one transaction (a savepoint inside
+yours), on any of the three databases:
+
+```rust
+mabat::save(&board, &mut tx).await?;             // upsert the board, then make its lists, cards, links match
+mabat::delete::<Board, _>(board.id, &mut tx).await?; // the board and all it owns
+```
+
+- **Rows** are upserted by key: `ON CONFLICT … DO UPDATE` on PostgreSQL and SQLite, `ON DUPLICATE KEY UPDATE` on
+  MySQL. Keys come from the application.
+- **Owned collections** are made equal to the value's: elements that are gone are deleted with what they own,
+  the others are saved, with their position for ordered lists and their key for maps.
+- **References and many-to-many links** write foreign keys and link rows only: the referenced values are
+  aggregates of their own.
+- **Enums** write their tag and their variant's columns, NULL to the other variants', or the variant's table row,
+  deleting the other variants' rows.
+
+Writes never use overrides. Database-generated keys, optimistic locking, saving only what changed and saving
+graphs come next (M8).
+
 ## Arguments of nested collections
 
 A collection can be filtered, ordered and paged for each parent, still with one query for all parents:
@@ -402,6 +424,8 @@ ORDER BY n.id;
 | JSON loads and selections of fields | Done (M7) |
 | GraphQL schema generated from views (`mabat-graphql`) | Done (M7) |
 | Arguments of nested collections: filters, order and paging per parent, also in GraphQL | Done |
+| Saving and deleting aggregates | Done (M8) |
+| Generated keys, optimistic locking, saving changes only, saving graphs | Planned (M8) |
 
 Loading 1,000 tasks with 10 subtasks each takes about 8% longer than hand-written SQLx code running the same two
 queries (`crates/mabat/examples/parity.rs`).
