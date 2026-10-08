@@ -29,7 +29,7 @@ pub(crate) struct ViewEntry {
 /// A checked view: its plan, and the overrides that passed the checks.
 pub(crate) struct Checked {
     pub(crate) shape: &'static ViewShape,
-    pub(crate) plan: QueryPlan,
+    pub(crate) plan: Arc<QueryPlan>,
     pub(crate) overrides: Overrides,
 }
 
@@ -91,7 +91,7 @@ pub(crate) async fn check(
         let mut overrides = Overrides::new();
         let context = Context { view: view.shape.name, by_query: &by_query };
         check_query(conn, &context, &plan, view.describe, None, &mut overrides, report).await?;
-        checked.push(Checked { shape: view.shape, plan, overrides });
+        checked.push(Checked { shape: view.shape, plan: Arc::new(plan), overrides });
     }
 
     let registered: Vec<&str> = views.iter().map(|v| v.shape.name).collect();

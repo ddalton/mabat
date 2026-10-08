@@ -8,6 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+arc-swap.workspace = true
 refract-core.workspace = true
 sqlx.workspace = true
 serde.workspace = true

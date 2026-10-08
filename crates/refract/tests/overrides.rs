@@ -481,3 +481,152 @@ async fn unregistered_views_cannot_be_loaded() {
 
     db.drop().await;
 }
+
+/// A temporary directory for override files, removed when dropped.
+struct OverridesDir(std::path::PathBuf);
+
+impl OverridesDir {
+    fn new() -> OverridesDir {
+        let dir = std::env::temp_dir().join(format!("refract-overrides-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir(&dir).unwrap();
+        OverridesDir(dir)
+    }
+
+    fn write(&self, name: &str, content: &str) {
+        std::fs::write(self.0.join(name), content).unwrap();
+    }
+
+    fn remove(&self, name: &str) {
+        std::fs::remove_file(self.0.join(name)).unwrap();
+    }
+}
+
+impl Drop for OverridesDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The children query of `TaskView`, ordered by the given SQL.
+fn children_ordered_by(order: &str) -> String {
+    let children = Parts::of(&refract::plan::<TaskView>().unwrap().children[1].plan);
+    format!("{}\nORDER BY {order}", children.sql())
+}
+
+async fn child_names(refract: &Refract, db: &mut TestDb) -> Vec<String> {
+    let task = refract.load::<TaskView>().by_key(id(1)).one(&mut db.conn).await.unwrap();
+    task.children.into_iter().map(|c| c.name).collect()
+}
+
+#[tokio::test]
+async fn reload_puts_valid_changes_in_use() {
+    use refract::Reloaded;
+
+    let Some(mut db) = setup("reload").await else { return };
+    let dir = OverridesDir::new();
+    dir.write("TaskView.toml", &toml_for("children", &children_ordered_by("t0.\"name\"")));
+    let refract = Refract::builder().register::<TaskView>().overrides_dir(&dir.0).build(&mut db.conn).await.unwrap();
+    assert_eq!(child_names(&refract, &mut db).await, ["Fix bugs", "Tag build", "Write docs"]);
+
+    // Unchanged files are not checked again
+    assert_eq!(refract.reload(&mut db.conn).await.unwrap(), Reloaded::Unchanged);
+
+    // A valid change is put in use
+    dir.write("TaskView.toml", &toml_for("children", &children_ordered_by("t0.\"name\" DESC")));
+    assert!(matches!(refract.reload(&mut db.conn).await.unwrap(), Reloaded::Updated(report) if report.is_ok()));
+    assert_eq!(child_names(&refract, &mut db).await, ["Write docs", "Tag build", "Fix bugs"]);
+
+    // An invalid change is rejected, and the overrides in use stay
+    dir.write("TaskView.toml", &toml_for("children", "SELECT t0.\"name\" AS \"name\" FROM task t0"));
+    let err = refract.reload(&mut db.conn).await.unwrap_err();
+    assert!(matches!(&err, Error::Invalid(report) if report.errors().any(|d| d.query == "children")), "{err}");
+    assert_eq!(child_names(&refract, &mut db).await, ["Write docs", "Tag build", "Fix bugs"]);
+    // and is not checked again until it changes
+    assert_eq!(refract.reload(&mut db.conn).await.unwrap(), Reloaded::Unchanged);
+
+    // Removing the file goes back to the generated queries, ordered by position
+    dir.remove("TaskView.toml");
+    assert!(matches!(refract.reload(&mut db.conn).await.unwrap(), Reloaded::Updated(_)));
+    assert_eq!(child_names(&refract, &mut db).await, ["Fix bugs", "Tag build", "Write docs"]);
+    assert!(!refract.explain::<TaskView>().unwrap().contains("override"));
+
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn reload_keeps_the_statistics_of_unchanged_shadowed_overrides() {
+    let Some(mut db) = setup("reload_stats").await else { return };
+    let dir = OverridesDir::new();
+    let shadowed =
+        format!("{}shadow = true\n", toml_for("children", &children_ordered_by("t0.\"position\", t0.\"id\"")));
+    dir.write("TaskView.toml", &shadowed);
+    let refract = Refract::builder().register::<TaskView>().overrides_dir(&dir.0).build(&mut db.conn).await.unwrap();
+    child_names(&refract, &mut db).await;
+    assert_eq!(refract.shadow_stats()[0].runs, 1);
+
+    // Another query changes: the shadowed override keeps its statistics
+    let tag = "\n[query.\"children.notes.tag\"]\nsql = \"SELECT code AS \\\"code\\\", label AS \\\"label\\\" FROM tag WHERE code = ANY($1)\"\n";
+    dir.write("TaskView.toml", &format!("{shadowed}{tag}"));
+    refract.reload(&mut db.conn).await.unwrap();
+    assert_eq!(refract.shadow_stats()[0].runs, 1);
+    child_names(&refract, &mut db).await;
+    assert_eq!(refract.shadow_stats()[0].runs, 2);
+
+    // Its SQL changes: the statistics start again
+    let changed = format!("{}shadow = true\n", toml_for("children", &children_ordered_by("t0.\"position\"")));
+    dir.write("TaskView.toml", &changed);
+    refract.reload(&mut db.conn).await.unwrap();
+    assert_eq!(refract.shadow_stats()[0].runs, 0);
+
+    db.drop().await;
+}
+
+const TUNED_SQL: &str = r#"
+-- Overrides for TaskView, tuned by the DBA team
+
+-- refract: query children
+SELECT s.parent_id AS "$parent", s.id AS "$key", s.name AS "name", s.position AS "position"
+FROM task s
+WHERE s.parent_id = ANY($1)
+ORDER BY s.position, s.id;
+
+-- refract: query children.notes, shadow
+SELECT n.task_id AS "$parent", n.id AS "$key", n.body AS "body", n.tag_code AS "$ref.tag"
+FROM task_note n
+WHERE n.task_id = ANY($1)
+ORDER BY n.id;
+"#;
+
+#[tokio::test]
+async fn sql_override_files() {
+    let Some(mut db) = setup("sql_files").await else { return };
+    let dir = OverridesDir::new();
+    dir.write("TaskView.sql", TUNED_SQL);
+
+    let refract = Refract::builder().register::<TaskView>().overrides_dir(&dir.0).build(&mut db.conn).await.unwrap();
+    assert!(refract.report().diagnostics().is_empty(), "{}", refract.report());
+    let explain = refract.explain::<TaskView>().unwrap();
+    assert!(explain.contains("override (") && explain.contains("TaskView.sql:4):"), "{explain}");
+    assert!(explain.contains("TaskView.sql:10, shadowed):"), "{explain}");
+
+    let generated = refract::load::<TaskView>().by_key(id(1)).one(&mut db.conn).await.unwrap();
+    let loaded = refract.load::<TaskView>().by_key(id(1)).one(&mut db.conn).await.unwrap();
+    assert_eq!(loaded, generated);
+    assert_eq!(refract.shadow_stats()[0].mismatches, 0);
+
+    // Errors point to the marker line of the query
+    let broken = TUNED_SQL.replace("s.name AS \"name\"", "s.name AS \"nmae\"");
+    let report =
+        Refract::builder().register::<TaskView>().overrides_sql("TaskView", broken).check(&mut db.conn).await.unwrap();
+    let error = report.errors().next().unwrap();
+    assert_eq!(error.origin.as_deref(), Some("TaskView.sql (inline):4"), "{report}");
+
+    // One file per view
+    dir.write("TaskView.toml", "");
+    let report = Refract::builder().register::<TaskView>().overrides_dir(&dir.0).check(&mut db.conn).await.unwrap();
+    let error = report.errors().next().unwrap();
+    assert_eq!(error.code, "R0100", "{report}");
+    assert!(error.notes[0].starts_with("TaskView already has an override file"), "{report}");
+
+    db.drop().await;
+}

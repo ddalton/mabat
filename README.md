@@ -2,7 +2,7 @@
 
 Typed aggregate reads for Rust, with SQL you can tune without changing code.
 
-> **Status:** early development, not published yet. Milestone 1 (struct views, PostgreSQL, reads) and most of
+> **Status:** early development, not published yet. Milestone 1 (struct views, PostgreSQL, reads) and
 > milestone 3 (overrides checked at startup) are implemented. See the [design document](docs/design.md) for the
 > plan.
 
@@ -112,6 +112,20 @@ error[R0102]: override for TaskView.children.notes does not match the view
   timings, so a tuned query can be shown to be equivalent before it is relied on.
 - `OnInvalid::UseGenerated` starts with the generated queries in place of invalid overrides instead of
   refusing to start.
+- `refract.reload(&mut conn)` reads the files again and, if they changed and pass the checks, puts them in use
+  atomically. An invalid change never replaces a working query.
+
+Override files can also be plain SQL, which SQL editors and `psql` understand, with a marker line before each
+query:
+
+```sql
+-- refract/overrides/TaskView.sql
+-- refract: query children.notes, shadow
+SELECT n.task_id AS "$parent", n.id AS "$key", n.body AS "body", n.tag_code AS "$ref.tag"
+FROM task_note n
+WHERE n.task_id = ANY($1)
+ORDER BY n.id;
+```
 
 ## Status
 
@@ -121,8 +135,7 @@ error[R0102]: override for TaskView.children.notes does not match the view
 | To-many children and to-one references, nested, batched | Done (M1) |
 | Decoding by column alias, errors that name the view and path | Done (M1) |
 | Enums with data (sum types) | Planned (M2) |
-| SQL overrides checked at startup, shadow mode, scaffolding | Done (M3) |
-| Reloading override files at runtime | Planned (M3) |
+| SQL overrides checked at startup, shadow mode, scaffolding, reloading | Done (M3) |
 | Ordered lists, maps, many-to-many, recursive views | Planned (M4) |
 | Shared (`Arc`) and graph (`Ref<T>`) representations for cyclic data | Planned (M5) |
 | GraphQL selection sets | Planned (M7) |

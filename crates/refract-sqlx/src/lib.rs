@@ -12,6 +12,7 @@ mod registry;
 mod report;
 
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use refract_core::sql::RootOptions;
 use refract_core::{EmbeddedShape, OrderBy, QueryPlan, ViewShape};
@@ -24,7 +25,7 @@ pub use error::Error;
 pub use key::Key;
 pub use node::Node;
 pub use overrides::Origin;
-pub use registry::{Builder, OnInvalid, Refract, ShadowSummary, scaffold};
+pub use registry::{Builder, OnInvalid, Refract, Reloaded, ShadowSummary, scaffold};
 pub use report::{Diagnostic, Report, Severity};
 
 /// A view: a type whose values are loaded from a table, together with their embedded
@@ -68,7 +69,7 @@ pub fn plan<T: View>() -> Result<QueryPlan, Error> {
 /// ```
 ///
 /// Use [`Refract::load`] to load with overrides.
-pub fn load<T: View>() -> Load<'static, T> {
+pub fn load<T: View>() -> Load<T> {
     Load::new(Source::Generated)
 }
 
@@ -78,28 +79,28 @@ pub fn load<T: View>() -> Load<'static, T> {
 /// All queries run on the given connection, so they see the uncommitted changes of its
 /// transaction.
 #[must_use = "a load does nothing until it is run with all, one or optional"]
-pub struct Load<'r, T> {
-    source: Source<'r>,
+pub struct Load<T> {
+    source: Source,
     keys: Option<Vec<Key>>,
     options: RootOptions,
     _view: PhantomData<fn() -> T>,
 }
 
-enum Source<'r> {
+enum Source {
     /// [`load`]: plan the view and run the generated queries.
     Generated,
     /// [`Refract::load`] of a registered view.
-    Registered(&'r Checked),
+    Registered(Arc<Checked>),
     /// [`Refract::load`] of a view that is not registered.
     NotRegistered,
 }
 
-impl<'r, T: View> Load<'r, T> {
-    fn new(source: Source<'r>) -> Self {
+impl<T: View> Load<T> {
+    fn new(source: Source) -> Self {
         Load { source, keys: None, options: RootOptions::default(), _view: PhantomData }
     }
 
-    pub(crate) fn registered(checked: Option<&'r Checked>) -> Self {
+    pub(crate) fn registered(checked: Option<Arc<Checked>>) -> Self {
         Load::new(checked.map_or(Source::NotRegistered, Source::Registered))
     }
 
@@ -144,12 +145,12 @@ impl<'r, T: View> Load<'r, T> {
     pub async fn all(self, conn: &mut PgConnection) -> Result<Vec<T>, Error> {
         let view = T::shape().name;
         let generated;
-        let (plan, overrides) = match self.source {
+        let (plan, overrides) = match &self.source {
             Source::Generated => {
                 generated = plan::<T>()?;
                 (&generated, None)
             }
-            Source::Registered(checked) => (&checked.plan, Some(&checked.overrides)),
+            Source::Registered(checked) => (&*checked.plan, Some(&checked.overrides)),
             Source::NotRegistered => return Err(Error::NotRegistered { view }),
         };
         let keys = match self.keys {

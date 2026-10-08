@@ -478,9 +478,15 @@ System columns:
 | `$key` | Map key |
 | `<path>.$tag` | Sum type discriminator |
 
-> **M3:** only the TOML format is implemented. A query is addressed as `[query."<name>"]`, where the name is
-> `$root` or the path of the field the query fills, e.g. `children.notes`. `refract::scaffold::<T>()` writes
-> a file with the generated SQL of every query.
+> **M3:** a query is addressed by its name: `$root`, or the path of the field the query fills, such as
+> `children.notes`. Both formats are implemented:
+>
+> - **TOML:** `TaskView.toml`, with a `[query."<name>"]` table per query.
+> - **SQL:** `TaskView.sql`, with a `-- refract: query <name>` line before each query, optionally followed by
+>   `, shadow`. Each query may end with `;`, so the file can be run in `psql` as is.
+>
+> A view has at most one override file. `refract::scaffold::<T>()` writes a TOML file with the generated SQL of
+> every query.
 
 ### 9.2 Contract
 
@@ -567,6 +573,17 @@ equivalent before switching to it.
 
 With the `reload` feature, override files are watched. A changed file is validated first, and only then
 swapped into the registry atomically (`ArcSwap`). An invalid change never replaces a working query.
+
+> **M3:** reloading is always available, with no feature flag, and the application triggers it:
+>
+> - **Triggering:** `Refract::reload(&mut conn)` reads the files again. It returns `Reloaded::Unchanged` when
+>   they are the same as at the last attempt, so it is cheap to call on a timer, on `SIGHUP` or from an admin
+>   endpoint. Refract does not watch files itself, which would need a file watcher and a connection pool of
+>   its own.
+> - **All or nothing:** a reload with any error changes nothing and returns the report, whatever `OnInvalid`
+>   is.
+> - **Running loads:** a load that is running keeps the overrides it started with.
+> - **Shadow statistics:** they are kept for overrides whose SQL did not change.
 
 ## 10. Execution and reconstitution
 
@@ -683,7 +700,7 @@ database.
 | --- | --- | --- | --- |
 | M1 | Core reads (**done**) | Structs, `Option`, `Vec`, embedded structs, generated SQL, name-based decoding, PostgreSQL | Integration tests; parity benchmark |
 | M2 | Sum types | `tag`, `table_per_variant`, `json`; nested sums; strict decoding | Every strategy tested with generated SQL |
-| M3 | Overrides (**mostly done**; reloading remains) | Override files, startup validation, `refract check`, shadow mode | Mutation-style checks pass |
+| M3 | Overrides (**done**) | Override files, startup validation, `refract check`, shadow mode | Mutation-style checks pass |
 | M4 | Collections and recursion | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
 | M5 | Shared and graph | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
 | M6 | More databases, concurrency | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |
