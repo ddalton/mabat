@@ -227,7 +227,7 @@ A view also saves: `mabat::save` writes a value and everything it owns, in one t
 yours), on any of the three databases:
 
 ```rust
-mabat::save(&mut board, &mut tx).await?;             // upsert the board, then make its lists, cards, links match
+mabat::save(&mut board, &mut tx).await?;             // the board, then its lists, cards and links made to match
 mabat::delete::<Board, _>(board.id, &mut tx).await?; // the board and all it owns
 
 // Load, change, save only what changed: updated columns, new and removed elements, nothing else
@@ -237,8 +237,9 @@ after.name = "Roadmap 2".into();
 mabat::save_changes(&before, &mut after, &mut tx).await?;  // UPDATE "board" SET "name" = $1 WHERE "id" = $2
 ```
 
-- **Rows** are upserted by key: `ON CONFLICT … DO UPDATE` on PostgreSQL and SQLite, `ON DUPLICATE KEY UPDATE` on
-  MySQL. Keys come from the application.
+- **Rows** are created or replaced by key: an `UPDATE`, and only for a new row an upsert (`ON CONFLICT … DO UPDATE`
+  on PostgreSQL and SQLite, `ON DUPLICATE KEY UPDATE` on MySQL). A view of some of a table's columns saves them in
+  a row that exists. Keys come from the application, or from the database.
 - **Owned collections** are made equal to the value's: elements that are gone are deleted with what they own,
   the others are saved, with their position for ordered lists and their key for maps.
 - **References and many-to-many links** write foreign keys and link rows only: the referenced values are

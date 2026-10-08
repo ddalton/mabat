@@ -19,7 +19,7 @@ and the views of its owned collections need a key field ([MPA-WRITE-2](../../spe
 
 | Part | Written as | Rule |
 | --- | --- | --- |
-| Columns, embedded values, JSON | the row, upserted by key | [MPA-WRITE-3](../../spec/mpa/#mpa-write-3) |
+| Columns, embedded values, JSON | the row, updated by key, or inserted if new | [MPA-WRITE-3](../../spec/mpa/#mpa-write-3) |
 | An owned collection | made equal to the value's: gone elements deleted with what they own, the rest saved with their position or map key | [MPA-WRITE-4](../../spec/mpa/#mpa-write-4) |
 | Many-to-many | the link rows, replaced | [MPA-WRITE-5](../../spec/mpa/#mpa-write-5) |
 | A to-one reference | the foreign key only | [MPA-WRITE-5](../../spec/mpa/#mpa-write-5) |

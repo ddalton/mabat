@@ -50,7 +50,7 @@ capabilities = [
     ("dba-tooling", "A manifest of the views and the mabat command line tool: check, explain, scaffold", ["Builder::manifest", "mabat check", "mabat explain", "mabat scaffold"], ["MPA-OVR-8"]),
     ("json-loading", "Load views as JSON, whole or a selection of their fields", ["Load::json", "Load::select", "Selection::parse"], ["MPA-JSON-1", "MPA-JSON-3", "MPA-JSON-4", "MPA-JSON-5"]),
     ("graphql", "A GraphQL schema generated from views, each root field one load", ["mabat_graphql::schema"], ["MPA-GQL-1", "MPA-GQL-2", "MPA-GQL-3", "MPA-GQL-4"]),
-    ("save-aggregates", "Save a value and everything it owns, upserting by key", ["mabat::save"], ["MPA-WRITE-1", "MPA-WRITE-3", "MPA-WRITE-4", "MPA-WRITE-5", "MPA-WRITE-6"]),
+    ("save-aggregates", "Save a value and everything it owns, creating or replacing rows by key", ["mabat::save"], ["MPA-WRITE-1", "MPA-WRITE-3", "MPA-WRITE-4", "MPA-WRITE-5", "MPA-WRITE-6"]),
     ("save-changes", "Save only what changed between two values of an aggregate", ["mabat::save_changes"], ["MPA-WRITE-8"]),
     ("optimistic-locking", "Version columns that make stale writes fail", ["#[view(version)]", "Error::Conflict"], ["MPA-WRITE-9", "MPA-WRITE-10"]),
     ("save-graphs", "Save every entity of a graph, ordered by its references, cycles included", ["mabat::save_graph", "Graph::new", "Graph::insert"], ["MPA-WRITE-14", "MPA-WRITE-15", "MPA-WRITE-16", "MPA-WRITE-17", "MPA-WRITE-18"]),

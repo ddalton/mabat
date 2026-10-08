@@ -660,11 +660,21 @@ where
                     }
                 }
                 match &version {
+                    // The row is updated, else inserted: by the upsert, which updates a row inserted
+                    // meanwhile. A view of some of the columns fails only if the row is new.
                     None => {
-                        let sql = statement::upsert(B::DIALECT, shape.table, shape.key_column, &columns);
-                        B::execute_args(&mut *conn, sql.clone(), args)
+                        let mut update_args = B::clone_args(&args);
+                        B::add_key(&mut update_args, &key).map_err(encode)?;
+                        let sql = statement::update(B::DIALECT, shape.table, shape.key_column, &columns, None);
+                        let updated = B::execute_args(&mut *conn, sql.clone(), update_args)
                             .await
                             .map_err(|e| query_error(shape, &sql, e))?;
+                        if updated == 0 {
+                            let sql = statement::upsert(B::DIALECT, shape.table, shape.key_column, &columns);
+                            B::execute_args(&mut *conn, sql.clone(), args)
+                                .await
+                                .map_err(|e| query_error(shape, &sql, e))?;
+                        }
                     }
                     // The row with the version is updated, else a row is inserted unless one has the key
                     Some((column, current)) => {
