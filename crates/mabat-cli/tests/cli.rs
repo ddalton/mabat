@@ -141,6 +141,64 @@ fn scaffolds_in_both_formats() {
 }
 
 #[test]
+fn scaffolds_the_queries_being_tuned() {
+    let workspace = Workspace::new();
+    let manifest = workspace.path("views.json");
+    let scaffold = |extra: &[&str]| {
+        let mut args = vec!["scaffold", "--manifest", &manifest, "--view", "TaskView", "--format", "sql"];
+        args.extend_from_slice(extra);
+        mabat(&args)
+    };
+
+    // Only the queries named
+    let out = scaffold(&["--query", "children.notes", "--query", "assignee"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let queries: Vec<&str> = out.stdout.lines().filter(|l| l.starts_with("-- mabat: query")).collect();
+    assert_eq!(queries, ["-- mabat: query assignee", "-- mabat: query children.notes"]);
+
+    // A query the view does not have
+    let out = scaffold(&["--query", "children.note"]);
+    assert_eq!(out.code, 2);
+    assert!(
+        out.stderr.starts_with("error: TaskView has no query children.note; its queries are $root, assignee,"),
+        "{}",
+        out.stderr
+    );
+
+    // Into the overrides directory: a new file, then a query added to it
+    let dir = Path::new(&workspace.path("overrides")).join("tuned");
+    let dir_arg = dir.to_str().unwrap();
+    let out = scaffold(&["--query", "children.notes", "--out", dir_arg]);
+    assert_eq!((out.code, out.stdout.as_str()), (0, ""), "{}", out.stderr);
+    let file = dir.join("TaskView.sql");
+    assert_eq!(out.stderr, format!("wrote {}\n", file.display()));
+    let out = scaffold(&["--query", "assignee", "--out", dir_arg]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let content = std::fs::read_to_string(&file).unwrap();
+    assert!(content.starts_with("-- Overrides for TaskView.\n"), "{content}");
+    assert_eq!(content.matches("-- Overrides for TaskView.").count(), 1, "{content}");
+    let queries: Vec<&str> = content.lines().filter(|l| l.starts_with("-- mabat: query")).collect();
+    assert_eq!(queries, ["-- mabat: query children.notes", "-- mabat: query assignee"]);
+
+    // An edited query is never replaced, and a view has one file
+    let edited =
+        content.replace("ORDER BY t0.\"id\";\n\n-- mabat: query assignee", "ORDER BY 1;\n\n-- mabat: query assignee");
+    std::fs::write(&file, &edited).unwrap();
+    let out = scaffold(&["--query", "assignee", "--query", "$root", "--out", dir_arg]);
+    assert_eq!(out.code, 2);
+    assert_eq!(out.stderr, format!("error: {} already overrides assignee: edit it there\n", file.display()));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), edited);
+    let out = mabat(&["scaffold", "--manifest", &manifest, "--view", "TaskView", "--out", dir_arg]);
+    assert_eq!(out.code, 2);
+    assert!(out.stderr.contains("holds the overrides of TaskView, and a view has one override file"), "{}", out.stderr);
+
+    // The file is an override file: explain shows what it overrides
+    let out = mabat(&["explain", "--manifest", &manifest, "--overrides", dir_arg, "--view", "TaskView"]);
+    assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
+    assert!(out.stdout.contains("ORDER BY 1"), "{}", out.stdout);
+}
+
+#[test]
 fn checks_against_a_schema_file() {
     let Some(url) = database_url() else { return };
     let workspace = Workspace::new();

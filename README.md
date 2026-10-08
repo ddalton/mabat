@@ -407,8 +407,21 @@ mabat check --manifest mabat/views.json --overrides mabat/overrides --database-u
 mabat check --manifest mabat/views.json --overrides mabat/overrides --schema schema.sql
 
 mabat explain  --manifest mabat/views.json --overrides mabat/overrides   # the SQL each query runs
-mabat scaffold --manifest mabat/views.json --view TaskView --format sql   # a starting override file
+mabat scaffold --manifest mabat/views.json --view TaskView --format sql   # every query's generated SQL
 ```
+
+To tune a query, start from the SQL Mabat generates for it. `explain` lists the queries of a view by name;
+`scaffold --query` writes the generated SQL of the ones you name into the view's override file, ready to edit:
+change the joins, add hints, use another index. Every query in the file replaces the generated one, so scaffold
+only the queries you are tuning, and the others keep following the view as it changes.
+
+```sh
+mabat scaffold --manifest mabat/views.json --view TaskView --format sql \
+    --query children.notes --out mabat/overrides
+# wrote mabat/overrides/TaskView.sql; run it again with another --query to add that query to the file
+```
+
+An existing file is added to, never overwritten: scaffolding a query the file already overrides is an error.
 
 `check` prints the same report as the application's startup check. Its exit status is 0 when there are no
 errors, 1 when there are, and 2 for any other problem, so it can run in a DBA's CI.

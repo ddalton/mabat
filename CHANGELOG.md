@@ -48,6 +48,8 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
   - `Builder::manifest` writes the views' queries, aliases and accepted types as JSON.
   - The `mabat` command line tool (crate `mabat-cli`) runs `check` (against a database or a schema file,
     in a transaction that is rolled back), `explain` and `scaffold`, with no Rust toolchain.
+  - `mabat scaffold --query <name>` scaffolds only the queries being tuned, and `--out <dir>` writes them to
+    the view's override file, adding them to an existing file without replacing a query it overrides.
 - **MySQL and SQLite (M6).**
   - The `postgres` (default), `mysql` and `sqlite` features. A view is decoded on each enabled database, and a load
     runs on the database of its connection; `#[view(databases = "...")]` limits a view to some of them.

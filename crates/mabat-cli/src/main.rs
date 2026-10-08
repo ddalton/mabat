@@ -15,7 +15,7 @@ mabat: check, explain and scaffold Mabat override SQL
 Usage:
   mabat check    --manifest <file> [--overrides <dir>]... [--database-url <url>] [--schema <file>]
   mabat explain  --manifest <file> [--overrides <dir>]... [--view <name>]
-  mabat scaffold --manifest <file> --view <name> [--format toml|sql]
+  mabat scaffold --manifest <file> --view <name> [--query <name>]... [--format toml|sql] [--out <dir>]
 
 check     Prepare every query, generated and overridden, on the database without running it,
           and compare its columns and parameters with the views. The database URL defaults to
@@ -25,7 +25,11 @@ check     Prepare every query, generated and overridden, on the database without
           back DDL, the schema is created in a temporary database that is dropped afterwards.
           On SQLite, --schema without a database URL checks against a new in-memory database.
 explain   Show the queries of the views and the SQL that runs for each.
-scaffold  Write an override file with the generated SQL of every query of a view.
+scaffold  Print an override file with the generated SQL of a view's queries, to edit and tune:
+          the queries named with --query, or every query. Each query in the file replaces the
+          generated one, so name only the queries being tuned; `mabat explain` lists them.
+          With --out, write it to the view's file in that directory instead, or add the queries
+          to the end of the file if it exists; a query the file already overrides is refused.
 
 Exit status: 0 if there are no errors, 1 if the checks found errors, 2 for any other problem.
 ";
@@ -39,7 +43,9 @@ struct Args {
     database_url: Option<String>,
     schema: Option<PathBuf>,
     view: Option<String>,
+    queries: Vec<String>,
     format: Option<String>,
+    out: Option<PathBuf>,
 }
 
 fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
@@ -53,7 +59,9 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
             "--database-url" => parsed.database_url = Some(value()?),
             "--schema" => parsed.schema = Some(value()?.into()),
             "--view" => parsed.view = Some(value()?),
+            "--query" => parsed.queries.push(value()?),
             "--format" => parsed.format = Some(value()?),
+            "--out" => parsed.out = Some(value()?.into()),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -105,8 +113,14 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
                 Some("sql") => ScaffoldFormat::Sql,
                 Some(other) => return Err(format!("unknown format {other}, expected toml or sql")),
             };
-            let file = manifest.scaffold(view, format).ok_or_else(|| format!("the manifest has no view {view}"))?;
-            print!("{file}");
+            let queries: Vec<&str> = args.queries.iter().map(String::as_str).collect();
+            match &args.out {
+                Some(dir) => {
+                    let path = manifest.scaffold_into(dir, view, format, &queries)?;
+                    eprintln!("wrote {}", path.display());
+                }
+                None => print!("{}", manifest.scaffold_queries(view, format, &queries)?),
+            }
             Ok(ExitCode::SUCCESS)
         }
         other => Err(format!("unknown command {other}\n\n{USAGE}")),

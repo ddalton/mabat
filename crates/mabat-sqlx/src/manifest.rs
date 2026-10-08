@@ -196,8 +196,79 @@ impl Manifest {
     /// An override file for a view, with the generated SQL of every query, as a starting
     /// point for tuning.
     pub fn scaffold(&self, view: &str, format: ScaffoldFormat) -> Option<String> {
-        let arrays = self.backend == "PostgreSQL";
-        self.view(view).map(|view| scaffold(view, format, arrays))
+        self.scaffold_queries(view, format, &[]).ok()
+    }
+
+    /// An override file for a view with the generated SQL of the named queries only, or of
+    /// every query if `queries` is empty: a file overrides each query it holds, so a DBA
+    /// tuning one query scaffolds that one.
+    pub fn scaffold_queries(&self, view: &str, format: ScaffoldFormat, queries: &[&str]) -> Result<String, String> {
+        let manifest = self.view(view).ok_or_else(|| format!("the manifest has no view {view}"))?;
+        let chosen = chosen_queries(manifest, queries)?;
+        let mut out = intro(manifest, format, self.backend == "PostgreSQL");
+        out.push_str(&sections(&chosen, format));
+        Ok(out)
+    }
+
+    /// Write the generated SQL of the named queries of a view (every query if `queries` is
+    /// empty) into its override file in `dir`: a new file, as [`Manifest::scaffold_queries`]
+    /// writes it, or the queries added to the end of the view's file. A query the file
+    /// already overrides is never replaced. Returns the path of the file.
+    pub fn scaffold_into(
+        &self,
+        dir: &Path,
+        view: &str,
+        format: ScaffoldFormat,
+        queries: &[&str],
+    ) -> Result<PathBuf, String> {
+        let manifest = self.view(view).ok_or_else(|| format!("the manifest has no view {view}"))?;
+        let chosen = chosen_queries(manifest, queries)?;
+        let (extension, other) = match format {
+            ScaffoldFormat::Toml => ("toml", "sql"),
+            ScaffoldFormat::Sql => ("sql", "toml"),
+        };
+        let path = dir.join(format!("{view}.{extension}"));
+        let other = dir.join(format!("{view}.{other}"));
+        if other.exists() {
+            return Err(format!(
+                "{} holds the overrides of {view}, and a view has one override file: use --format {}",
+                other.display(),
+                if extension == "toml" { "sql" } else { "toml" }
+            ));
+        }
+        let shown = path.display().to_string();
+        let content = match std::fs::read_to_string(&path) {
+            Ok(existing) => {
+                let file = match format {
+                    ScaffoldFormat::Toml => crate::overrides::parse(view, &shown, &existing),
+                    ScaffoldFormat::Sql => crate::overrides::parse_sql(view, &shown, &existing),
+                }
+                .map_err(|(origin, message)| format!("{origin}: {message}"))?;
+                let overridden: Vec<&str> = chosen
+                    .iter()
+                    .map(|q| q.name.as_str())
+                    .filter(|name| file.queries.iter().any(|o| o.query == *name))
+                    .collect();
+                if !overridden.is_empty() {
+                    return Err(format!("{shown} already overrides {}: edit it there", overridden.join(", ")));
+                }
+                let mut content = existing;
+                if !content.is_empty() && !content.ends_with('\n') {
+                    content.push('\n');
+                }
+                content.push_str(&sections(&chosen, format));
+                content
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let mut content = intro(manifest, format, self.backend == "PostgreSQL");
+                content.push_str(&sections(&chosen, format));
+                content
+            }
+            Err(e) => return Err(format!("cannot read {shown}: {e}")),
+        };
+        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        std::fs::write(&path, content).map_err(|e| format!("cannot write {shown}: {e}"))?;
+        Ok(path)
     }
 }
 
@@ -319,7 +390,19 @@ fn explain_view(out: &mut String, view: &ViewManifest, file: Option<&OverrideFil
     }
 }
 
-fn scaffold(view: &ViewManifest, format: ScaffoldFormat, arrays: bool) -> String {
+/// The queries of a view with the given names, in the order of the plan; all of them if
+/// `names` is empty.
+fn chosen_queries<'m>(view: &'m ViewManifest, names: &[&str]) -> Result<Vec<&'m QueryManifest>, String> {
+    let unknown: Vec<&str> = names.iter().copied().filter(|n| !view.queries.iter().any(|q| q.name == *n)).collect();
+    if !unknown.is_empty() {
+        let known: Vec<&str> = view.queries.iter().map(|q| q.name.as_str()).collect();
+        return Err(format!("{} has no query {}; its queries are {}", view.name, unknown.join(", "), known.join(", ")));
+    }
+    Ok(view.queries.iter().filter(|q| names.is_empty() || names.contains(&q.name.as_str())).collect())
+}
+
+/// The comment that starts a new override file.
+fn intro(view: &ViewManifest, format: ScaffoldFormat, arrays: bool) -> String {
     let name = &view.name;
     let keys = if arrays { "the array of root keys as $1" } else { "the root keys as IN (:keys)" };
     let child_keys = if arrays {
@@ -345,21 +428,26 @@ fn scaffold(view: &ViewManifest, format: ScaffoldFormat, arrays: bool) -> String
             line.lines().map(str::to_string).collect::<Vec<_>>().into_iter().chain(line.is_empty().then(String::new))
         })
         .collect();
+    let comment = match format {
+        ScaffoldFormat::Toml => "#",
+        ScaffoldFormat::Sql => "--",
+    };
     let mut out = String::new();
-    match format {
-        ScaffoldFormat::Toml => {
-            for line in &intro {
-                let _ = writeln!(out, "#{}{line}", if line.is_empty() { "" } else { " " });
-            }
-            for query in &view.queries {
+    for line in &intro {
+        let _ = writeln!(out, "{comment}{}{line}", if line.is_empty() { "" } else { " " });
+    }
+    out
+}
+
+/// The generated SQL of the queries, as sections of an override file.
+fn sections(queries: &[&QueryManifest], format: ScaffoldFormat) -> String {
+    let mut out = String::new();
+    for query in queries {
+        match format {
+            ScaffoldFormat::Toml => {
                 let _ = write!(out, "\n[query.{}]\nsql = {}\n", toml_key(&query.name), toml_multiline(&query.sql));
             }
-        }
-        ScaffoldFormat::Sql => {
-            for line in &intro {
-                let _ = writeln!(out, "--{}{line}", if line.is_empty() { "" } else { " " });
-            }
-            for query in &view.queries {
+            ScaffoldFormat::Sql => {
                 let _ = write!(out, "\n-- mabat: query {}\n{};\n", query.name, query.sql);
             }
         }
