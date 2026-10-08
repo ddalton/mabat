@@ -2,8 +2,9 @@
 
 Typed aggregate reads for Rust, with SQL you can tune without changing code.
 
-> **Status:** early development, not published yet. Milestone 1 (struct views, PostgreSQL, reads) is
-> implemented. See the [design document](docs/design.md) for the plan.
+> **Status:** early development, not published yet. Milestone 1 (struct views, PostgreSQL, reads) and most of
+> milestone 3 (overrides checked at startup) are implemented. See the [design document](docs/design.md) for the
+> plan.
 
 Refract loads nested, typed data from PostgreSQL. The shape of the result is declared with ordinary Rust structs,
 and Refract plans and runs the queries that fill it: one query for the root rows, plus one batched query
@@ -66,6 +67,52 @@ let page = refract::load::<TaskView>().order_by("name").limit(20).offset(40).all
 println!("{}", refract::plan::<TaskView>()?.explain());
 ```
 
+## Tuning without code changes
+
+Any query of a view can be replaced with SQL from an override file. A DBA can change joins, ordering, hints, or
+the tables themselves, and can read from a materialized view, without touching the Rust code. The rows are
+decoded by column alias, so the override only has to keep the aliases:
+
+```toml
+# refract/overrides/TaskView.toml
+[query."children.notes"]
+sql = '''
+SELECT n.task_id AS "$parent", n.id AS "$key", n.body AS "body", n.tag_code AS "$ref.tag"
+FROM task_note n
+WHERE n.task_id = ANY($1)
+ORDER BY n.id
+'''
+```
+
+```rust
+let refract = Refract::builder()
+    .register::<TaskView>()
+    .overrides_dir("refract/overrides")
+    .build(&mut conn)                       // checks every query against the database
+    .await?;
+
+let task = refract.load::<TaskView>().by_key(id).one(&mut *tx).await?;
+```
+
+At startup, every query, generated or overridden, is prepared on the database without being run. Its columns
+and parameters are then compared with the view, so a broken override or a schema that drifted from the view
+fails before any request is served:
+
+```text
+error[R0102]: override for TaskView.children.notes does not match the view
+  --> refract/overrides/TaskView.toml:2
+   | column 3 "body" has type INT4, expected TEXT for String
+   | column 4 "$ref.tga" is not a path of NoteView in this query (did you mean "$ref.tag"?)
+```
+
+- `Refract::builder()...check(&mut conn)` returns the same report without building, for a test in CI.
+- `refract::scaffold::<TaskView>()` writes an override file with the generated SQL of every query, as a
+  starting point for tuning.
+- `shadow = true` runs the override and the generated query, compares their rows, and counts mismatches and
+  timings, so a tuned query can be shown to be equivalent before it is relied on.
+- `OnInvalid::UseGenerated` starts with the generated queries in place of invalid overrides instead of
+  refusing to start.
+
 ## Status
 
 | Feature | Status |
@@ -74,7 +121,8 @@ println!("{}", refract::plan::<TaskView>()?.explain());
 | To-many children and to-one references, nested, batched | Done (M1) |
 | Decoding by column alias, errors that name the view and path | Done (M1) |
 | Enums with data (sum types) | Planned (M2) |
-| SQL overrides checked at startup, `refract check` | Planned (M3) |
+| SQL overrides checked at startup, shadow mode, scaffolding | Done (M3) |
+| Reloading override files at runtime | Planned (M3) |
 | Ordered lists, maps, many-to-many, recursive views | Planned (M4) |
 | Shared (`Arc`) and graph (`Ref<T>`) representations for cyclic data | Planned (M5) |
 | GraphQL selection sets | Planned (M7) |

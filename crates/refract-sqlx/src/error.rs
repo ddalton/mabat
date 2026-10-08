@@ -34,4 +34,21 @@ pub enum Error {
 
     #[error("{view}: expected one row, found {count}")]
     TooManyRows { view: &'static str, count: usize },
+
+    /// The views or their overrides do not pass the checks.
+    #[error("the views do not match the database\n{0}")]
+    Invalid(crate::Report),
+
+    /// The connection failed while checking the views.
+    #[error("checking the views failed: {0}")]
+    Check(#[source] sqlx::Error),
+
+    #[error("{view} is not registered; register it with Refract::builder().register::<{view}>()")]
+    NotRegistered { view: &'static str },
+
+    #[error("{view}: the override of the root query ({origin}) takes the keys as $1, so load it by_key or by_keys")]
+    KeysRequired { view: &'static str, origin: String },
+
+    #[error("{view}: cannot order by `{column}`, the root query is overridden and the view does not select the column")]
+    UnknownOrderBy { view: &'static str, column: String },
 }

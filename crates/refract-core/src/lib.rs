@@ -17,5 +17,8 @@ pub const KEY_ALIAS: &str = "$key";
 /// Alias of the foreign key column that links a child row to its parent.
 pub const PARENT_ALIAS: &str = "$parent";
 
+/// Name of the root query of a plan, see [`QueryPlan::query_name`].
+pub const ROOT_QUERY: &str = "$root";
+
 /// Prefix of the alias of a to-one foreign key column, followed by the field name.
 pub const REF_ALIAS_PREFIX: &str = "$ref.";

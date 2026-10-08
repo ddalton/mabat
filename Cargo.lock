@@ -851,8 +851,11 @@ name = "refract-sqlx"
 version = "0.1.0"
 dependencies = [
  "refract-core",
+ "serde",
  "sqlx",
  "thiserror",
+ "toml",
+ "tracing",
  "uuid",
 ]
 
