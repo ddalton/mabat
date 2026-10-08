@@ -1,0 +1,25 @@
+---
+// Starlight's head, with Mermaid diagrams rendered in the page's colour scheme.
+import Default from '@astrojs/starlight/components/Head.astro';
+---
+
+<Default><slot /></Default>
+
+<script>
+  const blocks = document.querySelectorAll('pre.mermaid');
+  if (blocks.length > 0) {
+    const { default: mermaid } = await import('mermaid');
+    const sources = [...blocks].map((block) => block.textContent ?? '');
+    const render = async () => {
+      const dark = document.documentElement.dataset.theme === 'dark';
+      mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'neutral', fontFamily: 'Inter Variable, sans-serif' });
+      // Each diagram gets its own id, which scopes its styles
+      for (const [i, block] of blocks.entries()) {
+        const { svg } = await mermaid.render(`mermaid-diagram-${i}`, sources[i]);
+        block.innerHTML = svg;
+      }
+    };
+    await render();
+    new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  }
+</script>

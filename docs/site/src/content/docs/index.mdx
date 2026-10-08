@@ -1,0 +1,64 @@
+---
+title: Mabat
+description: Typed aggregate reads and writes for Rust on PostgreSQL, MySQL and SQLite, with SQL you can tune without changing code.
+template: splash
+hero:
+  tagline: Declare the view of the data you want as Rust structs. Mabat plans the batched queries that fill it, lets a DBA tune any of them without touching your code, serves it as JSON or GraphQL, and saves it back.
+  image:
+    file: ../../assets/logo.svg
+  actions:
+    - text: Get started
+      link: start/getting-started/
+      icon: right-arrow
+    - text: Read the specification
+      link: spec/mpa/
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+*Mabat* (מבט) is Hebrew for "view". You describe the shape of an aggregate — a task with its assignee, its
+subtasks and their notes — and Mabat loads it with one query for the roots and one batched query per
+relationship. It never runs one query per row, and it never joins two collections into a cartesian product.
+
+```rust
+#[derive(View)]
+#[view(table = "task")]
+struct TaskView {
+    id: Uuid,
+    name: String,
+    #[view(to_one(fk = "assignee_id"))]
+    assignee: Option<PersonView>,                 // one batched query for every task's assignee
+    #[view(child(fk = "parent_id", order_by = "position"))]
+    children: Vec<SubtaskView>,                   // one batched query for every task's subtasks
+}
+
+let tasks = mabat::load::<TaskView>().filter(col("status").eq("open")).all(&mut conn).await?;
+```
+
+<CardGrid>
+  <Card title="Typed views, not entities" icon="document">
+    Structs, enums with data, embedded values, ordered lists, maps, many-to-many collections, recursive trees and
+    cyclic graphs — declared with one derive, decoded strictly, with errors that name the path.
+  </Card>
+  <Card title="Tunable SQL, checked at startup" icon="setting">
+    Replace any query with hand-written SQL in an override file. Every query is prepared against the database at
+    startup and compared with the view, and a shadow mode proves a tuned query equivalent before you rely on it.
+  </Card>
+  <Card title="JSON and GraphQL" icon="seti:json">
+    Load only the fields a client selects, as JSON, or serve a GraphQL schema generated from the views — each
+    request one planned load, with filters and paging at every level.
+  </Card>
+  <Card title="Aggregates in, aggregates out" icon="pencil">
+    Save a value and everything it owns, save only what changed between two versions, and lock rows
+    optimistically with a version column.
+  </Card>
+  <Card title="Three databases" icon="seti:db">
+    PostgreSQL, MySQL 8 and SQLite through SQLx, with concurrent loads on a pool and a shared snapshot on
+    PostgreSQL.
+  </Card>
+  <Card title="A specification you can cite" icon="open-book">
+    [MPA](spec/mpa/), the Mabat Persistence Architecture, states every behaviour as a numbered rule — for code
+    reviews, issues and AI assistants alike.
+  </Card>
+</CardGrid>

@@ -1,0 +1,54 @@
+name: Docs
+
+# Builds the documentation site on every change to it, and checks its links. Publishing to GitHub Pages is
+# manual: run this workflow from the Actions tab with "deploy" checked.
+
+on:
+  pull_request:
+    paths: [docs/**, CHANGELOG.md, .github/workflows/docs.yml]
+  push:
+    branches: [main]
+    paths: [docs/**, CHANGELOG.md, .github/workflows/docs.yml]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Publish the site to GitHub Pages
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs/site
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the last-updated dates come from git history
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/site/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm run check
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name == 'workflow_dispatch' && inputs.deploy
+        with:
+          path: docs/site/dist
+
+  deploy:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
