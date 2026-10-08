@@ -111,6 +111,21 @@ pub fn insert_if_absent(dialect: Dialect, table: &str, key: &str, columns: &[(St
     }
 }
 
+/// Insert a row whose key the database generates, returning the key: with `RETURNING` on
+/// PostgreSQL and SQLite; MySQL reports it as the last insert id of the statement.
+pub fn insert_generated(dialect: Dialect, table: &str, key: &str, columns: &[(String, ColumnValue)]) -> String {
+    let insert = match dialect {
+        Dialect::Postgres | Dialect::Sqlite if columns.is_empty() => {
+            format!("INSERT INTO {} DEFAULT VALUES", dialect.quote(table))
+        }
+        _ => insert(dialect, table, columns),
+    };
+    match dialect {
+        Dialect::Postgres | Dialect::Sqlite => format!("{insert} RETURNING {}", dialect.quote(key)),
+        Dialect::MySql => insert,
+    }
+}
+
 /// Insert a row.
 pub fn insert(dialect: Dialect, table: &str, columns: &[(String, ColumnValue)]) -> String {
     let names: Vec<String> = columns.iter().map(|(name, _)| dialect.quote(name)).collect();

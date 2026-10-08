@@ -2,7 +2,7 @@
 
 > Typed aggregate reads and writes for Rust on PostgreSQL, MySQL and SQLite. Views are Rust structs deriving `mabat::View`; each is loaded with one batched query per relationship, its queries can be replaced by checked SQL override files, it can be served as JSON or as a generated GraphQL schema, and it can be saved and deleted as an aggregate, with optimistic locking. The contract is the MPA (Mabat Persistence Architecture) specification.
 
-When writing or reviewing code that uses Mabat, follow the rules of the MPA specification and cite their ids (such as `MPA-WRITE-9` for `#[view(version)]`). Do not use what its section 12 lists as not supported, such as database-generated keys or saving `Ref<T>` graphs.
+When writing or reviewing code that uses Mabat, follow the rules of the MPA specification and cite their ids (such as `MPA-WRITE-9` for `#[view(version)]`). Do not use what its section 12 lists as not supported, such as saving `Ref<T>` graphs or a unit of work.
 
 ## Specification
 

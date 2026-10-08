@@ -958,7 +958,8 @@ def _page_svg(page, px_in=96.0):
                     if s.begin_arrow else ""))
 
     defs = []
-    for c in {s.color for s in page.shapes if s.kind == "arrow"}:
+    # sorted, so the same drawing writes the same file: a set iterates in a random order
+    for c in sorted({s.color for s in page.shapes if s.kind == "arrow"}):
         for pfx, path, refx in (("ah", "M0,0 L8,3 L0,6 z", "7.5"),
                                 ("ahs", "M8,0 L0,3 L8,6 z", "0.5")):
             defs.append("<marker id='%s-%s' markerWidth='8' markerHeight='6' "

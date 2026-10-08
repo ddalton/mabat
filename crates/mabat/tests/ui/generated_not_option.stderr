@@ -1,0 +1,5 @@
+error: `generated` applies to the key field, an `Option` of an integer that is `None` until the row is inserted
+ --> tests/ui/generated_not_option.rs:7:5
+  |
+7 |     id: i64,
+  |     ^^
