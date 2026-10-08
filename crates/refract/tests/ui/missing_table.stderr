@@ -1,0 +1,5 @@
+error: missing `#[view(table = "...")]`, or `#[view(embedded)]` for an embedded struct
+ --> tests/ui/missing_table.rs:2:8
+  |
+2 | struct Task {
+  |        ^^^^

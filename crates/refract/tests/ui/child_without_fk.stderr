@@ -1,0 +1,5 @@
+error: `child` needs `fk = "..."`
+ --> tests/ui/child_without_fk.rs:4:12
+  |
+4 |     #[view(child(order_by = "name"))]
+  |            ^^^^^

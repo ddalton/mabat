@@ -1,0 +1,5 @@
+error: only structs can derive View; enums are planned for a later milestone
+ --> tests/ui/enum_view.rs:3:6
+  |
+3 | enum Status {
+  |      ^^^^^^

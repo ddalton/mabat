@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | Draft, for discussion |
+| Status | Draft, for discussion. M1 implemented; see the notes marked **M1** |
 | Author | Dilip Dalton |
 | Created | 2026-10-07 |
 | Lineage | Rust successor to the ideas in [XOR](https://github.com/ddalton/xor) (Java) |
@@ -185,6 +185,10 @@ pub struct TaskSummary {
 ```
 
 ### 5.2 Loading
+
+> **M1:** loading is the free function `refract::load::<T>()`, with `by_key`, `by_keys`, `order_by`,
+> `order_by_desc`, `limit` and `offset`, run with `all`, `one` or `optional` on a `&mut PgConnection`. The
+> registry below arrives with overrides in M3, and filters with SeaQuery expressions in M2.
 
 ```rust
 let refract = Refract::builder()
@@ -409,7 +413,11 @@ Rules:
    batched `IN` lists sized to the database's limit.
 4. Queries at the same depth are independent and can run concurrently (section 11).
 5. Generated SQL is built with SeaQuery's AST, never by editing strings.
-6. Every selected column gets an alias equal to its path. Generated queries and override queries are therefore
+   **M1:** a small internal renderer (`refract_core::sql`) builds the SELECT statements directly from the plan,
+   with every identifier quoted. M1 needs only SELECT, `= ANY($1)`, ORDER BY, LIMIT and OFFSET, and this
+   avoids depending on the new SeaQuery 1.0 API before filters need it.
+6. Every selected column gets an alias equal to its path. The key column is selected once: under the alias of
+   the field that holds it, or as `$key` if no field does. Generated queries and override queries are therefore
    decoded the same way.
 
 ### 8.2 Plan inspection
@@ -520,6 +528,11 @@ swapped into the registry atomically (`ArcSwap`). An invalid change never replac
 The derive macro generates the decoder: a `match` over column positions resolved once per statement from the
 aliases. Per row, decoding is plain indexed access with no hashing of names.
 
+> **M1:** field columns are decoded by alias through SQLx (`Row::try_get(&str)`), the same lookup hand-written
+> SQLx code uses. Key columns are resolved once per query result. With this, loading 1,000 tasks with 10
+> subtasks each takes about 8% longer than hand-written SQLx running the same queries
+> (`crates/refract/examples/parity.rs`). Positional decoding is the next optimization.
+
 Large results can be streamed: `.stream()` yields root values once the child queries for each batch of roots
 have finished. Roots are processed in batches of a configurable size.
 
@@ -613,7 +626,7 @@ database.
 
 | # | Milestone | Scope | Exit criteria |
 | --- | --- | --- | --- |
-| M1 | Core reads | Structs, `Option`, `Vec`, embedded structs, generated SQL, name-based decoding, PostgreSQL | Integration tests; parity benchmark |
+| M1 | Core reads (**done**) | Structs, `Option`, `Vec`, embedded structs, generated SQL, name-based decoding, PostgreSQL | Integration tests; parity benchmark |
 | M2 | Sum types | `tag`, `table_per_variant`, `json`; nested sums; strict decoding | Every strategy tested with generated SQL |
 | M3 | Overrides | Override files, startup validation, `refract check`, shadow mode | Mutation-style checks pass |
 | M4 | Collections and recursion | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |

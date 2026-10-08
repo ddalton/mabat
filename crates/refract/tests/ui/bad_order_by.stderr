@@ -1,0 +1,5 @@
+error: `order_by` is a comma separated list of columns, each optionally followed by `asc` or `desc`
+ --> tests/ui/bad_order_by.rs:4:47
+  |
+4 |     #[view(child(fk = "parent_id", order_by = "name sideways"))]
+  |                                               ^^^^^^^^^^^^^^^
