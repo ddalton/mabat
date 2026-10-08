@@ -649,8 +649,22 @@ back to the generated query.
 >   a view that cannot be planned always fails.
 > - **Transactions:** each statement is prepared in a transaction, or a savepoint inside the caller's, that is
 >   rolled back, so checking does not abort a transaction.
-> - **CI:** `refract check` is a test in the application, `Refract::builder()...check(&mut conn)`, rather than
->   a separate binary. A binary cannot know the application's view types.
+> - **CI:** the application can run `Refract::builder()...check(&mut conn)` as a test.
+>
+> **DBA tooling:**
+>
+> - **The manifest:** a binary can't know the application's view types, so the application writes a
+>   *manifest* (`Builder::manifest()`, JSON) of every query of its views, with:
+>   - name, link and generated SQL
+>   - the aliases and their roles
+>   - the PostgreSQL type names each field accepts, computed from SQLx's own compatibility rules when the
+>     manifest is written
+> - **One checker:** the startup check runs on the same manifest, so the application and the tool report the
+>   same problems.
+> - **The `refract` tool** (crate `refract-cli`) runs `check`, `explain` and `scaffold` on a manifest with no
+>   Rust toolchain.
+> - **`check --schema file.sql`:** creates the schema in a temporary schema inside a transaction that is
+>   rolled back, so a DBA can check overrides against any scratch database.
 >
 > Diagnostic codes:
 >
@@ -790,7 +804,7 @@ Writes never go through override SQL. Overrides are for reads.
 | `refract-core` | Shape IR, paths, planner, decoder runtime, `Graph`/`Ref`, errors | none (no database) |
 | `refract-derive` | `#[derive(View)]` proc macro; generates the static shape and the decoder | `syn`, `quote` |
 | `refract-sqlx` | Executor, filters, validation, overrides, shadow mode | `sqlx` 0.9 |
-| `refract-cli` | `refract check`, `refract explain`, `refract scaffold` (generate an override from the generated SQL) | `refract-sqlx`, `clap` |
+| `refract-cli` | `refract check`, `refract explain`, `refract scaffold` (generate an override from the generated SQL), on a manifest written by the application | `refract-sqlx` |
 | `refract-graphql` | Sub-shapes from `async-graphql` look-ahead | `async-graphql` 7.x |
 | `refract` | Facade that re-exports the above behind features | all |
 

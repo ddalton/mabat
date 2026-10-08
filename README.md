@@ -260,6 +260,35 @@ error[R0102]: override for TaskView.children.notes does not match the view
 - `refract.reload(&mut conn)` reads the files again and, if they changed and pass the checks, puts them in use
   atomically. An invalid change never replaces a working query.
 
+### Checking overrides without the application
+
+A DBA doesn't need Rust to check an override. The application writes a manifest of its views: their queries,
+aliases and accepted column types. A test can write it and fail when the committed copy is out of date:
+
+```rust
+#[test]
+fn views_manifest_is_up_to_date() {
+    let manifest = Refract::builder().register::<TaskView>().manifest().unwrap();
+    assert!(!manifest.write("refract/views.json").unwrap(), "refract/views.json was out of date");
+}
+```
+
+The `refract` command line tool (crate `refract-cli`) reads the manifest:
+
+```sh
+# check every query, generated and overridden, against a database
+refract check --manifest refract/views.json --overrides refract/overrides --database-url postgres://...
+
+# or against a schema file, in any scratch database: created in a transaction that is rolled back
+refract check --manifest refract/views.json --overrides refract/overrides --schema schema.sql
+
+refract explain  --manifest refract/views.json --overrides refract/overrides   # the SQL each query runs
+refract scaffold --manifest refract/views.json --view TaskView --format sql   # a starting override file
+```
+
+`check` prints the same report as the application's startup check. Its exit status is 0 when there are no
+errors, 1 when there are, and 2 for any other problem, so it can run in a DBA's CI.
+
 Override files can also be plain SQL, which SQL editors and `psql` understand, with a marker line before each
 query:
 
@@ -284,7 +313,7 @@ ORDER BY n.id;
 | SQL overrides checked at startup, shadow mode, scaffolding, reloading | Done (M3) |
 | Ordered lists, maps, many-to-many, recursive views | Done (M4) |
 | Shared (`Arc`) and graph (`Ref<T>`) representations for cyclic data | Done (M5) |
-| DBA tooling: view manifest and `refract check` CLI | Planned |
+| DBA tooling: view manifest and `refract check` / `explain` / `scaffold` CLI | Done |
 | GraphQL selection sets | Planned (M7) |
 
 Loading 1,000 tasks with 10 subtasks each takes about 8% longer than hand-written SQLx code running the same two

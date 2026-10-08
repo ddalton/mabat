@@ -841,6 +841,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "refract-cli"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "refract",
+ "refract-sqlx",
+ "sqlx",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "refract-core"
 version = "0.1.0"
 dependencies = [
@@ -864,6 +876,7 @@ dependencies = [
  "chrono",
  "refract-core",
  "serde",
+ "serde_json",
  "sqlx",
  "thiserror",
  "toml",

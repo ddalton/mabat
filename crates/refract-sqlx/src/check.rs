@@ -1,20 +1,22 @@
 //! Checking the queries of views against the database.
 //!
-//! Every query of every registered view is prepared on the database, without running it,
-//! and the columns and parameters of the prepared statement are compared with the view:
-//! the generated query, which catches a schema that no longer matches the view, and the
-//! override, which must select the same aliases with compatible types.
+//! Every query of every view of a [`Manifest`] is prepared on the database, without
+//! running it, and the columns and parameters of the prepared statement are compared with
+//! the view: the generated query, which catches a schema that no longer matches the view,
+//! and the override, which must select the same aliases with compatible types. The
+//! application checks its views at startup this way, and `refract check` checks a manifest
+//! written by the application.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use refract_core::sql::{self, RootOptions};
-use refract_core::{INDEX_ALIAS, KEY_ALIAS, Link, MAP_KEY_ALIAS, PARENT_ALIAS, QueryPlan, ViewShape};
+use refract_core::{INDEX_ALIAS, KEY_ALIAS, MAP_KEY_ALIAS, PARENT_ALIAS, QueryPlan, ViewShape};
 use sqlx::postgres::{PgStatement, PgTypeInfo};
 use sqlx::{AssertSqlSafe, Column, Connection, Either, Executor, PgConnection, SqlSafeStr, Statement, TypeInfo};
 
-use crate::describe::{ColumnType, Description, short_type_name};
+use crate::describe::Description;
 use crate::key::KeyClass;
+use crate::manifest::{CheckedOverrides, LinkManifest, Manifest, QueryManifest, Role, TypeManifest, ViewManifest};
 use crate::overrides::{OverrideFile, QueryOverride};
 use crate::registry::{ActiveOverride, Overrides, ShadowStats};
 use crate::report::{Diagnostic, Report, Severity, suggest};
@@ -33,55 +35,39 @@ pub(crate) struct Checked {
     pub(crate) overrides: Overrides,
 }
 
-/// Check the registered views and their override files. Problems are added to the report.
+/// Check the views of the manifest and their override files. Problems are added to the
+/// report. Returns the overrides that passed the checks, by view.
 ///
 /// Fails only if the connection fails.
 pub(crate) async fn check(
     conn: &mut PgConnection,
-    views: &[ViewEntry],
+    manifest: &Manifest,
     files: Vec<OverrideFile>,
     report: &mut Report,
-) -> Result<Vec<Checked>, sqlx::Error> {
+) -> Result<CheckedOverrides, sqlx::Error> {
     let mut files: HashMap<String, OverrideFile> = files.into_iter().map(|f| (f.view.clone(), f)).collect();
-    let mut checked = Vec::new();
+    let mut checked = CheckedOverrides::new();
 
-    for view in views {
-        let file = files.remove(view.shape.name);
-        let plan = match QueryPlan::build(view.shape) {
-            Ok(plan) => plan,
-            Err(e) => {
-                report.push(Diagnostic {
-                    severity: Severity::Error,
-                    code: "R0301",
-                    view: view.shape.name.to_string(),
-                    query: String::new(),
-                    origin: None,
-                    summary: format!("{} cannot be planned", view.shape.name),
-                    notes: vec![e.to_string()],
-                });
-                continue;
-            }
-        };
-
+    for view in &manifest.views {
+        let file = files.remove(&view.name);
         let mut by_query: HashMap<&str, &QueryOverride> = HashMap::new();
         if let Some(file) = &file {
-            let mut names = Vec::new();
-            plan.walk(&mut |p| names.push(p.query_name().to_string()));
+            let names: Vec<&str> = view.queries.iter().map(|q| q.name.as_str()).collect();
             for query in &file.queries {
-                if names.contains(&query.query) {
+                if names.contains(&query.query.as_str()) {
                     by_query.insert(&query.query, query);
                 } else {
-                    let mut notes = vec![format!("the queries of {} are: {}", view.shape.name, names.join(", "))];
-                    if let Some(name) = suggest(&query.query, names.iter().map(String::as_str)) {
+                    let mut notes = vec![format!("the queries of {} are: {}", view.name, names.join(", "))];
+                    if let Some(name) = suggest(&query.query, names.iter().copied()) {
                         notes.insert(0, format!("did you mean \"{name}\"?"));
                     }
                     report.push(Diagnostic {
                         severity: Severity::Error,
                         code: "R0101",
-                        view: view.shape.name.to_string(),
+                        view: view.name.clone(),
                         query: query.query.clone(),
                         origin: Some(query.origin.to_string()),
-                        summary: format!("\"{}\" is not a query of {}", query.query, view.shape.name),
+                        summary: format!("\"{}\" is not a query of {}", query.query, view.name),
                         notes,
                     });
                 }
@@ -89,15 +75,28 @@ pub(crate) async fn check(
         }
 
         let mut overrides = Overrides::new();
-        let context = Context { view: view.shape.name, by_query: &by_query, map_key: None };
-        check_query(conn, &context, &plan, view.describe, None, &mut overrides, report).await?;
-        checked.push(Checked { shape: view.shape, plan: Arc::new(plan), overrides });
+        // The key classes of the columns of each checked query, to check the links of its children
+        let mut classes: Vec<Option<KeyClasses>> = Vec::with_capacity(view.queries.len());
+        for query in &view.queries {
+            let link_class = query.parent.and_then(|p| {
+                let parent = classes[p].as_ref()?;
+                match &query.link {
+                    LinkManifest::Child | LinkManifest::Variant { .. } => {
+                        parent.get(&view.queries[p].key_alias).copied()
+                    }
+                    LinkManifest::ToOne { ref_alias } => parent.get(ref_alias).copied(),
+                    LinkManifest::Root => None,
+                }
+            });
+            let context = Query { view, query, link_class };
+            classes.push(check_query(conn, &context, &by_query, &mut overrides, report).await?);
+        }
+        checked.insert(view.name.clone(), overrides);
     }
 
-    let registered: Vec<&str> = views.iter().map(|v| v.shape.name).collect();
     for file in files.into_values() {
         let mut notes = Vec::new();
-        if let Some(name) = suggest(&file.view, registered.iter().copied()) {
+        if let Some(name) = suggest(&file.view, manifest.views.iter().map(|v| v.name.as_str())) {
             notes.push(format!("did you mean {name}?"));
         }
         notes.push("override files are named after a registered view, e.g. TaskView.toml".to_string());
@@ -115,14 +114,6 @@ pub(crate) async fn check(
     Ok(checked)
 }
 
-#[derive(Clone, Copy)]
-struct Context<'a> {
-    view: &'static str,
-    by_query: &'a HashMap<&'a str, &'a QueryOverride>,
-    /// The type of the map key of the query, for a map collection.
-    map_key: Option<&'a ColumnType>,
-}
-
 /// The key class the query is linked to its parent query with: the class of the parent's
 /// key for a to-many query, the class of the parent's reference column for a to-one query.
 /// `None` for the root query, or when the parent query could not be checked.
@@ -131,98 +122,72 @@ type LinkClass = Option<KeyClass>;
 /// The key classes of the columns of a checked query, by alias.
 type KeyClasses = HashMap<String, KeyClass>;
 
-fn check_query<'a>(
-    conn: &'a mut PgConnection,
-    context: &'a Context<'a>,
-    plan: &'a QueryPlan,
-    describe: fn(&mut Description),
-    link_class: LinkClass,
-    overrides: &'a mut Overrides,
-    report: &'a mut Report,
-) -> std::pin::Pin<Box<dyn Future<Output = Result<(), sqlx::Error>> + Send + 'a>> {
-    Box::pin(async move {
-        let mut description = Description::default();
-        describe(&mut description);
-        let query = Query { context, plan, description: &description, link_class };
+/// Check a query and its override. Returns the key classes of its columns, `None` if it
+/// could not be checked.
+async fn check_query(
+    conn: &mut PgConnection,
+    query: &Query<'_>,
+    by_query: &HashMap<&str, &QueryOverride>,
+    overrides: &mut Overrides,
+    report: &mut Report,
+) -> Result<Option<KeyClasses>, sqlx::Error> {
+    let name = query.query.name.as_str();
+    let override_ = by_query.get(name).copied();
+    let mut classes = None;
 
-        let override_ = context.by_query.get(plan.query_name()).copied();
-        let mut classes = None;
-
-        // The override, if any
-        let mut active = None;
-        if let Some(override_) = override_ {
-            match inspect(conn, &override_.sql).await? {
-                Err(message) => {
-                    report.push(query.diagnostic(Some(override_), "R0103", "does not prepare", vec![message]))
-                }
-                Ok(statement) => {
-                    let result = query.compare(&statement, Some(override_), report);
-                    if let Some((found, keys_param)) = result {
-                        classes = Some(found);
-                        active = Some((override_, keys_param));
-                    }
-                }
-            }
-        }
-
-        // The generated query is checked too: it runs when there is no valid override, and
-        // in shadow mode. A problem with it is a warning when a valid override replaces it.
-        let generated = sql::select(plan, &RootOptions::default());
-        let mut generated_report = Report::default();
-        match inspect(conn, &generated).await? {
-            Err(message) => generated_report.push(query.diagnostic(None, "R0103", "does not prepare", vec![message])),
+    // The override, if any
+    let mut active = None;
+    if let Some(override_) = override_ {
+        match inspect(conn, &override_.sql).await? {
+            Err(message) => report.push(query.diagnostic(Some(override_), "R0103", "does not prepare", vec![message])),
             Ok(statement) => {
-                if let Some((found, _)) = query.compare(&statement, None, &mut generated_report) {
-                    classes.get_or_insert(found);
+                if let Some((found, keys_param)) = query.compare(&statement, Some(override_), report) {
+                    classes = Some(found);
+                    active = Some((override_, keys_param));
                 }
             }
         }
-        let generated_ok = generated_report.is_ok();
-        for mut diagnostic in generated_report.diagnostics {
-            match active {
-                Some((override_, _)) if override_.shadow => {
-                    diagnostic.notes.push("the override is shadowed, which runs the generated query too".to_string());
-                }
-                Some(_) => {
-                    diagnostic.severity = Severity::Warning;
-                    diagnostic.notes.push("the query is replaced by a valid override".to_string());
-                }
-                None => {}
-            }
-            report.push(diagnostic);
-        }
+    }
 
-        if let Some((override_, keys_param)) = active {
-            overrides.insert(
-                plan.query_name().to_string(),
-                ActiveOverride {
-                    sql: override_.sql.clone(),
-                    keys_param,
-                    shadow: override_.shadow && generated_ok,
-                    origin: override_.origin.clone(),
-                    stats: Arc::new(ShadowStats::default()),
-                },
-            );
-        }
-
-        // Queries that are repeated for the levels of a recursive collection are checked once
-        for child in &plan.children {
-            let Some(child_plan) = child.plan() else { continue };
-            let child_class = classes.as_ref().and_then(|classes| match &child_plan.link {
-                Link::Child { .. } | Link::Variant { .. } => classes.get(&plan.key_alias).copied(),
-                Link::ToOne { ref_alias } => classes.get(ref_alias).copied(),
-                Link::Root => None,
-            });
-            let (describe, map_key) = match child.variant {
-                None => description.child(child.field_index),
-                Some(variant) => description.variant(child.field_index, variant).map(|describe| (describe, None)),
+    // The generated query is checked too: it runs when there is no valid override, and in
+    // shadow mode. A problem with it is a warning when a valid override replaces it.
+    let mut generated_report = Report::default();
+    match inspect(conn, &query.query.sql).await? {
+        Err(message) => generated_report.push(query.diagnostic(None, "R0103", "does not prepare", vec![message])),
+        Ok(statement) => {
+            if let Some((found, _)) = query.compare(&statement, None, &mut generated_report) {
+                classes.get_or_insert(found);
             }
-            .expect("the description and the shape of a view have the same fields");
-            let child_context = Context { map_key, ..*context };
-            check_query(conn, &child_context, child_plan, describe, child_class, overrides, report).await?;
         }
-        Ok(())
-    })
+    }
+    let generated_ok = generated_report.is_ok();
+    for mut diagnostic in generated_report.diagnostics {
+        match active {
+            Some((override_, _)) if override_.shadow => {
+                diagnostic.notes.push("the override is shadowed, which runs the generated query too".to_string());
+            }
+            Some(_) => {
+                diagnostic.severity = Severity::Warning;
+                diagnostic.notes.push("the query is replaced by a valid override".to_string());
+            }
+            None => {}
+        }
+        report.push(diagnostic);
+    }
+
+    if let Some((override_, keys_param)) = active {
+        overrides.insert(
+            name.to_string(),
+            ActiveOverride {
+                sql: override_.sql.clone(),
+                keys_param,
+                shadow: override_.shadow && generated_ok,
+                origin: override_.origin.clone(),
+                stats: Arc::new(ShadowStats::default()),
+            },
+        );
+    }
+    Ok(classes)
 }
 
 /// Prepare the SQL in a transaction (a savepoint, if the connection is in a transaction)
@@ -241,17 +206,17 @@ async fn inspect(conn: &mut PgConnection, sql: &str) -> Result<Result<PgStatemen
 }
 
 struct Query<'a> {
-    context: &'a Context<'a>,
-    plan: &'a QueryPlan,
-    description: &'a Description,
+    view: &'a ViewManifest,
+    query: &'a QueryManifest,
     link_class: LinkClass,
 }
 
 /// A column a query needs to select.
 struct Expected<'a> {
     alias: &'a str,
-    /// The Rust type of a field column, `None` for a system column.
-    column: Option<&'a ColumnType>,
+    /// The Rust type of a field or map key column, `None` for a system column.
+    column: Option<&'a TypeManifest>,
+    optional: bool,
     /// The column holds a key: the key of the view, the parent key or a reference.
     key: bool,
 }
@@ -264,8 +229,8 @@ impl Query<'_> {
         problem: &str,
         notes: Vec<String>,
     ) -> Diagnostic {
-        let view = self.context.view;
-        let name = self.plan.query_name();
+        let view = &self.view.name;
+        let name = &self.query.name;
         let summary = match override_ {
             Some(_) => format!("override for {view}.{name} {problem}"),
             None => format!("generated query for {view}.{name} {problem}"),
@@ -282,18 +247,16 @@ impl Query<'_> {
     }
 
     fn expected(&self) -> Vec<Expected<'_>> {
-        self.plan
+        self.query
             .columns
             .iter()
             .map(|c| {
-                let alias = c.alias.as_str();
-                if alias == MAP_KEY_ALIAS {
-                    Expected { alias, column: self.context.map_key, key: false }
-                } else if alias.starts_with('$') {
-                    Expected { alias, column: None, key: true }
-                } else {
-                    Expected { alias, column: self.description.column_type(alias), key: alias == self.plan.key_alias }
-                }
+                let key = match c.role {
+                    Role::Key | Role::Parent | Role::Reference => true,
+                    Role::Field => c.alias == self.query.key_alias,
+                    Role::Index | Role::MapKey => false,
+                };
+                Expected { alias: &c.alias, column: c.r#type.as_ref(), optional: c.optional, key }
             })
             .collect()
     }
@@ -321,9 +284,9 @@ impl Query<'_> {
                 continue;
             }
             let Some(expected) = expected.iter().find(|e| e.alias == name) else {
-                let mut note = format!("column {n} \"{name}\" is not a path of {} in this query", self.plan.shape.name);
+                let mut note = format!("column {n} \"{name}\" is not a path of {} in this query", self.query.view);
                 if name == KEY_ALIAS {
-                    note.push_str(&format!(" (the key is selected as \"{}\")", self.plan.key_alias));
+                    note.push_str(&format!(" (the key is selected as \"{}\")", self.query.key_alias));
                 } else if let Some(alias) = suggest(name, expected.iter().map(|e| e.alias)) {
                     note.push_str(&format!(" (did you mean \"{alias}\"?)"));
                 }
@@ -336,8 +299,8 @@ impl Query<'_> {
                 errors.push(format!(
                     "column {n} \"{name}\" has type {}, expected {} for {}",
                     ty.name(),
-                    column.sql_type,
-                    short_type_name(column.rust_type)
+                    column.sql,
+                    column.rust
                 ));
                 continue;
             }
@@ -363,11 +326,12 @@ impl Query<'_> {
 
         // The link to the parent query
         if let Some(parent) = self.link_class {
-            let (alias, what) = match &self.plan.link {
-                Link::Child { .. } => (PARENT_ALIAS, "the key of the parent query".to_string()),
-                Link::ToOne { ref_alias } => (self.plan.key_alias.as_str(), format!("the parent's \"{ref_alias}\"")),
-                Link::Variant { .. } => (self.plan.key_alias.as_str(), "the key of the parent query".to_string()),
-                Link::Root => unreachable!("the root query has no parent"),
+            let key_alias = self.query.key_alias.as_str();
+            let (alias, what) = match &self.query.link {
+                LinkManifest::Child => (PARENT_ALIAS, "the key of the parent query".to_string()),
+                LinkManifest::ToOne { ref_alias } => (key_alias, format!("the parent's \"{ref_alias}\"")),
+                LinkManifest::Variant { .. } => (key_alias, "the key of the parent query".to_string()),
+                LinkManifest::Root => unreachable!("the root query has no parent"),
             };
             if let Some(class) = classes.get(alias)
                 && *class != parent
@@ -382,7 +346,7 @@ impl Query<'_> {
                 continue;
             }
             match expected.column {
-                Some(column) if column.optional => missing_optional.push(expected.alias),
+                Some(_) if expected.optional => missing_optional.push(expected.alias),
                 _ if expected.alias == PARENT_ALIAS => errors
                     .push(format!("column \"{PARENT_ALIAS}\" is not selected; it attaches the rows to their parent")),
                 _ if expected.alias == INDEX_ALIAS => {
@@ -408,7 +372,7 @@ impl Query<'_> {
         }
 
         // Only overrides choose their parameters
-        let mut keys_param = !matches!(self.plan.link, Link::Root);
+        let mut keys_param = !matches!(self.query.link, LinkManifest::Root);
         if override_.is_some() {
             match self.parameters(statement, &classes) {
                 Ok(takes_keys) => keys_param = takes_keys,
@@ -441,11 +405,11 @@ impl Query<'_> {
             Some(Either::Right(count)) => vec![None; count],
             None => Vec::new(),
         };
-        let root = matches!(self.plan.link, Link::Root);
-        let (keys, of) = match &self.plan.link {
-            Link::Root => (classes.get(&self.plan.key_alias).copied(), "root keys"),
-            Link::Child { .. } | Link::Variant { .. } => (self.link_class, "parent keys"),
-            Link::ToOne { .. } => (self.link_class, "referenced keys"),
+        let root = matches!(self.query.link, LinkManifest::Root);
+        let (keys, of) = match &self.query.link {
+            LinkManifest::Root => (classes.get(&self.query.key_alias).copied(), "root keys"),
+            LinkManifest::Child | LinkManifest::Variant { .. } => (self.link_class, "parent keys"),
+            LinkManifest::ToOne { .. } => (self.link_class, "referenced keys"),
         };
         match types.as_slice() {
             [] if root => Ok(false),
