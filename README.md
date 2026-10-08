@@ -215,6 +215,26 @@ that isn't NULL is also an error, unless the enum is marked `lenient`. Variant f
 the variant, such as `state.Blocked.reason.$tag` or `state.Closed.0`, and overrides use them like any other
 path.
 
+## Concurrent loads on a pool
+
+A load runs its root query, then the queries of each level: the collections and references of the rows above.
+On one connection they run one after the other. Given a pool, the queries of a level run at the same time, each
+on a connection of its own:
+
+```rust
+// PostgreSQL: every query sees one snapshot, exported by the first connection and imported by the others
+let mut pooled = mabat::Pooled::snapshot(&pool, 4);
+let boards = mabat::load::<BoardView>().all(&mut pooled).await?;
+
+// Any database: each query sees what is committed when it runs
+let mut pooled = mabat::Pooled::read_committed(&pool, 4);
+```
+
+Loading 20 boards whose lists and labels each take half a second takes one second on one connection and half a
+second on a pool. Only PostgreSQL can share a snapshot between connections, so `snapshot` takes a PostgreSQL
+pool. With `read_committed`, a row committed during the load can show up in a collection whose parent was read
+before it. Graph loads run their queries one at a time on one connection of the pool.
+
 ## Tuning without code changes
 
 Any query of a view can be replaced with SQL from an override file. A DBA can change joins, ordering, hints, or
@@ -318,7 +338,7 @@ ORDER BY n.id;
 | Shared (`Arc`) and graph (`Ref<T>`) representations for cyclic data | Done (M5) |
 | DBA tooling: view manifest and `mabat check` / `explain` / `scaffold` CLI | Done |
 | SQLite and MySQL | Done (M6) |
-| Pooled snapshot concurrency | Planned (M6) |
+| Concurrent loads on a pool, with a shared snapshot on PostgreSQL | Done (M6) |
 | GraphQL selection sets | Planned (M7) |
 
 Loading 1,000 tasks with 10 subtasks each takes about 8% longer than hand-written SQLx code running the same two

@@ -27,7 +27,7 @@ mabat-sqlx.workspace = true
 chrono.workspace = true
 serde.workspace = true
 sqlx.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["time"] }
 trybuild.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
@@ -55,6 +55,10 @@ required-features = ["postgres"]
 
 [[test]]
 name = "overrides"
+required-features = ["postgres"]
+
+[[test]]
+name = "pooled"
 required-features = ["postgres"]
 
 [[test]]

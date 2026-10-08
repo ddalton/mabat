@@ -60,6 +60,28 @@ impl Backend for Postgres {
         base(ty).name().to_string()
     }
 
+    fn begin_snapshot(
+        pool: &sqlx::Pool<Postgres>,
+        import: Option<String>,
+    ) -> super::BoxFuture<'_, Result<(sqlx::Transaction<'static, Postgres>, String), sqlx::Error>> {
+        Box::pin(async move {
+            let mut tx = pool.begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").await?;
+            let id = match import {
+                Some(id) => {
+                    // An id as pg_export_snapshot returns it, such as 00000003-0000001B-1
+                    if !id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
+                        return Err(sqlx::Error::Protocol(format!("unexpected snapshot id {id:?}")));
+                    }
+                    let set = format!("SET TRANSACTION SNAPSHOT '{id}'");
+                    sqlx::query(sqlx::AssertSqlSafe(set)).execute(&mut *tx).await?;
+                    id
+                }
+                None => sqlx::query_scalar::<_, String>("SELECT pg_export_snapshot()").fetch_one(&mut *tx).await?,
+            };
+            Ok((tx, id))
+        })
+    }
+
     fn named_types<T: sqlx::Type<Postgres>>() -> Vec<String> {
         let mut names = Vec::new();
         // Text types also accept the citext extension. Only a resolved type may be passed to a

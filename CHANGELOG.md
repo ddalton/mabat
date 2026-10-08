@@ -57,5 +57,9 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
   - Checks, manifests and `mabat check` on both. With `--schema`, MySQL checks in a temporary database that
     is dropped afterwards, and SQLite in an in-memory database.
   - On MySQL: unsigned integer keys, `BINARY(16)` UUID keys and `ENUM` tags.
+- **Concurrent loads (M6).** `Pooled::snapshot` (PostgreSQL) and `Pooled::read_committed` (any database) run
+  the queries of each level of a load at the same time on connections of a pool, in a snapshot that the
+  connections share or reading what is committed. Loads, counts, checks and registries take a `Pooled` where
+  they take a connection.
 - **Platform.** PostgreSQL, MySQL 8 or later, or SQLite, with SQLx 0.9, and Rust 1.94 or later.
 - **End-to-end tests** against the Pagila and Chinook sample databases, and Chinook on MySQL and SQLite.

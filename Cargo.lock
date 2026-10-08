@@ -799,6 +799,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "chrono",
+ "futures-util",
  "mabat-core",
  "serde",
  "serde_json",
@@ -807,6 +808,7 @@ dependencies = [
  "sqlx-postgres",
  "sqlx-sqlite",
  "thiserror",
+ "tokio",
  "toml",
  "tracing",
  "uuid",

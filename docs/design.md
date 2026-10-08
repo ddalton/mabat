@@ -755,6 +755,22 @@ have finished. Roots are processed in batches of a configurable size.
   caller explicitly accepts reading committed data only.
 - There's no global state. The registry is immutable and options are per call.
 
+> **As built:**
+>
+> - **The API:** `Pooled::snapshot(&pool, n)` and `Pooled::read_committed(&pool, n)` are passed where a load
+>   takes a connection (`.all(&mut pooled)`), rather than set with `.concurrency(..)`, so every terminal, count,
+>   check and registry accepts them.
+> - **Snapshots:** the first connection begins `REPEATABLE READ READ ONLY` and exports its snapshot with
+>   `pg_export_snapshot()`; the others import it with `SET TRANSACTION SNAPSHOT`. `snapshot` is only defined
+>   for PostgreSQL pools, so asking for one on MySQL or SQLite does not compile. The transactions are rolled
+>   back at the end, or when the load is dropped.
+> - **Scheduling:** the child queries of a level run together with `try_join_all`, each on a connection held
+>   for that query only, so a load needs no more than `n` connections and cannot deadlock on its own pool.
+>   Keys are collected from the rows above before the queries of the level start.
+> - **Graphs** run their queries one at a time on one connection: which query fetches an entity first decides
+>   where its row is, and that stays the same from run to run.
+> - **Pipelining** on one connection is not done: SQLx 0.9 has no pipelining API.
+
 ## 12. Errors
 
 All errors are `mabat::Error`, using `thiserror`, and carry the view, path and SQL involved.
@@ -854,7 +870,7 @@ database.
 | M3 | Overrides (**done**) | Override files, startup validation, `mabat check`, shadow mode | Mutation-style checks pass |
 | M4 | Collections and recursion (**done**) | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
 | M5 | Shared and graph (**done**; `$id`/`$ref` JSON moves to M7) | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
-| M6 | More databases, concurrency (**MySQL and SQLite done**) | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |
+| M6 | More databases, concurrency (**done**; no pipelining) | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |
 | M7 | GraphQL | Sub-shapes from look-ahead; field arguments | Example server |
 | M8 | Writes (optional) | Aggregate insert and update; graph save with SCC ordering | Round-trip property tests |
 

@@ -351,14 +351,40 @@ fn paging(sql: &mut String, clause: &str, root: &RootOptions, dialect: Dialect) 
 /// Table alias of an override used as a subquery.
 const OVERRIDE_ALIAS: &str = "o";
 
-/// The placeholder of the keys in override SQL for MySQL and SQLite, which have no array
-/// parameters: `WHERE n.task_id IN (:keys)`. It is replaced by one placeholder per key.
+/// The placeholder of the keys in override SQL, on any database: `WHERE n.task_id IN (:keys)`
+/// on MySQL and SQLite, where it becomes one placeholder per key, and
+/// `WHERE n.task_id = ANY(:keys)` on PostgreSQL, where it becomes `$1`, the array of keys.
 pub const KEYS_TOKEN: &str = ":keys";
 
-/// Replace [`KEYS_TOKEN`] in override SQL by `count` placeholders, for MySQL and SQLite.
-/// Override SQL for PostgreSQL takes the keys as `$1` and is returned as is.
+/// Replace [`KEYS_TOKEN`] in override SQL: by `$1` on PostgreSQL, by `count` placeholders on
+/// MySQL and SQLite. Only the token itself is replaced, not `::keys` or `:keys_x`, and
+/// not in string literals or quoted identifiers.
 pub fn expand_keys(sql: &str, dialect: Dialect, count: usize) -> String {
-    if dialect.binds_arrays() { sql.to_string() } else { sql.replace(KEYS_TOKEN, &list(count.max(1))) }
+    let replacement = if dialect.binds_arrays() { dialect.placeholder(1) } else { list(count.max(1)) };
+    let mut out = String::with_capacity(sql.len());
+    let mut quote = None;
+    let mut rest = sql;
+    while let Some(c) = rest.chars().next() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if matches!(c, '\'' | '"' | '`') => quote = Some(c),
+            None if rest.starts_with(KEYS_TOKEN) => {
+                let before = out.chars().next_back();
+                let after = rest[KEYS_TOKEN.len()..].chars().next();
+                let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+                if before != Some(':') && !word(after) {
+                    out.push_str(&replacement);
+                    rest = &rest[KEYS_TOKEN.len()..];
+                    continue;
+                }
+            }
+            None => {}
+        }
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
 }
 
 /// Apply the root options to the SQL of an override of the root query.
@@ -600,6 +626,11 @@ mod tests {
         );
         assert_eq!(expand_keys("WHERE x IN (:keys)", Dialect::Sqlite, 3), "WHERE x IN (?, ?, ?)");
         assert_eq!(expand_keys("WHERE x = ANY($1)", Dialect::Postgres, 3), "WHERE x = ANY($1)");
+        assert_eq!(expand_keys("WHERE x = ANY(:keys)", Dialect::Postgres, 3), "WHERE x = ANY($1)");
+        assert_eq!(
+            expand_keys("SELECT ':keys', x::keys, :keys_x FROM t WHERE x IN (:keys)", Dialect::MySql, 2),
+            "SELECT ':keys', x::keys, :keys_x FROM t WHERE x IN (?, ?)"
+        );
     }
 
     #[test]
