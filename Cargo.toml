@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ddalton/refract"
+authors = ["Dilip Dalton"]
+
+[workspace.dependencies]
+refract-core = { path = "crates/refract-core", version = "0.1.0" }
+refract-derive = { path = "crates/refract-derive", version = "0.1.0" }
+refract-sqlx = { path = "crates/refract-sqlx", version = "0.1.0" }
+
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "uuid", "chrono"] }
+thiserror = "2"
+uuid = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+trybuild = "1"
