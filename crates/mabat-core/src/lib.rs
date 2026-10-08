@@ -16,8 +16,8 @@ pub use plan::{ChildPlan, ChildQuery, Cte, Link, PlanError, QueryPlan, SelectCol
 pub use plan::{SumPlan, VariantPlan};
 pub use selection::{Selection, SelectionError};
 pub use shape::{
-    Child, EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, Recursion, SumShape, SumStrategy, Through, Variant,
-    VariantData, ViewShape,
+    Child, EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, Recursion, Scalar, SumShape, SumStrategy, Through,
+    ValueType, Variant, VariantData, ViewShape,
 };
 
 /// Alias of the key column of the entity selected by a query.

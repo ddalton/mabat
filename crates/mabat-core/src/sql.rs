@@ -478,9 +478,10 @@ fn trim_statement(sql: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shape::{Child, Field, FieldKind, ViewShape};
+    use crate::shape::{Child, Field, FieldKind, ValueType, ViewShape};
 
-    static ITEM_FIELDS: [Field; 1] = [Field { name: "label", kind: FieldKind::Column { column: "my \"label\"" } }];
+    static ITEM_FIELDS: [Field; 1] =
+        [Field { name: "label", kind: FieldKind::Column { column: "my \"label\"", ty: ValueType::TEXT } }];
     static ITEM: ViewShape = ViewShape { name: "Item", table: "item", key_column: "id", fields: &ITEM_FIELDS };
 
     static ORDER: [OrderBy; 1] = [OrderBy::asc("position")];

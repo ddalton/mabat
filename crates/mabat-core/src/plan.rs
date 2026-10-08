@@ -296,7 +296,7 @@ impl QueryPlan {
             selected.push(true);
             let field_path = join_path(&path, field.name);
             match &field.kind {
-                FieldKind::Column { column } => columns.push(SelectColumn::new(*column, field.name)),
+                FieldKind::Column { column, .. } => columns.push(SelectColumn::new(*column, field.name)),
                 FieldKind::Embedded { column_prefix, shape: embedded } => {
                     let mut row = Row { view: shape, columns: &mut columns, sums: &mut sums, variants: &mut variants };
                     let top = Some((field_index, field_path.as_str()));
@@ -367,7 +367,7 @@ impl QueryPlan {
         // Select the key column only once when a selected field holds it
         let mut key_alias = KEY_ALIAS.to_string();
         let key_field = shape.fields.iter().zip(&selected).find(|(f, selected)| {
-            **selected && matches!(f.kind, FieldKind::Column { column } if column == shape.key_column)
+            **selected && matches!(f.kind, FieldKind::Column { column, .. } if column == shape.key_column)
         });
         if let Some((field, _)) = key_field {
             columns.remove(0);
@@ -602,7 +602,7 @@ impl Row<'_> {
 
     fn add_field(&mut self, field: &Field, column_prefix: &str, alias_prefix: &str) -> Result<(), PlanError> {
         match &field.kind {
-            FieldKind::Column { column } => {
+            FieldKind::Column { column, .. } => {
                 self.columns.push(SelectColumn::new(
                     format!("{column_prefix}{column}"),
                     format!("{alias_prefix}{}", field.name),
@@ -636,21 +636,22 @@ fn join_path(parent: &str, field: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shape::{SumShape, Variant};
+    use crate::shape::{SumShape, ValueType, Variant};
 
-    static PERSON_FIELDS: [Field; 1] = [Field { name: "name", kind: FieldKind::Column { column: "full_name" } }];
+    static PERSON_FIELDS: [Field; 1] =
+        [Field { name: "name", kind: FieldKind::Column { column: "full_name", ty: ValueType::TEXT } }];
     static PERSON: ViewShape = ViewShape { name: "Person", table: "person", key_column: "id", fields: &PERSON_FIELDS };
 
     static ADDRESS_FIELDS: [Field; 2] = [
-        Field { name: "street", kind: FieldKind::Column { column: "street" } },
-        Field { name: "city", kind: FieldKind::Column { column: "city" } },
+        Field { name: "street", kind: FieldKind::Column { column: "street", ty: ValueType::TEXT } },
+        Field { name: "city", kind: FieldKind::Column { column: "city", ty: ValueType::TEXT } },
     ];
     static ADDRESS: EmbeddedShape =
         EmbeddedShape { name: "Address", kind: EmbeddedKind::Product { fields: &ADDRESS_FIELDS } };
 
     static CHILD_ORDER: [OrderBy; 1] = [OrderBy::desc("name")];
     static TASK_FIELDS: [Field; 4] = [
-        Field { name: "name", kind: FieldKind::Column { column: "name" } },
+        Field { name: "name", kind: FieldKind::Column { column: "name", ty: ValueType::TEXT } },
         Field { name: "address", kind: FieldKind::Embedded { column_prefix: "addr_", shape: || &ADDRESS } },
         Field {
             name: "assignee",
@@ -663,7 +664,8 @@ mod tests {
     ];
     static TASK: ViewShape = ViewShape { name: "Task", table: "task", key_column: "id", fields: &TASK_FIELDS };
 
-    static SUBTASK_FIELDS: [Field; 1] = [Field { name: "name", kind: FieldKind::Column { column: "name" } }];
+    static SUBTASK_FIELDS: [Field; 1] =
+        [Field { name: "name", kind: FieldKind::Column { column: "name", ty: ValueType::TEXT } }];
     static SUBTASK: ViewShape = ViewShape { name: "Subtask", table: "task", key_column: "id", fields: &SUBTASK_FIELDS };
 
     static LOOP_FIELDS: [Field; 1] =
@@ -702,8 +704,8 @@ mod tests {
     }
 
     static KEYED_FIELDS: [Field; 2] = [
-        Field { name: "code", kind: FieldKind::Column { column: "code" } },
-        Field { name: "label", kind: FieldKind::Column { column: "label" } },
+        Field { name: "code", kind: FieldKind::Column { column: "code", ty: ValueType::TEXT } },
+        Field { name: "label", kind: FieldKind::Column { column: "label", ty: ValueType::TEXT } },
     ];
     static KEYED: ViewShape = ViewShape { name: "Keyed", table: "tag", key_column: "code", fields: &KEYED_FIELDS };
 
@@ -782,12 +784,14 @@ mod tests {
     }
     // enum Status { Open, Assigned { assignee: String }, Reassigned { assignee: String, by: String },
     //               Blocked { reason: Reason } } with a nested enum Reason { Waiting { on: String }, Other }
-    static ASSIGNED_FIELDS: [Field; 1] = [Field { name: "assignee", kind: FieldKind::Column { column: "assignee" } }];
+    static ASSIGNED_FIELDS: [Field; 1] =
+        [Field { name: "assignee", kind: FieldKind::Column { column: "assignee", ty: ValueType::TEXT } }];
     static REASSIGNED_FIELDS: [Field; 2] = [
-        Field { name: "assignee", kind: FieldKind::Column { column: "assignee" } },
-        Field { name: "by", kind: FieldKind::Column { column: "reassigned_by" } },
+        Field { name: "assignee", kind: FieldKind::Column { column: "assignee", ty: ValueType::TEXT } },
+        Field { name: "by", kind: FieldKind::Column { column: "reassigned_by", ty: ValueType::TEXT } },
     ];
-    static WAITING_FIELDS: [Field; 1] = [Field { name: "on", kind: FieldKind::Column { column: "waiting_on" } }];
+    static WAITING_FIELDS: [Field; 1] =
+        [Field { name: "on", kind: FieldKind::Column { column: "waiting_on", ty: ValueType::TEXT } }];
     static REASON_VARIANTS: [Variant; 2] = [
         Variant { name: "Waiting", tag_value: "waiting", data: VariantData::Columns { fields: &WAITING_FIELDS } },
         Variant { name: "Other", tag_value: "other", data: VariantData::Unit },
@@ -882,7 +886,8 @@ mod tests {
     }
 
     // enum Payment { Card { last4 } in card_payment, Cash } stored in a table per variant
-    static CARD_FIELDS: [Field; 1] = [Field { name: "last4", kind: FieldKind::Column { column: "last4" } }];
+    static CARD_FIELDS: [Field; 1] =
+        [Field { name: "last4", kind: FieldKind::Column { column: "last4", ty: ValueType::TEXT } }];
     static CARD: ViewShape =
         ViewShape { name: "Payment::Card", table: "card_payment", key_column: "payment_id", fields: &CARD_FIELDS };
     static PAYMENT_VARIANTS: [Variant; 2] = [
@@ -944,7 +949,8 @@ mod tests {
         );
     }
     // Lists placed by an index on a link table, and maps keyed by a column
-    static DEPENDANT_FIELDS: [Field; 1] = [Field { name: "name", kind: FieldKind::Column { column: "name" } }];
+    static DEPENDANT_FIELDS: [Field; 1] =
+        [Field { name: "name", kind: FieldKind::Column { column: "name", ty: ValueType::TEXT } }];
     static DEPENDANT: ViewShape =
         ViewShape { name: "Dependant", table: "task", key_column: "id", fields: &DEPENDANT_FIELDS };
     static PROJECT_FIELDS: [Field; 2] = [
@@ -985,7 +991,7 @@ mod tests {
 
     // struct Tree { children: Vec<Tree> } loaded level by level, and with one query
     static TREE_FIELDS: [Field; 2] = [
-        Field { name: "name", kind: FieldKind::Column { column: "name" } },
+        Field { name: "name", kind: FieldKind::Column { column: "name", ty: ValueType::TEXT } },
         Field {
             name: "children",
             kind: FieldKind::Child(Child { recursion: Some(Recursion::Depth(3)), ..Child::new("parent_id", || &TREE) }),

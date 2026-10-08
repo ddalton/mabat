@@ -83,8 +83,8 @@ pub struct Field {
 
 #[derive(Debug)]
 pub enum FieldKind {
-    /// A column of the view's table.
-    Column { column: &'static str },
+    /// A column of the view's table, holding values of the Rust type `ty`.
+    Column { column: &'static str, ty: ValueType },
     /// A struct or an enum stored in the view's row, optionally with a common column prefix.
     Embedded { column_prefix: &'static str, shape: fn() -> &'static EmbeddedShape },
     /// A to-many collection loaded by a child query: rows of the child table whose `fk`
@@ -105,6 +105,59 @@ impl FieldKind {
             _ => false,
         }
     }
+}
+
+/// The Rust type of a column field, as a schema such as GraphQL's describes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueType {
+    pub scalar: Scalar,
+    /// An `Option`.
+    pub nullable: bool,
+    /// A list of values, such as `Vec<String>` for a PostgreSQL array.
+    pub list: bool,
+}
+
+impl ValueType {
+    /// A `String`.
+    pub const TEXT: ValueType = ValueType::new(Scalar::String);
+
+    pub const fn new(scalar: Scalar) -> ValueType {
+        ValueType { scalar, nullable: false, list: false }
+    }
+}
+
+/// The kind of value of a column, from the name of its Rust type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scalar {
+    /// `bool`
+    Boolean,
+    /// Integers that fit 32 bits: `i8`, `i16`, `i32`, `u8`, `u16`
+    Int,
+    /// Larger integers: `i64`, `u32`, `u64`, `i128`, `u128`, `isize`, `usize`
+    BigInt,
+    /// `f32`, `f64`
+    Float,
+    /// `String`, `str`, `char`
+    String,
+    /// `Uuid`
+    Uuid,
+    /// `NaiveDate`
+    Date,
+    /// `NaiveTime`
+    Time,
+    /// `DateTime<Utc>` and other time zones: a point in time
+    DateTime,
+    /// `NaiveDateTime`: a date and time without a time zone
+    NaiveDateTime,
+    /// `Decimal`, `BigDecimal`
+    Decimal,
+    /// A `#[view(json)]` field, or `serde_json::Value`
+    Json,
+    /// `Vec<u8>`
+    Bytes,
+    /// Any other type, by the name of its last path segment, such as an enum with
+    /// `sqlx::Type`.
+    Other(&'static str),
 }
 
 /// A to-many collection, see [`FieldKind::Child`].

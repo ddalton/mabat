@@ -15,7 +15,8 @@ homepage = "https://github.com/ddalton/mabat"
 mabat-core = { path = "crates/mabat-core", version = "0.1.0" }
 mabat-derive = { path = "crates/mabat-derive", version = "0.1.0" }
 mabat-sqlx = { path = "crates/mabat-sqlx", version = "0.1.0", default-features = false }
-mabat = { path = "crates/mabat" }
+mabat = { path = "crates/mabat", version = "0.1.0", default-features = false }
+mabat-graphql = { path = "crates/mabat-graphql", version = "0.1.0", default-features = false }
 mabat-e2e = { path = "crates/mabat-e2e" }
 
 arc-swap = "1"

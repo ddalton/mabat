@@ -585,11 +585,67 @@ fn generic_argument<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
     }
 }
 
+/// The `ValueType` of a column field of Rust type `ty`: nullable for `Option`, a list for
+/// `Vec` (except `Vec<u8>`), and a scalar named after the last path segment of the type.
+fn value_type(ty: &Type, json: bool) -> TokenStream2 {
+    let (nullable, ty) = match generic_argument(ty, "Option") {
+        Some(inner) => (true, inner),
+        None => (false, ty),
+    };
+    let name = |ty: &Type| match ty {
+        Type::Path(path) => path.path.segments.last().map(|s| s.ident.to_string()),
+        Type::Reference(reference) => match &*reference.elem {
+            Type::Path(path) => path.path.segments.last().map(|s| s.ident.to_string()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let (list, ty) = match generic_argument(ty, "Vec") {
+        Some(inner) if name(inner).as_deref() != Some("u8") => (true, inner),
+        _ => (false, ty),
+    };
+    let scalar = if json {
+        quote! { Json }
+    } else if generic_argument(ty, "Vec").is_some() {
+        // What is left of a `Vec` is a `Vec<u8>`
+        quote! { Bytes }
+    } else {
+        match name(ty).as_deref() {
+            Some("bool") => quote! { Boolean },
+            Some("i8" | "i16" | "i32" | "u8" | "u16") => quote! { Int },
+            Some("i64" | "u32" | "u64" | "i128" | "u128" | "isize" | "usize") => quote! { BigInt },
+            Some("f32" | "f64") => quote! { Float },
+            Some("String" | "str" | "char") => quote! { String },
+            Some("Uuid") => quote! { Uuid },
+            Some("NaiveDate") => quote! { Date },
+            Some("NaiveTime") => quote! { Time },
+            Some("DateTime") => quote! { DateTime },
+            Some("NaiveDateTime") => quote! { NaiveDateTime },
+            Some("Decimal" | "BigDecimal") => quote! { Decimal },
+            Some("Value") => quote! { Json },
+            Some(other) => quote! { Other(#other) },
+            None => quote! { Other("Unknown") },
+        }
+    };
+    quote! {
+        __mabat::__private::ValueType {
+            scalar: __mabat::__private::Scalar::#scalar,
+            nullable: #nullable,
+            list: #list,
+        }
+    }
+}
+
 fn field_shape(field: &ViewField) -> TokenStream2 {
     let name = &field.name;
     let kind = match &field.spec {
-        FieldSpec::Column { column } | FieldSpec::Json { column } => {
-            quote! { __mabat::__private::FieldKind::Column { column: #column } }
+        FieldSpec::Column { column } => {
+            let ty = value_type(&field.ty, false);
+            quote! { __mabat::__private::FieldKind::Column { column: #column, ty: #ty } }
+        }
+        FieldSpec::Json { column } => {
+            let ty = value_type(&field.ty, true);
+            quote! { __mabat::__private::FieldKind::Column { column: #column, ty: #ty } }
         }
         FieldSpec::Embed { prefix, ty } => quote! {
             __mabat::__private::FieldKind::Embedded {

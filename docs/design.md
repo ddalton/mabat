@@ -818,6 +818,20 @@ flowchart LR
 >   `__typename` field, tuple fields are `_0`, `_1`, …
 > - **Overrides** apply to selected plans as to whole ones: queries are found by path, and decoding by alias
 >   ignores the columns a selection does not use.
+>
+> **As built (second part):**
+>
+> - **The schema is generated** (open question 5): `mabat-graphql` builds an async-graphql dynamic schema from
+>   the shapes of the views given as root fields and every view they reach. `#[derive(View)]` records the Rust
+>   type of each column (`ValueType`) for the scalar types and the filters.
+> - **Types:** views and embedded structs are objects, enums with data are unions of an object per variant
+>   with a `_variant` field (GraphQL objects need a field, and unit variants have none), enums without data are
+>   GraphQL enums, and maps are lists of `{ key, value }`. Field names are the Rust names.
+> - **Resolution:** a root field turns its selection set, with fragments resolved, into a `Selection` and runs
+>   one JSON load; the field resolvers below read the JSON objects. Embedded values are selected whole.
+> - **Arguments:** `where` filters the columns of the root view, `orderBy` sorts by them, and `limit` and
+>   `offset` page. Arguments on nested collections, which need filters and per-parent paging in child
+>   queries, are not done yet.
 
 ## 14. Writes
 
@@ -841,7 +855,7 @@ Writes never go through override SQL. Overrides are for reads.
 | `mabat-derive` | `#[derive(View)]` proc macro; generates the static shape and the decoder | `syn`, `quote` |
 | `mabat-sqlx` | Executor, filters, validation, overrides, shadow mode, and a `Backend` trait implemented for each database | `sqlx` 0.9 |
 | `mabat-cli` | `mabat check`, `mabat explain`, `mabat scaffold` (generate an override from the generated SQL), on a manifest written by the application | `mabat-sqlx` |
-| `mabat-graphql` | Sub-shapes from `async-graphql` look-ahead | `async-graphql` 7.x |
+| `mabat-graphql` | A schema generated from views; sub-shapes from the selection set | `async-graphql` 7.x |
 | `mabat` | Facade that re-exports the above | all |
 
 The derive macro stays thin. All logic lives in `mabat-core`, so it can be unit-tested without macros or a
@@ -886,7 +900,7 @@ database.
 | M4 | Collections and recursion (**done**) | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
 | M5 | Shared and graph (**done**; `$id`/`$ref` JSON moves to M7) | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
 | M6 | More databases, concurrency (**done**; no pipelining) | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |
-| M7 | GraphQL (**selections and JSON done**) | Sub-shapes from look-ahead; field arguments | Example server |
+| M7 | GraphQL (**done**; no arguments on nested fields) | Sub-shapes from look-ahead; field arguments | Example server |
 | M8 | Writes (optional) | Aggregate insert and update; graph save with SCC ordering | Round-trip property tests |
 
 ## 18. Prior art
@@ -918,6 +932,6 @@ database.
 3. Should `Graph` support incremental loading (load more of the graph into an existing `Graph`)?
 4. Should identity in the shared and graph representations be per load, or optionally per transaction (a
    session cache)? Per load is simpler and avoids XOR's shared-state problems.
-5. Should the GraphQL integration also generate the GraphQL schema from views, or only resolve against an
-   existing schema?
+5. ~~Should the GraphQL integration also generate the GraphQL schema from views, or only resolve against an
+   existing schema?~~ It generates the schema.
 6. Are writes (M8) in scope for the first release?
