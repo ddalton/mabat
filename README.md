@@ -2,12 +2,18 @@
 
 Typed aggregate reads for Rust, with SQL you can tune without changing code.
 
+**Documentation: [ddalton.github.io/mabat](https://ddalton.github.io/mabat/)** — guides, the
+[MPA specification](https://ddalton.github.io/mabat/spec/mpa/) and the
+[architecture](https://ddalton.github.io/mabat/architecture/).
+
 *Mabat* (מבט) is Hebrew for "view": you declare the view of the data you want, and the queries that fill it
 can be tuned separately.
 
-> **Status:** early development, not published yet. Milestones 1 to 5 are implemented: struct views, enums
-> with data, overrides checked at startup, collections and recursive views, and shared and cyclic graphs, on
-> PostgreSQL, MySQL and SQLite. See the [design document](docs/design.md) for the plan.
+> **Status:** early development, not published yet. Loading is complete on PostgreSQL, MySQL and SQLite:
+> struct views, enums with data, collections and recursive views, shared and cyclic graphs, overrides checked
+> at startup, concurrent loads on a pool, JSON, selections and a generated GraphQL schema. Saving is under way
+> (M8): `save`, `save_changes`, `delete` and optimistic locking are done; database-generated keys and saving
+> graphs are next. The [status table](#status) has the details.
 
 Mabat loads nested, typed data from PostgreSQL, MySQL or SQLite. The shape of the result is declared with
 ordinary Rust structs, and Mabat plans and runs the queries that fill it: one query for the root rows, plus one
@@ -369,8 +375,8 @@ error[M0102]: override for TaskView.children.notes does not match the view
 ```
 
 - `Mabat::builder()...check(&mut conn)` returns the same report without building, for a test in CI.
-- `mabat::scaffold::<TaskView>()` writes an override file with the generated SQL of every query, as a
-  starting point for tuning.
+- `mabat::scaffold::<TaskView, sqlx::Postgres>()` returns an override file with the generated SQL of every
+  query, as a starting point for tuning.
 - `shadow = true` runs the override and the generated query, compares their rows, and counts mismatches and
   timings, so a tuned query can be shown to be equivalent before it is relied on.
 - `OnInvalid::UseGenerated` starts with the generated queries in place of invalid overrides instead of
