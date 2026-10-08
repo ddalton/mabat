@@ -215,6 +215,22 @@ that isn't NULL is also an error, unless the enum is marked `lenient`. Variant f
 the variant, such as `state.Blocked.reason.$tag` or `state.Closed.0`, and overrides use them like any other
 path.
 
+## JSON and selections
+
+Any view also loads as JSON, whole or a selection of its fields. A selection is written like a GraphQL
+selection set, and only its columns are selected and only its child queries run:
+
+```rust
+let selection = Selection::parse("name assignee { name } children { name }")?;
+let tasks: Vec<serde_json::Value> = mabat::load::<TaskView>().select(selection).json(&mut conn).await?;
+// [{ "name": "Release", "assignee": { "name": "Ada" }, "children": [{ "name": "Write docs" }] }]
+```
+
+Columns are written with the `Serialize` implementation of their Rust type, enums as objects whose `__typename`
+names the variant. A collection or reference selected by name alone loads the columns of its view. A selection
+has a finite depth, so recursive views and graph views load as trees as deep as it asks. Overrides apply as for
+typed loads. This is the base of the GraphQL integration (M7).
+
 ## Concurrent loads on a pool
 
 A load runs its root query, then the queries of each level: the collections and references of the rows above.
@@ -339,7 +355,8 @@ ORDER BY n.id;
 | DBA tooling: view manifest and `mabat check` / `explain` / `scaffold` CLI | Done |
 | SQLite and MySQL | Done (M6) |
 | Concurrent loads on a pool, with a shared snapshot on PostgreSQL | Done (M6) |
-| GraphQL selection sets | Planned (M7) |
+| JSON loads and selections of fields | Done (M7) |
+| GraphQL schema generated from views | Planned (M7) |
 
 Loading 1,000 tasks with 10 subtasks each takes about 8% longer than hand-written SQLx code running the same two
 queries (`crates/mabat/examples/parity.rs`).

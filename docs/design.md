@@ -804,6 +804,21 @@ flowchart LR
   representation isn't needed.
 - Arguments on fields (filters, paging) map to child query filters.
 
+> **As built (first part):**
+>
+> - **Selections:** `mabat_core::Selection` is a tree of field names, built in code or parsed from GraphQL-like
+>   text. `QueryPlan::build_selected` plans only the selected columns and child queries, plus the key column. A
+>   view selected without fields loads its columns and embedded values, but not its collections and
+>   references, so every selection has a finite depth. Embedded structs and enums are loaded whole.
+> - **Recursion and graphs:** a selection disables cycle detection, recursion and graph handling below it:
+>   each selected level is a query, and references into a graph are loaded as values.
+> - **JSON:** the derive generates `decode_json` next to `decode`. A column is written with its Rust type's
+>   `Serialize`, chosen at compile time by autoref specialization, so views whose column types do not
+>   implement it still compile and only fail when such a column is loaded as JSON. Enums are objects with a
+>   `__typename` field, tuple fields are `_0`, `_1`, …
+> - **Overrides** apply to selected plans as to whole ones: queries are found by path, and decoding by alias
+>   ignores the columns a selection does not use.
+
 ## 14. Writes
 
 Writes are a later, optional milestone. The scope is deliberately small:
@@ -871,7 +886,7 @@ database.
 | M4 | Collections and recursion (**done**) | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
 | M5 | Shared and graph (**done**; `$id`/`$ref` JSON moves to M7) | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
 | M6 | More databases, concurrency (**done**; no pipelining) | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |
-| M7 | GraphQL | Sub-shapes from look-ahead; field arguments | Example server |
+| M7 | GraphQL (**selections and JSON done**) | Sub-shapes from look-ahead; field arguments | Example server |
 | M8 | Writes (optional) | Aggregate insert and update; graph save with SCC ordering | Round-trip property tests |
 
 ## 18. Prior art

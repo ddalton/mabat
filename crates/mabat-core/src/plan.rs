@@ -15,6 +15,7 @@
 use std::collections::HashSet;
 use std::fmt::Write;
 
+use crate::selection::Selection;
 use crate::shape::{
     Child, EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, Recursion, SumShape, SumStrategy, Through,
     VariantData, ViewShape,
@@ -32,6 +33,8 @@ pub enum PlanError {
     UnsupportedRecursion { view: &'static str, path: String, reason: &'static str },
     #[error("{view}: field `{field}` is an embedded value that contains a {kind}, which is not supported")]
     UnsupportedEmbedded { view: &'static str, field: String, kind: &'static str },
+    #[error("{view} at `{path}`: cannot select `{field}`: {reason}")]
+    Selection { view: &'static str, path: String, field: String, reason: &'static str },
 }
 
 /// A query in the plan of a view.
@@ -53,6 +56,9 @@ pub struct QueryPlan {
     /// `WITH RECURSIVE`, and its recursive field is a [`ChildQuery::Same`].
     pub cte: Option<Cte>,
     pub children: Vec<ChildPlan>,
+    /// Whether each field of the view is loaded, by its index in [`ViewShape::fields`]: all
+    /// of them, unless the plan is of a [`Selection`].
+    pub selected: Vec<bool>,
 }
 
 /// A recursive collection loaded with one `WITH RECURSIVE` query.
@@ -164,7 +170,7 @@ fn address<T>(value: &'static T) -> usize {
 }
 
 /// A child query to plan.
-struct Entry {
+struct Entry<'s> {
     shape: &'static ViewShape,
     path: String,
     link: Link,
@@ -173,6 +179,8 @@ struct Entry {
     entered_by: usize,
     recursion: Option<Recursion>,
     graph: bool,
+    /// The fields to load, all if `None`.
+    selection: Option<&'s Selection>,
 }
 
 /// A query of a variant table found while adding the columns of a view.
@@ -197,7 +205,17 @@ impl QueryPlan {
     /// Plan the queries for a view.
     pub fn build(shape: &'static ViewShape) -> Result<QueryPlan, PlanError> {
         let mut stack = vec![Frame { graph: false, entered_by: None, recursion: None }];
-        Self::build_inner(shape, String::new(), Link::Root, Vec::new(), None, &mut stack)
+        Self::build_inner(shape, String::new(), Link::Root, Vec::new(), None, None, &mut stack)
+    }
+
+    /// Plan the queries for the selected fields of a view: only their columns are selected
+    /// and only their child queries run. The key column is always selected.
+    ///
+    /// A selection is a tree of finite depth, so it is loaded as one: recursive collections
+    /// get a query per selected level, and references into a graph are loaded as values.
+    pub fn build_selected(shape: &'static ViewShape, selection: &Selection) -> Result<QueryPlan, PlanError> {
+        let mut stack = vec![Frame { graph: false, entered_by: None, recursion: None }];
+        Self::build_inner(shape, String::new(), Link::Root, Vec::new(), None, Some(selection), &mut stack)
     }
 
     /// Plan a query; its frame is the top of `stack`.
@@ -207,8 +225,30 @@ impl QueryPlan {
         link: Link,
         order_by: Vec<OrderBy>,
         child: Option<&'static Child>,
+        selection: Option<&Selection>,
         stack: &mut Vec<Frame>,
     ) -> Result<QueryPlan, PlanError> {
+        // Every selected field is a field of the view
+        if let Some(selection) = selection {
+            for (name, nested) in selection.fields() {
+                let error = |reason| PlanError::Selection {
+                    view: shape.name,
+                    path: path.clone(),
+                    field: name.to_string(),
+                    reason,
+                };
+                match shape.fields.iter().find(|f| f.name == name) {
+                    // The GraphQL meta field, answered without a column
+                    None if name == "__typename" => {}
+                    None => return Err(error("no such field")),
+                    Some(Field { kind: FieldKind::Column { .. }, .. }) if !nested.is_empty() => {
+                        return Err(error("a column has no fields to select"));
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+
         let mut columns = vec![SelectColumn::new(shape.key_column, KEY_ALIAS)];
         if let Link::Child { fk, through } = &link {
             columns.push(if through.is_some() {
@@ -232,7 +272,28 @@ impl QueryPlan {
         let mut sums = Vec::new();
         let mut variants = Vec::new();
         let mut children = Vec::new();
+        let mut selected = Vec::with_capacity(shape.fields.len());
         for (field_index, field) in shape.fields.iter().enumerate() {
+            // The selection of the field's view, `None` for all of its fields. A view selected
+            // without fields loads its columns and embedded values
+            let nested = match selection {
+                None => None,
+                Some(selection) if selection.is_empty() => match field.kind {
+                    FieldKind::Column { .. } | FieldKind::Embedded { .. } => Some(selection),
+                    FieldKind::Child(_) | FieldKind::ToOne { .. } => {
+                        selected.push(false);
+                        continue;
+                    }
+                },
+                Some(selection) => match selection.get(field.name) {
+                    None => {
+                        selected.push(false);
+                        continue;
+                    }
+                    Some(nested) => Some(nested),
+                },
+            };
+            selected.push(true);
             let field_path = join_path(&path, field.name);
             match &field.kind {
                 FieldKind::Column { column } => columns.push(SelectColumn::new(*column, field.name)),
@@ -252,6 +313,7 @@ impl QueryPlan {
                         entered_by: address(field),
                         recursion: spec.recursion,
                         graph: spec.graph,
+                        selection: nested,
                     };
                     children.push(ChildPlan { field_index, variant: None, query: Self::child_query(entry, stack)? });
                 }
@@ -267,6 +329,7 @@ impl QueryPlan {
                         entered_by: address(field),
                         recursion: None,
                         graph: *graph,
+                        selection: nested,
                     };
                     children.push(ChildPlan { field_index, variant: None, query: Self::child_query(entry, stack)? });
                 }
@@ -283,6 +346,7 @@ impl QueryPlan {
                 entered_by: address(query.shape),
                 recursion: None,
                 graph: false,
+                selection: None,
             };
             let query_plan = Self::child_query(entry, stack)?;
             children.push(ChildPlan {
@@ -300,22 +364,30 @@ impl QueryPlan {
             _ => None,
         };
 
-        // Select the key column only once when a field holds it
+        // Select the key column only once when a selected field holds it
         let mut key_alias = KEY_ALIAS.to_string();
-        let key_field =
-            shape.fields.iter().find(|f| matches!(f.kind, FieldKind::Column { column } if column == shape.key_column));
-        if let Some(field) = key_field {
+        let key_field = shape.fields.iter().zip(&selected).find(|(f, selected)| {
+            **selected && matches!(f.kind, FieldKind::Column { column } if column == shape.key_column)
+        });
+        if let Some((field, _)) = key_field {
             columns.remove(0);
             key_alias = field.name.to_string();
         }
 
-        Ok(QueryPlan { shape, path, link, key_alias, columns, order_by, sums, cte, children })
+        Ok(QueryPlan { shape, path, link, key_alias, columns, order_by, sums, cte, children, selected })
     }
 
     /// Plan the query of a child field, or find that it repeats a query above.
-    fn child_query(entry: Entry, stack: &mut Vec<Frame>) -> Result<ChildQuery, PlanError> {
+    fn child_query(mut entry: Entry<'_>, stack: &mut Vec<Frame>) -> Result<ChildQuery, PlanError> {
+        // A selection has a finite depth: its levels are planned as they are selected, and
+        // references into a graph are loaded as values
+        if entry.selection.is_some() {
+            entry.recursion = None;
+            entry.graph = false;
+        }
         // The same field leading to the same view again is a cycle
-        if let Some(position) = stack.iter().rposition(|f| f.entered_by == Some(entry.entered_by)) {
+        let cycle = stack.iter().rposition(|f| f.entered_by == Some(entry.entered_by));
+        if let Some(position) = cycle.filter(|_| entry.selection.is_none()) {
             let up = stack.len() - 1 - position;
             let recursion = entry.recursion.or_else(|| stack[position + 1..].iter().rev().find_map(|f| f.recursion));
             // A cycle through a reference into a graph ends by itself: the load never fetches an
@@ -345,7 +417,8 @@ impl QueryPlan {
         }
 
         stack.push(Frame { graph: entry.graph, entered_by: Some(entry.entered_by), recursion: entry.recursion });
-        let plan = Self::build_inner(entry.shape, entry.path, entry.link, entry.order_by, entry.child, stack);
+        let plan =
+            Self::build_inner(entry.shape, entry.path, entry.link, entry.order_by, entry.child, entry.selection, stack);
         stack.pop();
         Ok(ChildQuery::Query(Box::new(plan?)))
     }
@@ -642,6 +715,48 @@ mod tests {
 
         let plan = QueryPlan::build(&TASK).unwrap();
         assert_eq!(plan.key_alias, "$key");
+    }
+
+    #[test]
+    fn selections_select_only_their_fields() {
+        let selection = Selection::parse("name assignee { name }").unwrap();
+        let plan = QueryPlan::build_selected(&TASK, &selection).unwrap();
+        assert_eq!(aliases(&plan), ["$key", "name", "$ref.assignee"]);
+        assert_eq!(plan.selected, [true, false, true, false]);
+        assert_eq!(plan.query_count(), 2);
+
+        // A view selected without fields loads its columns and embedded values
+        let plan = QueryPlan::build_selected(&TASK, &Selection::parse("children").unwrap()).unwrap();
+        assert_eq!(aliases(&plan), ["$key"]);
+        assert_eq!(aliases(plan.children[0].plan().unwrap()), ["$key", "$parent", "name"]);
+        let plan = QueryPlan::build_selected(&TASK, &Selection::new()).unwrap();
+        assert_eq!(aliases(&plan), ["$key", "name", "address.street", "address.city"]);
+        assert_eq!(plan.query_count(), 1);
+    }
+
+    #[test]
+    fn selections_unroll_recursion() {
+        // A cycle without `depth` is rejected, but a selection has a depth of its own
+        let selection = Selection::parse("children { children { children } }").unwrap();
+        let plan = QueryPlan::build_selected(&LOOP, &selection).unwrap();
+        assert_eq!(plan.query_count(), 4);
+        let names: Vec<String> = {
+            let mut names = Vec::new();
+            plan.walk(&mut |p| names.push(p.query_name().to_string()));
+            names
+        };
+        assert_eq!(names, ["$root", "children", "children.children", "children.children.children"]);
+    }
+
+    #[test]
+    fn selections_name_fields_of_the_view() {
+        let error = QueryPlan::build_selected(&TASK, &Selection::parse("nope").unwrap()).unwrap_err();
+        assert_eq!(error.to_string(), "Task at ``: cannot select `nope`: no such field");
+        let error = QueryPlan::build_selected(&TASK, &Selection::parse("assignee { age }").unwrap()).unwrap_err();
+        assert_eq!(error.to_string(), "Person at `assignee`: cannot select `age`: no such field");
+        let error = QueryPlan::build_selected(&TASK, &Selection::parse("name { x }").unwrap()).unwrap_err();
+        assert!(error.to_string().contains("a column has no fields to select"), "{error}");
+        assert!(QueryPlan::build_selected(&TASK, &Selection::parse("__typename name").unwrap()).is_ok());
     }
 
     #[test]
