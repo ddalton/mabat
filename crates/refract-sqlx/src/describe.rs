@@ -1,6 +1,6 @@
 //! The Rust types of the columns of a view, used to check queries against the view.
 
-use sqlx::postgres::PgTypeInfo;
+use sqlx::postgres::{PgTypeInfo, PgTypeKind};
 use sqlx::{Postgres, Type, TypeInfo};
 
 use crate::View;
@@ -30,17 +30,95 @@ pub(crate) struct ColumnType {
     pub(crate) rust_type: &'static str,
     /// The PostgreSQL type the Rust type is usually stored as, for messages.
     pub(crate) sql_type: String,
-    compatible: fn(&PgTypeInfo) -> bool,
+    /// The names of the PostgreSQL types the Rust type can be decoded from.
+    pub(crate) accepts: Vec<String>,
 }
 
-impl ColumnType {
-    pub(crate) fn accepts(&self, ty: &PgTypeInfo) -> bool {
-        (self.compatible)(ty)
+/// The names of the built-in PostgreSQL types as SQLx names them, and common extension
+/// types. Each has an array type, named with `[]`.
+const TYPE_NAMES: &[&str] = &[
+    "BOOL",
+    "BYTEA",
+    "CHAR",
+    "NAME",
+    "INT8",
+    "INT2",
+    "INT4",
+    "TEXT",
+    "OID",
+    "JSON",
+    "POINT",
+    "LSEG",
+    "PATH",
+    "BOX",
+    "POLYGON",
+    "LINE",
+    "CIDR",
+    "FLOAT4",
+    "FLOAT8",
+    "UNKNOWN",
+    "CIRCLE",
+    "MACADDR8",
+    "MACADDR",
+    "INET",
+    "BPCHAR",
+    "VARCHAR",
+    "DATE",
+    "TIME",
+    "TIMESTAMP",
+    "TIMESTAMPTZ",
+    "INTERVAL",
+    "TIMETZ",
+    "BIT",
+    "VARBIT",
+    "NUMERIC",
+    "RECORD",
+    "UUID",
+    "JSONB",
+    "INT4RANGE",
+    "NUMRANGE",
+    "TSRANGE",
+    "TSTZRANGE",
+    "DATERANGE",
+    "INT8RANGE",
+    "JSONPATH",
+    "MONEY",
+    "citext",
+    "hstore",
+    "ltree",
+    "lquery",
+];
+
+/// The names of the PostgreSQL types `T` can be decoded from. Types are compared by name,
+/// as SQLx compares a type it only knows by name; a custom type, such as an enum declared
+/// with `#[sqlx(type_name = "...")]`, adds its own name.
+fn accepted_types<T: Type<Postgres>>() -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in TYPE_NAMES {
+        if T::compatible(&PgTypeInfo::with_name(name)) {
+            names.push(name.to_string());
+        }
     }
+    for name in TYPE_NAMES {
+        if T::compatible(&PgTypeInfo::array_of(name)) {
+            names.push(format!("{name}[]"));
+        }
+    }
+    let own = T::type_info();
+    if own.oid().is_none() && !names.iter().any(|n| n.eq_ignore_ascii_case(own.name())) {
+        names.push(own.name().to_string());
+    }
+    names
 }
 
-fn compatible<T: Type<Postgres>>(ty: &PgTypeInfo) -> bool {
-    T::compatible(ty)
+/// Whether a column of the type `ty` is one of the accepted types. A domain is compared as
+/// its base type.
+pub(crate) fn accepts(accepted: &[String], ty: &PgTypeInfo) -> bool {
+    let base = match ty.kind() {
+        PgTypeKind::Domain(base) => base,
+        _ => ty,
+    };
+    accepted.iter().any(|name| name.eq_ignore_ascii_case(base.name()) || name.eq_ignore_ascii_case(ty.name()))
 }
 
 impl Description {
@@ -51,7 +129,7 @@ impl Description {
             optional,
             rust_type: std::any::type_name::<T>(),
             sql_type: T::type_info().name().to_string(),
-            compatible: compatible::<T>,
+            accepts: accepted_types::<T>(),
         });
     }
 
@@ -108,6 +186,16 @@ pub(crate) fn short_type_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepted_types_by_name() {
+        assert_eq!(accepted_types::<String>(), ["NAME", "TEXT", "UNKNOWN", "BPCHAR", "VARCHAR", "citext"]);
+        assert_eq!(accepted_types::<i64>(), ["INT8"]);
+        assert_eq!(accepted_types::<Option<i32>>(), ["INT4"]);
+        assert_eq!(accepted_types::<uuid::Uuid>(), ["UUID"]);
+        assert_eq!(accepted_types::<sqlx::types::Json<serde_json::Value>>(), ["JSON", "JSONB"]);
+        assert_eq!(accepted_types::<Vec<i64>>(), ["INT8[]"]);
+    }
 
     #[test]
     fn short_type_names() {

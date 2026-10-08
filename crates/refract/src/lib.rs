@@ -39,11 +39,11 @@
 //! See the [design document](https://github.com/ddalton/refract/blob/main/docs/design.md).
 
 pub use refract_derive::View;
-pub use refract_sqlx::filter;
 pub use refract_sqlx::{
     Builder, Diagnostic, Embedded, Error, Graph, Key, Load, Node, OnInvalid, Origin, Ref, Refract, Reloaded, Report,
     Severity, ShadowSummary, View, load, plan, scaffold,
 };
+pub use refract_sqlx::{filter, manifest};
 
 /// The query plan of a view and its SQL.
 pub mod query {

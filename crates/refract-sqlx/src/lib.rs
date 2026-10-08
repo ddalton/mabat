@@ -8,6 +8,7 @@ mod error;
 pub mod filter;
 mod graph;
 mod key;
+pub mod manifest;
 mod node;
 mod overrides;
 mod registry;

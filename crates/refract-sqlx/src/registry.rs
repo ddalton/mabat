@@ -10,11 +10,12 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 
-use refract_core::sql::{self, Layout, RootOptions};
+use refract_core::sql::{self, RootOptions};
 use refract_core::{ChildQuery, QueryPlan, ViewShape};
 use sqlx::PgConnection;
 
 use crate::check::{self, Checked, ViewEntry};
+use crate::manifest::{self, Manifest, ScaffoldFormat};
 use crate::overrides::{self, Origin, OverrideFile};
 use crate::report::{Diagnostic, Report, Severity};
 use crate::{Error, Load, View};
@@ -95,7 +96,7 @@ pub struct Builder {
 
 /// The content of an override file, before it is parsed.
 #[derive(Clone, PartialEq, Eq, Hash)]
-struct Source {
+pub(crate) struct Source {
     view: String,
     file: String,
     format: Format,
@@ -219,15 +220,72 @@ impl Builder {
             }
         }
 
+        let (manifest, plans) = self.build_manifest(&mut report);
         let files = parse_sources(sources, &mut report);
-        let checked = check::check(conn, &self.views, files, &mut report).await.map_err(Error::Check)?;
+        let mut overrides = check::check(conn, &manifest, files, &mut report).await.map_err(Error::Check)?;
+        let checked = plans
+            .into_iter()
+            .map(|(shape, plan)| Checked {
+                shape,
+                plan: Arc::new(plan),
+                overrides: overrides.remove(shape.name).unwrap_or_default(),
+            })
+            .collect();
         Ok((checked, report))
+    }
+
+    /// The manifest of the registered views, and their plans. A view that cannot be planned
+    /// is left out and reported.
+    fn build_manifest(&self, report: &mut Report) -> (Manifest, Vec<(&'static ViewShape, QueryPlan)>) {
+        let mut views = Vec::new();
+        let mut plans = Vec::new();
+        for view in &self.views {
+            match manifest::build(view) {
+                Ok((manifest, plan)) => {
+                    views.push(manifest);
+                    plans.push((view.shape, plan));
+                }
+                Err(e) => report.push(Diagnostic {
+                    severity: Severity::Error,
+                    code: "R0301",
+                    view: view.shape.name.to_string(),
+                    query: String::new(),
+                    origin: None,
+                    summary: format!("{} cannot be planned", view.shape.name),
+                    notes: vec![e.to_string()],
+                }),
+            }
+        }
+        (Manifest { format: manifest::FORMAT, views }, plans)
+    }
+
+    /// The manifest of the registered views, for checking overrides without the
+    /// application with `refract check`, see [`Manifest`].
+    pub fn manifest(&self) -> Result<Manifest, Error> {
+        let mut views = Vec::new();
+        for view in &self.views {
+            views.push(manifest::build(view)?.0);
+        }
+        Ok(Manifest { format: manifest::FORMAT, views })
     }
 
     /// Read the override files of the directories, and the inline overrides.
     fn read_sources(&self, report: &mut Report) -> Vec<Source> {
+        read_sources(&self.dirs, &self.inline, report)
+    }
+}
+
+/// Read and parse the override files of the directories. Problems are added to the report.
+pub(crate) fn read_override_files(dirs: &[PathBuf], inline: &[Source], report: &mut Report) -> Vec<OverrideFile> {
+    let sources = read_sources(dirs, inline, report);
+    parse_sources(&sources, report)
+}
+
+/// Read the override files of the directories, and the inline overrides.
+fn read_sources(dirs: &[PathBuf], inline: &[Source], report: &mut Report) -> Vec<Source> {
+    {
         let mut sources = Vec::new();
-        for dir in &self.dirs {
+        for dir in dirs {
             let entries = match std::fs::read_dir(dir) {
                 Ok(entries) => entries,
                 Err(e) => {
@@ -256,7 +314,7 @@ impl Builder {
                 }
             }
         }
-        sources.extend(self.inline.iter().cloned());
+        sources.extend(inline.iter().cloned());
         sources
     }
 }
@@ -509,40 +567,6 @@ fn explain_query(out: &mut String, plan: &QueryPlan, overrides: &Overrides, dept
 /// An override file for a view with the generated SQL of every query, as a starting point
 /// for tuning. Delete the queries you do not change.
 pub fn scaffold<T: View>() -> Result<String, Error> {
-    let plan = QueryPlan::build(T::shape())?;
-    let view = T::shape().name;
-    let mut out = format!(
-        "# Overrides for {view}.\n\
-         #\n\
-         # Each query is addressed by its name and is replaced by its `sql`. The rows are decoded\n\
-         # by column alias, so keep the aliases; joins, ordering, hints and the tables themselves\n\
-         # can change. Every query is checked against {view} at startup.\n\
-         #\n\
-         # $root takes no parameter, and is then filtered, ordered and paged as a subquery, or\n\
-         # the array of root keys as $1. The other queries take the array of the keys they are\n\
-         # selected by as $1. Set `shadow = true` to also run the generated query and compare.\n"
-    );
-    let mut queries = Vec::new();
-    plan.walk(&mut |plan| queries.push(plan));
-    for plan in queries {
-        let sql = sql::select_with(plan, &RootOptions::default(), Layout::Multiline);
-        let _ = write!(out, "\n[query.{}]\nsql = {}\n", toml_key(plan.query_name()), toml_multiline(&sql));
-    }
-    Ok(out)
-}
-
-fn toml_key(key: &str) -> String {
-    if key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-        key.to_string()
-    } else {
-        toml_string(key)
-    }
-}
-
-fn toml_string(value: &str) -> String {
-    toml::Value::String(value.to_string()).to_string()
-}
-
-fn toml_multiline(sql: &str) -> String {
-    if sql.contains("'''") { toml_string(sql) } else { format!("'''\n{sql}\n'''") }
+    let manifest = Refract::builder().register::<T>().manifest()?;
+    Ok(manifest.scaffold(T::shape().name, ScaffoldFormat::Toml).expect("the view is in its manifest"))
 }
