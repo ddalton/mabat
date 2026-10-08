@@ -253,7 +253,7 @@ fn checks_sample_databases_from_schema_files() {
         out.stdout
     );
 
-    let manifest = Mabat::builder()
+    let manifest = Mabat::<sqlx::Postgres>::builder()
         .register::<chinook::InvoiceView>()
         .register::<chinook::EmployeeTree>()
         .register::<chinook::Employee>()
@@ -312,4 +312,43 @@ fn checks_a_sqlite_manifest_in_memory() {
     let output = mabat(&["check", "--manifest", &workspace.path("chinook.json")]);
     assert_eq!(output.code, 2, "{}", output.stderr);
     assert!(output.stderr.contains("--schema"), "{}", output.stderr);
+}
+
+#[test]
+fn checks_a_mysql_manifest_against_a_schema_file() {
+    use mabat_e2e::{Dataset, chinook};
+
+    let Ok(url) = std::env::var("MABAT_TEST_MYSQL_URL") else {
+        eprintln!("skipping: MABAT_TEST_MYSQL_URL is not set (see scripts/with-mysql.sh)");
+        return;
+    };
+    let workspace = Workspace::new();
+    let manifest = Mabat::<sqlx::MySql>::builder()
+        .register::<chinook::InvoiceView>()
+        .register::<chinook::EmployeeTree>()
+        .manifest()
+        .unwrap();
+    assert!(manifest.write(workspace.0.join("chinook.json")).unwrap());
+    std::fs::write(workspace.0.join("chinook.sql"), Dataset::Chinook.mysql_sql()).unwrap();
+    let check = |workspace: &Workspace| {
+        mabat(&[
+            "check",
+            "--manifest",
+            &workspace.path("chinook.json"),
+            "--overrides",
+            &workspace.path("overrides"),
+            "--schema",
+            &workspace.path("chinook.sql"),
+            "--database-url",
+            &url,
+        ])
+    };
+
+    let output = check(&workspace);
+    assert_eq!(output.code, 0, "{}{}", output.stdout, output.stderr);
+
+    workspace.write_override("InvoiceView.sql", "-- mabat: query lines\nSELECT 1 AS \"$parent\" FROM invoice_line\n");
+    let output = check(&workspace);
+    assert_eq!(output.code, 1, "{}{}", output.stdout, output.stderr);
+    assert!(output.stdout.contains("InvoiceView.lines"), "{}", output.stdout);
 }

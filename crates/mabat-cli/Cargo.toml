@@ -19,8 +19,9 @@ name = "mabat"
 path = "src/main.rs"
 
 [features]
-default = ["postgres", "sqlite"]
+default = ["mysql", "postgres", "sqlite"]
 postgres = ["mabat-sqlx/postgres"]
+mysql = ["mabat-sqlx/mysql"]
 sqlite = ["mabat-sqlx/sqlite"]
 
 [dependencies]

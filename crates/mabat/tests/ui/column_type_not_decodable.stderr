@@ -10,14 +10,14 @@ help: the trait `for<'r> sqlx_core::decode::Decode<'r, mabat::__private::Postgre
 1 | struct NotAColumn;
   | ^^^^^^^^^^^^^^^^^
   = help: the following other types implement trait `sqlx_core::decode::Decode<'r, DB>`:
+            `&'r [u8]` implements `sqlx_core::decode::Decode<'r, mabat::__private::MySql>`
             `&'r [u8]` implements `sqlx_core::decode::Decode<'r, mabat::__private::Postgres>`
             `&'r [u8]` implements `sqlx_core::decode::Decode<'r, mabat::__private::Sqlite>`
             `&'r serde_json::raw::RawValue` implements `sqlx_core::decode::Decode<'r, DB>`
+            `&'r str` implements `sqlx_core::decode::Decode<'r, mabat::__private::MySql>`
             `&'r str` implements `sqlx_core::decode::Decode<'r, mabat::__private::Postgres>`
             `&'r str` implements `sqlx_core::decode::Decode<'r, mabat::__private::Sqlite>`
             `()` implements `sqlx_core::decode::Decode<'r, mabat::__private::Postgres>`
-            `(T1, T2)` implements `sqlx_core::decode::Decode<'r, mabat::__private::Postgres>`
-            `(T1, T2, T3)` implements `sqlx_core::decode::Decode<'r, mabat::__private::Postgres>`
           and $N others
 note: required by a bound in `mabat::__private::column`
  --> $WORKSPACE/crates/mabat-sqlx/src/node.rs

@@ -7,12 +7,13 @@
 //!   with lines, and playlists of tracks.
 //!
 //! On PostgreSQL, each dataset is loaded once per database into a schema named after a hash
-//! of its SQL, and the tests only read it. Chinook also runs on SQLite, loaded into a new
-//! in-memory database per test: [`chinook_sqlite`] has its views.
+//! of its SQL, and the tests only read it. Chinook also runs on MySQL, loaded once into a
+//! database named the same way, with the views of [`chinook`], and on SQLite, loaded into a
+//! new in-memory database per test, with the views of [`chinook_sqlite`].
 
 use std::hash::Hasher;
 
-use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection, SqliteConnection};
+use sqlx::{AssertSqlSafe, Connection, Executor, MySqlConnection, PgConnection, SqliteConnection};
 
 pub mod chinook;
 pub mod chinook_sqlite;
@@ -79,7 +80,15 @@ impl Dataset {
                 skip = false;
             }
         }
-        translate_literals(&statements.join("\n")).replace("NUMERIC(10,2)", "REAL")
+        translate_literals(&statements.join("\n"), false).replace("NUMERIC(10,2)", "REAL")
+    }
+
+    /// The SQL that creates and fills Chinook on MySQL, translated from the PostgreSQL
+    /// script: without the `N` of national string literals, with ISO dates and escaped
+    /// backslashes, and with `DATETIME` for `TIMESTAMP`, whose range starts in 1970.
+    pub fn mysql_sql(self) -> String {
+        assert_eq!(self, Dataset::Chinook, "only Chinook runs on MySQL");
+        translate_literals(&Dataset::Chinook.sql(), true).replace(" TIMESTAMP", " DATETIME")
     }
 
     /// The schema the dataset is loaded into: its name and a hash of its SQL, so a changed
@@ -126,6 +135,35 @@ impl Dataset {
 }
 
 impl Dataset {
+    /// Connect to the MySQL server of `MABAT_TEST_MYSQL_URL` and use a database with the
+    /// dataset loaded, named like its PostgreSQL schema. `None` if the variable is not set.
+    pub async fn connect_mysql(self) -> Option<MySqlConnection> {
+        let Ok(url) = std::env::var("MABAT_TEST_MYSQL_URL") else {
+            eprintln!("skipping: MABAT_TEST_MYSQL_URL is not set (see scripts/with-mysql.sh)");
+            return None;
+        };
+        let mut conn = MySqlConnection::connect(&url).await.expect("connect to the MySQL test server");
+        let database = self.schema();
+        // Loaded once, under a lock, and marked as loaded by a table created last
+        sqlx::query("SELECT GET_LOCK(?, 600)").bind(&database).execute(&mut conn).await.unwrap();
+        let loaded: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = 'mabat_loaded'",
+        )
+        .bind(&database)
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        if loaded == 0 {
+            let setup = format!("DROP DATABASE IF EXISTS `{database}`; CREATE DATABASE `{database}`; USE `{database}`");
+            conn.execute(AssertSqlSafe(setup)).await.unwrap();
+            conn.execute(AssertSqlSafe(self.mysql_sql())).await.unwrap_or_else(|e| panic!("load {}: {e}", self.name()));
+            conn.execute("CREATE TABLE mabat_loaded (id INT)").await.unwrap();
+        }
+        sqlx::query("SELECT RELEASE_LOCK(?)").bind(&database).execute(&mut conn).await.unwrap();
+        conn.execute(AssertSqlSafe(format!("USE `{database}`"))).await.unwrap();
+        Some(conn)
+    }
+
     /// A new in-memory SQLite database with the dataset loaded.
     pub async fn connect_sqlite(self) -> SqliteConnection {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await.expect("open an in-memory SQLite database");
@@ -136,8 +174,9 @@ impl Dataset {
     }
 }
 
-/// Drop the `N` prefix of string literals and write `2021/1/2` dates as `2021-01-02 00:00:00`.
-fn translate_literals(sql: &str) -> String {
+/// Drop the `N` prefix of string literals, write `2021/1/2` dates as `2021-01-02 00:00:00`,
+/// and escape backslashes, which are escapes in MySQL literals.
+fn translate_literals(sql: &str, escape_backslashes: bool) -> String {
     let mut out = String::with_capacity(sql.len());
     let mut chars = sql.chars().peekable();
     while let Some(c) = chars.next() {
@@ -158,6 +197,9 @@ fn translate_literals(sql: &str) -> String {
                     continue;
                 }
                 break;
+            }
+            if c == '\\' && escape_backslashes {
+                literal.push('\\');
             }
             literal.push(c);
         }

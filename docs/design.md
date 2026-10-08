@@ -518,10 +518,11 @@ Rules:
    results. This avoids both N+1 queries and the cartesian blow-up of joining collections.
 3. On PostgreSQL, child queries bind the parent keys as an array: `WHERE fk = ANY($1)`. Other databases use
    batched `IN` lists sized to the database's limit.
-   **As built (SQLite):** keys are bound as `IN (?, …)`, padded to a power of two by repeating the last key, so
+   **As built (MySQL and SQLite):** keys are bound as `IN (?, …)`, padded to a power of two by repeating the last key, so
    a few statements serve every count, and split into statements of at most 1,000 keys for child queries. The
    root query is never split, since that would break its ordering and paging. Override SQL writes `:keys`,
-   which becomes `$1` or the list of parameters.
+   which becomes `$1` or the list of parameters. Text keys are grouped by exact value, so on MySQL, whose
+   default collations compare case-insensitively, a foreign key must match its key's case.
 4. Queries at the same depth are independent and can run concurrently (section 11).
 5. Generated SQL is built from an AST, never by editing strings.
    **As built:** a small internal renderer (`mabat_core::sql`) builds the statements from the plan and the
@@ -853,7 +854,7 @@ database.
 | M3 | Overrides (**done**) | Override files, startup validation, `mabat check`, shadow mode | Mutation-style checks pass |
 | M4 | Collections and recursion (**done**) | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
 | M5 | Shared and graph (**done**; `$id`/`$ref` JSON moves to M7) | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
-| M6 | More databases, concurrency (**SQLite done**) | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |
+| M6 | More databases, concurrency (**MySQL and SQLite done**) | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |
 | M7 | GraphQL | Sub-shapes from look-ahead; field arguments | Example server |
 | M8 | Writes (optional) | Aggregate insert and update; graph save with SCC ordering | Round-trip property tests |
 
@@ -881,8 +882,7 @@ database.
 
 ## 20. Open questions
 
-1. ~~Is PostgreSQL alone enough for M1–M5, or does an early user need MySQL or SQLite?~~ SQLite is supported;
-   MySQL is next.
+1. ~~Is PostgreSQL alone enough for M1–M5, or does an early user need MySQL or SQLite?~~ Both are supported.
 2. Should override files support per-environment variants (for example `TaskView.prod.toml`)?
 3. Should `Graph` support incremental loading (load more of the graph into an existing `Graph`)?
 4. Should identity in the shared and graph representations be per load, or optionally per transaction (a

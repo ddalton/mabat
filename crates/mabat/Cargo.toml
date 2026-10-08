@@ -15,6 +15,7 @@ readme = "../../README.md"
 [features]
 default = ["postgres"]
 postgres = ["mabat-sqlx/postgres"]
+mysql = ["mabat-sqlx/mysql"]
 sqlite = ["mabat-sqlx/sqlite"]
 
 [dependencies]

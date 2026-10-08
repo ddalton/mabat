@@ -803,6 +803,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "sqlx-mysql",
  "sqlx-postgres",
  "sqlx-sqlite",
  "thiserror",
