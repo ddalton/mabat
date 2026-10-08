@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 arc-swap.workspace = true
+chrono.workspace = true
 refract-core.workspace = true
 sqlx.workspace = true
 serde.workspace = true

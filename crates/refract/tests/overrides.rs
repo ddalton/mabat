@@ -232,7 +232,7 @@ async fn tuned_overrides_load_the_same_aggregates() {
     assert_eq!(tuned.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Release"]);
 
     let err = refract.load::<TaskView>().order_by("parent_id").all(&mut db.conn).await.unwrap_err();
-    assert!(matches!(&err, Error::UnknownOrderBy { column, .. } if column == "parent_id"), "{err}");
+    assert!(matches!(&err, Error::ColumnNotSelected { column, .. } if column == "parent_id"), "{err}");
 
     db.drop().await;
 }

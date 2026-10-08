@@ -11,6 +11,7 @@ use refract_core::{KEY_ALIAS, Link, PARENT_ALIAS, QueryPlan, TAG_ALIAS};
 use sqlx::postgres::PgRow;
 use sqlx::{AssertSqlSafe, Column, Decode, PgConnection, Postgres, Row, Type, ValueRef};
 
+use crate::filter::Bound;
 use crate::key::{Key, KeyArray, KeyColumn};
 use crate::registry::{ActiveOverride, Overrides};
 use crate::{Error, View};
@@ -263,6 +264,7 @@ pub(crate) fn load<'a>(
     options: &'a RootOptions,
     keys: Option<KeyArray>,
     overrides: Option<&'a Overrides>,
+    values: &'a [Bound],
 ) -> NodeFuture<'a> {
     Box::pin(async move {
         let view = plan.shape.name;
@@ -275,10 +277,10 @@ pub(crate) fn load<'a>(
                 let generated: Arc<str> =
                     sql::select(plan, &RootOptions { by_keys: has_keys, ..options.clone() }).into();
                 let start = Instant::now();
-                let rows = fetch(conn, plan, &sql, keys.clone()).await?;
+                let rows = fetch(conn, plan, &sql, keys.clone(), values).await?;
                 let override_time = start.elapsed();
                 let start = Instant::now();
-                let expected = fetch(conn, plan, &generated, keys).await?;
+                let expected = fetch(conn, plan, &generated, keys, values).await?;
                 let generated_time = start.elapsed();
                 active.stats.record(override_time, generated_time);
                 if let Err(difference) = compare(plan, &rows, &expected) {
@@ -300,7 +302,7 @@ pub(crate) fn load<'a>(
                 }
                 rows
             }
-            _ => fetch(conn, plan, &sql, keys).await?,
+            _ => fetch(conn, plan, &sql, keys, values).await?,
         };
 
         let mut node = Node::new(view, plan.path.clone(), rows, plan)?;
@@ -338,7 +340,7 @@ pub(crate) fn load<'a>(
                 Node::new(child.plan.shape.name, child.plan.path.clone(), Vec::new(), &child.plan)?
             } else {
                 let keys = KeyArray::new(keys).map_err(|_| Error::MixedKeys { view: child.plan.shape.name })?;
-                load(&mut *conn, &child.plan, options, Some(keys), overrides).await?
+                load(&mut *conn, &child.plan, options, Some(keys), overrides, &[]).await?
             };
 
             let by_key = child_node.group(attach_alias(&child.plan.link))?;
@@ -389,11 +391,43 @@ fn statement(
                 return Err(Error::KeysRequired { view, origin: active.origin.to_string() });
             }
             let sql = sql::wrap_root(&active.sql, plan, options, has_keys && !active.keys_param)
-                .map_err(|column| Error::UnknownOrderBy { view, column: column.to_string() })?;
+                .map_err(|column| Error::ColumnNotSelected { view, column: column.to_string() })?;
             Ok(sql.into())
         }
         (Some(active), _) => Ok(active.sql.clone()),
     }
+}
+
+/// Count the rows of the root query, see [`sql::count`].
+pub(crate) async fn count(
+    conn: &mut PgConnection,
+    plan: &QueryPlan,
+    options: &RootOptions,
+    keys: Option<KeyArray>,
+    overrides: Option<&Overrides>,
+    values: Vec<Bound>,
+) -> Result<i64, Error> {
+    let view = plan.shape.name;
+    let has_keys = keys.is_some();
+    let override_sql = match overrides.and_then(|o| o.get(plan.query_name())) {
+        Some(active) if active.keys_param && !has_keys => {
+            return Err(Error::KeysRequired { view, origin: active.origin.to_string() });
+        }
+        Some(active) => Some((&*active.sql, has_keys && !active.keys_param)),
+        None => None,
+    };
+    let sql: Arc<str> = sql::count(plan, options, override_sql)
+        .map_err(|column| Error::ColumnNotSelected { view, column: column.to_string() })?
+        .into();
+    let mut query = sqlx::query(AssertSqlSafe(sql.clone()));
+    if let Some(keys) = keys {
+        query = keys.bind(query);
+    }
+    for value in values {
+        query = value.bind(query);
+    }
+    let error = |source| Error::Query { view, path: plan.path.clone(), sql: sql.to_string(), source };
+    query.fetch_one(&mut *conn).await.and_then(|row| row.try_get::<i64, _>(0)).map_err(error)
 }
 
 async fn fetch(
@@ -401,6 +435,7 @@ async fn fetch(
     plan: &QueryPlan,
     sql: &Arc<str>,
     keys: Option<KeyArray>,
+    values: &[Bound],
 ) -> Result<Vec<PgRow>, Error> {
     // Generated SQL only contains quoted identifiers from the static shape of the view and
     // integer limits. Override SQL comes from configuration and was checked when the
@@ -408,6 +443,11 @@ async fn fetch(
     let mut query = sqlx::query(AssertSqlSafe(sql.clone()));
     if let Some(keys) = keys {
         query = keys.bind(query);
+    }
+    if let Link::Root = plan.link {
+        for value in values {
+            query = value.clone().bind(query);
+        }
     }
     query.fetch_all(&mut *conn).await.map_err(|source| Error::Query {
         view: plan.shape.name,

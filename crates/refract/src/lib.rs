@@ -39,6 +39,7 @@
 //! See the [design document](https://github.com/ddalton/refract/blob/main/docs/design.md).
 
 pub use refract_derive::View;
+pub use refract_sqlx::filter;
 pub use refract_sqlx::{
     Builder, Diagnostic, Embedded, Error, Key, Load, Node, OnInvalid, Origin, Refract, Reloaded, Report, Severity,
     ShadowSummary, View, load, plan, scaffold,
