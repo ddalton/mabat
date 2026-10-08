@@ -7,6 +7,9 @@
 | Created | 2026-10-07 |
 | Lineage | Rust successor to the ideas in [XOR](https://github.com/ddalton/xor) (Java) |
 
+> The contract of what was built is the [MPA specification](mpa.md); this document is the design and its
+> reasoning.
+
 ## Contents
 
 1. [Summary](#1-summary)

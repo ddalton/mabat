@@ -419,6 +419,13 @@ WHERE n.task_id = ANY($1)
 ORDER BY n.id;
 ```
 
+## Specification
+
+[MPA, the Mabat Persistence Architecture](docs/mpa.md), is Mabat's contract, the way JPA is Java persistence's:
+every attribute, loading mode, override rule and write semantic as a numbered rule, such as `MPA-WRITE-9` for
+optimistic locking with `#[view(version)]`, and what Mabat does not do. [`docs/mpa.json`](docs/mpa.json) indexes it
+for tools, and [`llms.txt`](llms.txt) points AI assistants to both.
+
 ## Status
 
 | Feature | Status |

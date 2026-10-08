@@ -1,0 +1,1399 @@
+{
+  "spec": "MPA",
+  "name": "Mabat Persistence Architecture",
+  "version": "0.1",
+  "crates": {
+    "mabat": "0.1",
+    "mabat-graphql": "0.1",
+    "mabat-cli": "0.1"
+  },
+  "document": "docs/mpa.md",
+  "databases": [
+    "postgres",
+    "mysql",
+    "sqlite"
+  ],
+  "capabilities": [
+    {
+      "id": "typed-views",
+      "summary": "Declare the shape of nested data with Rust structs deriving View",
+      "api": [
+        "#[derive(View)]",
+        "#[view(table, key)]"
+      ],
+      "rules": [
+        "MPA-CORE-1",
+        "MPA-VIEW-1"
+      ]
+    },
+    {
+      "id": "batched-loading",
+      "summary": "Load a view with one batched query per relationship, never one per row",
+      "api": [
+        "mabat::load"
+      ],
+      "rules": [
+        "MPA-PLAN-1"
+      ]
+    },
+    {
+      "id": "multiple-databases",
+      "summary": "PostgreSQL, MySQL 8+ and SQLite, chosen by features and by the connection",
+      "api": [
+        "features: postgres, mysql, sqlite",
+        "#[view(databases)]"
+      ],
+      "rules": [
+        "MPA-DB-1",
+        "MPA-DB-2"
+      ]
+    },
+    {
+      "id": "embedded-values",
+      "summary": "Structs stored in columns of the containing view",
+      "api": [
+        "#[view(embedded)]",
+        "#[view(embed(prefix))]"
+      ],
+      "rules": [
+        "MPA-VIEW-3",
+        "MPA-VIEW-7"
+      ]
+    },
+    {
+      "id": "enums-with-data",
+      "summary": "Rust enums with data, stored in columns or in a table per variant, decoded strictly",
+      "api": [
+        "#[view(tag, strategy, lenient)]",
+        "#[view(tag_value)]"
+      ],
+      "rules": [
+        "MPA-SUM-1",
+        "MPA-SUM-2",
+        "MPA-SUM-3",
+        "MPA-SUM-4"
+      ]
+    },
+    {
+      "id": "json-columns",
+      "summary": "Columns decoded and written as JSON with serde",
+      "api": [
+        "#[view(json)]"
+      ],
+      "rules": [
+        "MPA-VIEW-6"
+      ]
+    },
+    {
+      "id": "to-one-references",
+      "summary": "References to other views by foreign key",
+      "api": [
+        "#[view(to_one(fk))]"
+      ],
+      "rules": [
+        "MPA-VIEW-8"
+      ]
+    },
+    {
+      "id": "collections",
+      "summary": "To-many collections, ordered, placed by index, or as maps",
+      "api": [
+        "#[view(child(fk, order_by, index, key))]"
+      ],
+      "rules": [
+        "MPA-VIEW-9",
+        "MPA-VIEW-10"
+      ]
+    },
+    {
+      "id": "many-to-many",
+      "summary": "Collections through a link table",
+      "api": [
+        "#[view(child(through, target))]"
+      ],
+      "rules": [
+        "MPA-VIEW-9"
+      ]
+    },
+    {
+      "id": "recursive-views",
+      "summary": "Trees by depth-limited levels or one WITH RECURSIVE query",
+      "api": [
+        "#[view(child(depth))]",
+        "#[view(child(recursive = \"cte\"))]"
+      ],
+      "rules": [
+        "MPA-PLAN-4",
+        "MPA-LOAD-12"
+      ]
+    },
+    {
+      "id": "shared-values",
+      "summary": "Arc<T> values decoded once per entity and shared",
+      "api": [
+        "Arc<T>"
+      ],
+      "rules": [
+        "MPA-LOAD-13"
+      ]
+    },
+    {
+      "id": "graphs",
+      "summary": "Cyclic data as a Graph of entities with typed references",
+      "api": [
+        "Ref<T>",
+        "Load::graph",
+        "Graph"
+      ],
+      "rules": [
+        "MPA-LOAD-14"
+      ]
+    },
+    {
+      "id": "filters-and-paging",
+      "summary": "Filters, ordering, paging and counting of the root rows",
+      "api": [
+        "mabat::filter::col",
+        "Load::filter",
+        "Load::order_by",
+        "Load::limit",
+        "Load::offset",
+        "Load::count"
+      ],
+      "rules": [
+        "MPA-LOAD-4",
+        "MPA-LOAD-5",
+        "MPA-LOAD-6"
+      ]
+    },
+    {
+      "id": "nested-arguments",
+      "summary": "Filter, order and page the elements of a collection per parent, in one query",
+      "api": [
+        "Load::nested",
+        "Nested"
+      ],
+      "rules": [
+        "MPA-LOAD-9",
+        "MPA-LOAD-10"
+      ]
+    },
+    {
+      "id": "concurrent-loads",
+      "summary": "Run the queries of each level concurrently on a pool, optionally in one snapshot",
+      "api": [
+        "Pooled::snapshot",
+        "Pooled::read_committed"
+      ],
+      "rules": [
+        "MPA-LOAD-11"
+      ]
+    },
+    {
+      "id": "sql-overrides",
+      "summary": "Replace any query of a view with tuned SQL from a file, checked at startup",
+      "api": [
+        "Mabat::builder",
+        "overrides_dir",
+        "overrides_sql",
+        "-- mabat: query <name>"
+      ],
+      "rules": [
+        "MPA-OVR-1",
+        "MPA-OVR-2",
+        "MPA-OVR-3",
+        "MPA-OVR-4",
+        "MPA-OVR-5"
+      ]
+    },
+    {
+      "id": "shadow-mode",
+      "summary": "Run an override next to the generated query and log differences",
+      "api": [
+        "shadow",
+        "Mabat::shadow_stats"
+      ],
+      "rules": [
+        "MPA-OVR-6"
+      ]
+    },
+    {
+      "id": "override-reload",
+      "summary": "Reload override files without restarting",
+      "api": [
+        "Mabat::reload"
+      ],
+      "rules": [
+        "MPA-OVR-7"
+      ]
+    },
+    {
+      "id": "dba-tooling",
+      "summary": "A manifest of the views and the mabat command line tool: check, explain, scaffold",
+      "api": [
+        "Builder::manifest",
+        "mabat check",
+        "mabat explain",
+        "mabat scaffold"
+      ],
+      "rules": [
+        "MPA-OVR-8"
+      ]
+    },
+    {
+      "id": "json-loading",
+      "summary": "Load views as JSON, whole or a selection of their fields",
+      "api": [
+        "Load::json",
+        "Load::select",
+        "Selection::parse"
+      ],
+      "rules": [
+        "MPA-JSON-1",
+        "MPA-JSON-3",
+        "MPA-JSON-4",
+        "MPA-JSON-5"
+      ]
+    },
+    {
+      "id": "graphql",
+      "summary": "A GraphQL schema generated from views, each root field one load",
+      "api": [
+        "mabat_graphql::schema"
+      ],
+      "rules": [
+        "MPA-GQL-1",
+        "MPA-GQL-2",
+        "MPA-GQL-3",
+        "MPA-GQL-4"
+      ]
+    },
+    {
+      "id": "save-aggregates",
+      "summary": "Save a value and everything it owns, upserting by key",
+      "api": [
+        "mabat::save"
+      ],
+      "rules": [
+        "MPA-WRITE-1",
+        "MPA-WRITE-3",
+        "MPA-WRITE-4",
+        "MPA-WRITE-5",
+        "MPA-WRITE-6"
+      ]
+    },
+    {
+      "id": "save-changes",
+      "summary": "Save only what changed between two values of an aggregate",
+      "api": [
+        "mabat::save_changes"
+      ],
+      "rules": [
+        "MPA-WRITE-8"
+      ]
+    },
+    {
+      "id": "optimistic-locking",
+      "summary": "Version columns that make stale writes fail",
+      "api": [
+        "#[view(version)]",
+        "Error::Conflict"
+      ],
+      "rules": [
+        "MPA-WRITE-9",
+        "MPA-WRITE-10"
+      ]
+    },
+    {
+      "id": "delete-aggregates",
+      "summary": "Delete a value and everything it owns",
+      "api": [
+        "mabat::delete"
+      ],
+      "rules": [
+        "MPA-WRITE-7"
+      ]
+    }
+  ],
+  "attributes": [
+    {
+      "name": "table",
+      "on": "struct, variant",
+      "syntax": "#[view(table = \"t\")]",
+      "summary": "The table of a view, or of a variant",
+      "rules": [
+        "MPA-VIEW-1",
+        "MPA-SUM-3"
+      ]
+    },
+    {
+      "name": "key",
+      "on": "struct, variant",
+      "syntax": "#[view(key = \"c\")]",
+      "summary": "The key column, id by default",
+      "rules": [
+        "MPA-VIEW-2",
+        "MPA-SUM-3"
+      ]
+    },
+    {
+      "name": "embedded",
+      "on": "struct",
+      "syntax": "#[view(embedded)]",
+      "summary": "A struct stored in columns of the containing view",
+      "rules": [
+        "MPA-VIEW-3"
+      ]
+    },
+    {
+      "name": "databases",
+      "on": "struct, enum",
+      "syntax": "#[view(databases = \"postgres, mysql\")]",
+      "summary": "Limit the databases a view is decoded and encoded on",
+      "rules": [
+        "MPA-DB-2"
+      ]
+    },
+    {
+      "name": "tag",
+      "on": "enum",
+      "syntax": "#[view(tag = \"c\")]",
+      "summary": "The column naming the variant",
+      "rules": [
+        "MPA-SUM-1"
+      ]
+    },
+    {
+      "name": "strategy",
+      "on": "enum",
+      "syntax": "#[view(strategy = \"tag\" | \"table_per_variant\")]",
+      "summary": "Where the variants' data is stored",
+      "rules": [
+        "MPA-SUM-2",
+        "MPA-SUM-3"
+      ]
+    },
+    {
+      "name": "lenient",
+      "on": "enum",
+      "syntax": "#[view(lenient)]",
+      "summary": "Allow non-NULL columns of other variants",
+      "rules": [
+        "MPA-SUM-4"
+      ]
+    },
+    {
+      "name": "tag_value",
+      "on": "variant",
+      "syntax": "#[view(tag_value = \"v\")]",
+      "summary": "The tag of a variant, its name by default",
+      "rules": [
+        "MPA-SUM-1"
+      ]
+    },
+    {
+      "name": "column",
+      "on": "field",
+      "syntax": "#[view(column = \"c\")]",
+      "summary": "The column of a field, its name by default",
+      "rules": [
+        "MPA-VIEW-5"
+      ]
+    },
+    {
+      "name": "json",
+      "on": "field",
+      "syntax": "#[view(json)]",
+      "summary": "A column decoded and written as JSON",
+      "rules": [
+        "MPA-VIEW-6"
+      ]
+    },
+    {
+      "name": "version",
+      "on": "field",
+      "syntax": "#[view(version)]",
+      "summary": "An integer version column for optimistic locking",
+      "rules": [
+        "MPA-WRITE-9",
+        "MPA-WRITE-10"
+      ]
+    },
+    {
+      "name": "embed",
+      "on": "field",
+      "syntax": "#[view(embed)]",
+      "summary": "An embedded struct or enum",
+      "rules": [
+        "MPA-VIEW-7"
+      ]
+    },
+    {
+      "name": "prefix",
+      "on": "field",
+      "syntax": "#[view(embed(prefix = \"p_\"))]",
+      "summary": "The column prefix of an embedded value",
+      "rules": [
+        "MPA-VIEW-7"
+      ]
+    },
+    {
+      "name": "to_one",
+      "on": "field",
+      "syntax": "#[view(to_one(fk = \"c\"))]",
+      "summary": "A reference to another view",
+      "rules": [
+        "MPA-VIEW-8"
+      ]
+    },
+    {
+      "name": "child",
+      "on": "field",
+      "syntax": "#[view(child(fk = \"c\"))]",
+      "summary": "A to-many collection",
+      "rules": [
+        "MPA-VIEW-9",
+        "MPA-VIEW-10"
+      ]
+    },
+    {
+      "name": "fk",
+      "on": "to_one, child",
+      "syntax": "fk = \"c\"",
+      "summary": "The foreign key column",
+      "rules": [
+        "MPA-VIEW-8",
+        "MPA-VIEW-9"
+      ]
+    },
+    {
+      "name": "order_by",
+      "on": "child",
+      "syntax": "order_by = \"a, b desc\"",
+      "summary": "The order of the elements",
+      "rules": [
+        "MPA-VIEW-9"
+      ]
+    },
+    {
+      "name": "through",
+      "on": "child",
+      "syntax": "through = \"link\"",
+      "summary": "The link table of a many-to-many collection",
+      "rules": [
+        "MPA-VIEW-9"
+      ]
+    },
+    {
+      "name": "target",
+      "on": "child",
+      "syntax": "target = \"c\"",
+      "summary": "The link table column referencing the element",
+      "rules": [
+        "MPA-VIEW-9"
+      ]
+    },
+    {
+      "name": "index",
+      "on": "child",
+      "syntax": "index = \"c\"",
+      "summary": "The column placing the elements of a Vec",
+      "rules": [
+        "MPA-VIEW-9"
+      ]
+    },
+    {
+      "name": "key",
+      "on": "child",
+      "syntax": "key = \"c\"",
+      "summary": "The column keying the elements of a map",
+      "rules": [
+        "MPA-VIEW-9"
+      ]
+    },
+    {
+      "name": "depth",
+      "on": "child",
+      "syntax": "depth = n",
+      "summary": "The most levels of a recursive collection",
+      "rules": [
+        "MPA-VIEW-9",
+        "MPA-PLAN-4"
+      ]
+    },
+    {
+      "name": "recursive",
+      "on": "child",
+      "syntax": "recursive = \"cte\"",
+      "summary": "Load all levels with one WITH RECURSIVE query",
+      "rules": [
+        "MPA-VIEW-9",
+        "MPA-PLAN-4"
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "api": "mabat::load::<T>()",
+      "summary": "Start a load of the generated queries",
+      "rules": [
+        "MPA-LOAD-1"
+      ]
+    },
+    {
+      "api": "Load::by_key / by_keys",
+      "summary": "Load by keys",
+      "rules": [
+        "MPA-LOAD-3"
+      ]
+    },
+    {
+      "api": "Load::filter",
+      "summary": "Filter the root rows",
+      "rules": [
+        "MPA-LOAD-4"
+      ]
+    },
+    {
+      "api": "Load::order_by / order_by_desc / limit / offset",
+      "summary": "Order and page the root rows",
+      "rules": [
+        "MPA-LOAD-6"
+      ]
+    },
+    {
+      "api": "Load::nested",
+      "summary": "Arguments of a nested collection",
+      "rules": [
+        "MPA-LOAD-9"
+      ]
+    },
+    {
+      "api": "Load::select",
+      "summary": "Load a selection of fields, as JSON",
+      "rules": [
+        "MPA-JSON-3"
+      ]
+    },
+    {
+      "api": "Load::all / one / optional / count",
+      "summary": "Run a load",
+      "rules": [
+        "MPA-LOAD-2"
+      ]
+    },
+    {
+      "api": "Load::graph",
+      "summary": "Load a graph view",
+      "rules": [
+        "MPA-LOAD-14"
+      ]
+    },
+    {
+      "api": "Load::json",
+      "summary": "Load as JSON",
+      "rules": [
+        "MPA-JSON-1"
+      ]
+    },
+    {
+      "api": "mabat::save",
+      "summary": "Save an aggregate",
+      "rules": [
+        "MPA-WRITE-3"
+      ]
+    },
+    {
+      "api": "mabat::save_changes",
+      "summary": "Save what changed",
+      "rules": [
+        "MPA-WRITE-8"
+      ]
+    },
+    {
+      "api": "mabat::delete",
+      "summary": "Delete an aggregate",
+      "rules": [
+        "MPA-WRITE-7"
+      ]
+    },
+    {
+      "api": "mabat::plan",
+      "summary": "The plan of a view",
+      "rules": [
+        "MPA-PLAN-5"
+      ]
+    },
+    {
+      "api": "mabat::scaffold",
+      "summary": "An override file with the generated SQL",
+      "rules": [
+        "MPA-OVR-8"
+      ]
+    },
+    {
+      "api": "Mabat::builder / Builder::register / overrides_dir / overrides / overrides_sql / on_invalid",
+      "summary": "Configure a registry",
+      "rules": [
+        "MPA-OVR-1",
+        "MPA-OVR-5"
+      ]
+    },
+    {
+      "api": "Builder::check / build",
+      "summary": "Check and build a registry",
+      "rules": [
+        "MPA-OVR-5"
+      ]
+    },
+    {
+      "api": "Builder::manifest",
+      "summary": "The manifest of the views",
+      "rules": [
+        "MPA-OVR-8"
+      ]
+    },
+    {
+      "api": "Mabat::load / explain / report / reload / shadow_stats",
+      "summary": "Use a registry",
+      "rules": [
+        "MPA-OVR-1",
+        "MPA-PLAN-5",
+        "MPA-OVR-6",
+        "MPA-OVR-7"
+      ]
+    },
+    {
+      "api": "Pooled::snapshot / read_committed",
+      "summary": "Concurrent loads on a pool",
+      "rules": [
+        "MPA-LOAD-11"
+      ]
+    },
+    {
+      "api": "Selection::new / field / nested / parse",
+      "summary": "Build a selection",
+      "rules": [
+        "MPA-JSON-3"
+      ]
+    },
+    {
+      "api": "Graph::root / roots / get / get_mut / all / count",
+      "summary": "Read a graph",
+      "rules": [
+        "MPA-LOAD-14"
+      ]
+    },
+    {
+      "api": "mabat_graphql::schema / SchemaBuilder::list / by_key / registry / connections / finish / into_dynamic",
+      "summary": "A GraphQL schema of views",
+      "rules": [
+        "MPA-GQL-1"
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "variant": "mabat::Error::Plan",
+      "rules": [
+        "MPA-PLAN-4",
+        "MPA-JSON-4"
+      ]
+    },
+    {
+      "variant": "mabat::Error::Query",
+      "rules": []
+    },
+    {
+      "variant": "mabat::Error::Decode",
+      "rules": [
+        "MPA-VIEW-5"
+      ]
+    },
+    {
+      "variant": "mabat::Error::MissingReference",
+      "rules": [
+        "MPA-VIEW-8"
+      ]
+    },
+    {
+      "variant": "mabat::Error::NullTag",
+      "rules": [
+        "MPA-SUM-4"
+      ]
+    },
+    {
+      "variant": "mabat::Error::UnknownTag",
+      "rules": [
+        "MPA-SUM-4"
+      ]
+    },
+    {
+      "variant": "mabat::Error::OtherVariantColumn",
+      "rules": [
+        "MPA-SUM-4"
+      ]
+    },
+    {
+      "variant": "mabat::Error::MissingVariant",
+      "rules": [
+        "MPA-SUM-4"
+      ]
+    },
+    {
+      "variant": "mabat::Error::ListIndex",
+      "rules": [
+        "MPA-VIEW-9"
+      ]
+    },
+    {
+      "variant": "mabat::Error::DuplicateMapKey",
+      "rules": [
+        "MPA-VIEW-9"
+      ]
+    },
+    {
+      "variant": "mabat::Error::Cycle",
+      "rules": [
+        "MPA-LOAD-12"
+      ]
+    },
+    {
+      "variant": "mabat::Error::UnloadedReference",
+      "rules": [
+        "MPA-LOAD-14"
+      ]
+    },
+    {
+      "variant": "mabat::Error::GraphRequired",
+      "rules": [
+        "MPA-LOAD-14",
+        "MPA-JSON-5"
+      ]
+    },
+    {
+      "variant": "mabat::Error::MixedKeys",
+      "rules": [
+        "MPA-LOAD-3"
+      ]
+    },
+    {
+      "variant": "mabat::Error::NotFound",
+      "rules": [
+        "MPA-LOAD-2"
+      ]
+    },
+    {
+      "variant": "mabat::Error::TooManyRows",
+      "rules": [
+        "MPA-LOAD-2"
+      ]
+    },
+    {
+      "variant": "mabat::Error::NestedArguments",
+      "rules": [
+        "MPA-LOAD-9"
+      ]
+    },
+    {
+      "variant": "mabat::Error::SelectionWithoutJson",
+      "rules": [
+        "MPA-JSON-6"
+      ]
+    },
+    {
+      "variant": "mabat::Error::Json",
+      "rules": [
+        "MPA-JSON-2"
+      ]
+    },
+    {
+      "variant": "mabat::Error::ColumnNotSelected",
+      "rules": [
+        "MPA-LOAD-7",
+        "MPA-LOAD-10"
+      ]
+    },
+    {
+      "variant": "mabat::Error::KeysRequired",
+      "rules": [
+        "MPA-OVR-4"
+      ]
+    },
+    {
+      "variant": "mabat::Error::Invalid",
+      "rules": [
+        "MPA-OVR-5"
+      ]
+    },
+    {
+      "variant": "mabat::Error::Check",
+      "rules": [
+        "MPA-OVR-5"
+      ]
+    },
+    {
+      "variant": "mabat::Error::NotRegistered",
+      "rules": [
+        "MPA-OVR-1"
+      ]
+    },
+    {
+      "variant": "mabat::Error::WrongBackend",
+      "rules": [
+        "MPA-DB-3"
+      ]
+    },
+    {
+      "variant": "mabat::Error::ManifestBackend",
+      "rules": [
+        "MPA-OVR-8"
+      ]
+    },
+    {
+      "variant": "mabat::Error::Connection",
+      "rules": [
+        "MPA-LOAD-11"
+      ]
+    },
+    {
+      "variant": "mabat::Error::Write",
+      "rules": [
+        "MPA-WRITE-2",
+        "MPA-WRITE-11"
+      ]
+    },
+    {
+      "variant": "mabat::Error::Conflict",
+      "rules": [
+        "MPA-WRITE-9"
+      ]
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "M0100",
+      "severity": "error",
+      "summary": "An override file cannot be read or parsed"
+    },
+    {
+      "code": "M0101",
+      "severity": "error",
+      "summary": "An override names no registered view, or no query of its view"
+    },
+    {
+      "code": "M0102",
+      "severity": "error",
+      "summary": "A query's columns do not match the view"
+    },
+    {
+      "code": "M0103",
+      "severity": "error",
+      "summary": "A query does not prepare on the database"
+    },
+    {
+      "code": "M0104",
+      "severity": "error",
+      "summary": "A query has the wrong parameters"
+    },
+    {
+      "code": "M0105",
+      "severity": "warning",
+      "summary": "A query does not select every optional path"
+    },
+    {
+      "code": "M0301",
+      "severity": "error",
+      "summary": "A view cannot be planned"
+    }
+  ],
+  "unsupported": [
+    {
+      "id": "MPA-NOT-1",
+      "section": "12. Not supported",
+      "text": "Keys generated by the database (serial, identity, `AUTO_INCREMENT`) when saving: keys come from the application (MPA-WRITE-2)."
+    },
+    {
+      "id": "MPA-NOT-2",
+      "section": "12. Not supported",
+      "text": "Saving or deleting views with `Ref<T>` fields (graphs)."
+    },
+    {
+      "id": "MPA-NOT-3",
+      "section": "12. Not supported",
+      "text": "A unit of work that collects writes and flushes them later (MPA-WRITE-1)."
+    },
+    {
+      "id": "MPA-NOT-4",
+      "section": "12. Not supported",
+      "text": "Lazy loading: everything a view declares is loaded by the load, or selected (section 8)."
+    },
+    {
+      "id": "MPA-NOT-5",
+      "section": "12. Not supported",
+      "text": "Writes through overrides, and override SQL for writes."
+    },
+    {
+      "id": "MPA-NOT-6",
+      "section": "12. Not supported",
+      "text": "Filtering by columns of embedded structs in `filter`, `nested` or GraphQL `where`."
+    },
+    {
+      "id": "MPA-NOT-7",
+      "section": "12. Not supported",
+      "text": "Arguments on map collections in GraphQL, and GraphQL mutations."
+    },
+    {
+      "id": "MPA-NOT-8",
+      "section": "12. Not supported",
+      "text": "Pipelining queries on one connection."
+    },
+    {
+      "id": "MPA-NOT-9",
+      "section": "12. Not supported",
+      "text": "Schema generation or migrations: views describe existing tables."
+    }
+  ],
+  "rules": [
+    {
+      "id": "MPA-DOC-1",
+      "section": "0. Conventions",
+      "text": "The words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119. A rule describes what Mabat does; a rule that says the application MUST do something states a precondition, whose violation is reported as described."
+    },
+    {
+      "id": "MPA-DOC-2",
+      "section": "0. Conventions",
+      "text": "Rule identifiers are `MPA-<AREA>-<n>`. They are never reused: a removed rule keeps its number, marked removed."
+    },
+    {
+      "id": "MPA-DOC-3",
+      "section": "0. Conventions",
+      "text": "Code is Rust 2024 with the `mabat` facade crate. `conn` is a connection, a transaction or a `Pooled` pool (MPA-DB-5). Errors are `mabat::Error` (section 11)."
+    },
+    {
+      "id": "MPA-DOC-4",
+      "section": "0. Conventions",
+      "text": "[`mpa.json`](mpa.json) lists every capability, attribute, function, error and diagnostic with the rules that define it. A test (`crates/mabat/tests/mpa.rs`) fails when the derive accepts an attribute, or the crate has an error variant, that the index does not list."
+    },
+    {
+      "id": "MPA-CORE-1",
+      "section": "1. Concepts",
+      "text": "A **view** is a Rust struct deriving `mabat::View` that declares the shape of the data to load from one table: its columns, embedded values, to-one references and to-many collections. The same table MAY have many views."
+    },
+    {
+      "id": "MPA-CORE-2",
+      "section": "1. Concepts",
+      "text": "A view's values form an **aggregate**: its row, its embedded values, the rows of its owned collections recursively, and the rows of its variant tables. Referenced views (to-one references, many-to-many elements) are other aggregates."
+    },
+    {
+      "id": "MPA-CORE-3",
+      "section": "1. Concepts",
+      "text": "`#[derive(View)]` generates a static **shape** (`mabat::shape`), from which Mabat plans the queries, and, for each enabled database, a decoder and an encoder. Nothing is computed by reflection at run time."
+    },
+    {
+      "id": "MPA-CORE-4",
+      "section": "1. Concepts",
+      "text": "The **path** of a field is its name, joined with `.` below collections, references, embedded values and variants, such as `children.notes` or `state.Blocked.reason`. Tuple fields are named `0`, `1`, …"
+    },
+    {
+      "id": "MPA-CORE-5",
+      "section": "1. Concepts",
+      "text": "A view is loaded by a tree of queries, one per collection and reference (section 6), each named by its path, the root query being `$root`. Overrides (section 7) and nested arguments (MPA-LOAD-9) address queries by these names."
+    },
+    {
+      "id": "MPA-DB-1",
+      "section": "2. Databases",
+      "text": "The features `postgres` (default), `mysql` and `sqlite` enable PostgreSQL, MySQL 8 or later, and SQLite, through SQLx 0.9 and the Tokio runtime. Any combination MAY be enabled."
+    },
+    {
+      "id": "MPA-DB-2",
+      "section": "2. Databases",
+      "text": "A view is decoded and encoded on each enabled database. `#[view(databases = \"postgres, mysql\")]` limits it to the listed databases, for views whose field types not every enabled database supports, such as a PostgreSQL array or `rust_decimal::Decimal` on SQLite."
+    },
+    {
+      "id": "MPA-DB-3",
+      "section": "2. Databases",
+      "text": "A load runs on the database of the connection it is given. A registry (section 7) is built for one database; using it on another fails with `Error::WrongBackend`."
+    },
+    {
+      "id": "MPA-DB-4",
+      "section": "2. Databases",
+      "text": "Keys of a batched query are bound as one array on PostgreSQL (`= ANY($1)`) and as one parameter per key on MySQL and SQLite (`IN (?, …)`), padded to a power of two so statements are reused, and split into statements of at most 1,000 keys for child queries. The root query is never split."
+    },
+    {
+      "id": "MPA-DB-5",
+      "section": "2. Databases",
+      "text": "Wherever a load or write takes a connection, it accepts a connection, a `sqlx::Transaction`, a pooled connection, or a `mabat::Pooled` pool (MPA-LOAD-11). Every query of a load runs on the connection given, so it sees the uncommitted writes of its transaction."
+    },
+    {
+      "id": "MPA-VIEW-1",
+      "section": "3.1 Container attributes",
+      "text": "A view struct MUST have named fields and `#[view(table = \"…\")]`, the table it is loaded from."
+    },
+    {
+      "id": "MPA-VIEW-2",
+      "section": "3.1 Container attributes",
+      "text": "`key` names the key column, `id` by default. Key fields of type `i16`, `i32`, `i64`, `String` and `Uuid` are supported; on MySQL also unsigned integers; on SQLite columns without a declared type hold keys read by value."
+    },
+    {
+      "id": "MPA-VIEW-3",
+      "section": "3.1 Container attributes",
+      "text": "`#[view(embedded)]` declares a struct stored in columns of the table of the view that contains it. It MUST NOT contain collections or references."
+    },
+    {
+      "id": "MPA-VIEW-4",
+      "section": "3.1 Container attributes",
+      "text": "A view MUST NOT have generic parameters."
+    },
+    {
+      "id": "MPA-VIEW-5",
+      "section": "3.2 Field attributes",
+      "text": "A field without a relationship attribute is a column of the view's table, named like the field unless `column` names it. Its type MUST be decodable by SQLx. `Option<T>` is nullable: a NULL column decodes to `None`, and a non-`Option` field fails on NULL with `Error::Decode`."
+    },
+    {
+      "id": "MPA-VIEW-6",
+      "section": "3.2 Field attributes",
+      "text": "A `json` field is decoded from a JSON or JSONB column with `serde::Deserialize`, and written with `serde::Serialize`."
+    },
+    {
+      "id": "MPA-VIEW-7",
+      "section": "3.2 Field attributes",
+      "text": "An `embed` field holds an embedded struct (MPA-VIEW-3) or an enum (section 4), whose columns are the view's columns with the optional prefix. Embedded values nest; prefixes concatenate."
+    },
+    {
+      "id": "MPA-VIEW-8",
+      "section": "3.2 Field attributes",
+      "text": "A `to_one` field references another view: `fk` is the column of this view's table holding the referenced key. `Option<T>` makes it optional (a NULL foreign key is `None`); a non-`Option` reference whose row is missing fails with `Error::MissingReference`. The field MAY be `T`, `Arc<T>` (MPA-LOAD-13) or `Ref<T>` (MPA-LOAD-14)."
+    },
+    {
+      "id": "MPA-VIEW-9",
+      "section": "3.2 Field attributes",
+      "text": "A `child` field is a collection of another view, loaded by a child query whose rows have `fk` equal to this row's key. Its arguments: - `order_by = \"a, b desc\"`: the order of the elements; the key is always the last tie-breaker. - `through = \"link\"`, `target = \"c\"`: a many-to-many collection through a link table, whose `fk` references this view and whose `target` references the element. Both MUST be given together. - `index = \"c\"`: a `Vec` whose elements are placed by an integer column (of the link table with `through`), whatever the order of the rows. Indexes MUST be non-NULL and distinct, else `Error::ListIndex`; gaps are allowed. - `key = \"c\"`: a `BTreeMap` or `HashMap` keyed by a column, whose values MUST be owned views. Two elements with the same key fail with `Error::DuplicateMapKey`. - `depth = n` (n ≥ 1) or `recursive = \"cte\"`: a recursive collection (MPA-PLAN-4)."
+    },
+    {
+      "id": "MPA-VIEW-10",
+      "section": "3.2 Field attributes",
+      "text": "A collection field MUST be a `Vec<T>`, `Vec<Arc<T>>`, `Vec<Ref<T>>`, `BTreeMap<K, T>` or `HashMap<K, T>` of a view."
+    },
+    {
+      "id": "MPA-VIEW-11",
+      "section": "3.2 Field attributes",
+      "text": "Invalid attributes are compile errors with a message naming the attribute, such as a `child` without `fk`, `index` on a map, or `version` on a collection."
+    },
+    {
+      "id": "MPA-VIEW-12",
+      "section": "3.3 Column types",
+      "text": "The derive records the Rust type of each column (`shape::ValueType`): nullable for `Option`, a list for `Vec` (except `Vec<u8>`), and a scalar named after the type: `Boolean`, `Int` (up to 32 bits), `BigInt`, `Float`, `String`, `Uuid`, `Date`, `Time`, `DateTime`, `NaiveDateTime`, `Decimal`, `Json`, `Bytes`, or the name of any other type. GraphQL types and filters (section 9) come from it."
+    },
+    {
+      "id": "MPA-SUM-1",
+      "section": "4. Enums with data",
+      "text": "An enum deriving `View` with `#[view(tag = \"c\")]` is stored with a tag column whose value names the variant, `#[view(tag_value = \"…\")]` on each variant (the variant's name by default). The tag MAY be of any column type, such as a PostgreSQL or MySQL enum; it is read as text."
+    },
+    {
+      "id": "MPA-SUM-2",
+      "section": "4. Enums with data",
+      "text": "With `strategy = \"tag\"` (the default), the fields of the variants are columns of the containing view's row. Tuple fields MUST name their column."
+    },
+    {
+      "id": "MPA-SUM-3",
+      "section": "4. Enums with data",
+      "text": "With `strategy = \"table_per_variant\"`, a variant with data is stored in its own table, `#[view(table = \"…\", key = \"…\")]` on the variant, keyed by the containing view's key. Each variant table is loaded by one query with only the keys whose tag names that variant. Variant tables MAY have collections and references."
+    },
+    {
+      "id": "MPA-SUM-4",
+      "section": "4. Enums with data",
+      "text": "Decoding is strict: a NULL tag fails with `Error::NullTag`, an unknown tag with `Error::UnknownTag`, a missing variant row with `Error::MissingVariant`, and, unless the enum is `lenient`, a non-NULL column of another variant with `Error::OtherVariantColumn`."
+    },
+    {
+      "id": "MPA-LOAD-1",
+      "section": "5. Loading",
+      "text": "`mabat::load::<T>()` runs the generated queries; `Mabat::load::<T>()` runs them with the registry's overrides (section 7)."
+    },
+    {
+      "id": "MPA-LOAD-2",
+      "section": "5. Loading",
+      "text": "Terminals: `all` (every match), `one` (exactly one, else `Error::NotFound` or `Error::TooManyRows`), `optional` (at most one), `count` (`SELECT count(*)` of the root query, ignoring order and paging), `graph` (MPA-LOAD-14) and `json` (section 8)."
+    },
+    {
+      "id": "MPA-LOAD-3",
+      "section": "5. Loading",
+      "text": "`by_key` and `by_keys` restrict the root rows to keys. Keys of different types in one load fail with `Error::MixedKeys`; an empty `by_keys` loads nothing without a query."
+    },
+    {
+      "id": "MPA-LOAD-4",
+      "section": "5. Loading",
+      "text": "`filter(condition)` restricts the root rows; several calls all apply. Conditions are built with `mabat::filter::col(\"c\")`: `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `is_null`, `is_not_null`, `is_in`, `not_in`, `like`, `ilike`, combined with `&` (`and`), `|` (`or`), `!`, `Condition::all` and `Condition::any`. Every value is a bound parameter."
+    },
+    {
+      "id": "MPA-LOAD-5",
+      "section": "5. Loading",
+      "text": "`ilike` is `ILIKE` on PostgreSQL and `LOWER(c) LIKE LOWER(?)` elsewhere. `is_in` with an empty list matches nothing, `not_in` with an empty list everything; a NULL column matches neither."
+    },
+    {
+      "id": "MPA-LOAD-6",
+      "section": "5. Loading",
+      "text": "`order_by`, `order_by_desc`, `limit` and `offset` order and page the root rows."
+    },
+    {
+      "id": "MPA-LOAD-7",
+      "section": "5. Loading",
+      "text": "Filter and order columns are columns of the view's table. With an override of the root query, they MUST be selected by the view, else `Error::ColumnNotSelected`."
+    },
+    {
+      "id": "MPA-LOAD-8",
+      "section": "5. Loading",
+      "text": "Children are decoded in the order of their query: `order_by`, then the key."
+    },
+    {
+      "id": "MPA-LOAD-9",
+      "section": "5. Loading",
+      "text": "`nested(path, Nested)` filters, orders and pages the elements of the to-many collection whose query is named `path`, for each parent, in its one query: the filter follows the parent keys condition, `order_by` replaces the collection's order, and `limit`/`offset` apply per parent with `ROW_NUMBER() OVER (PARTITION BY …)`. An unknown path, a to-one reference, or a `recursive = \"cte\"` collection fails with `Error::NestedArguments`. The levels of a depth-limited recursive collection share their query name, so they share its arguments."
+    },
+    {
+      "id": "MPA-LOAD-10",
+      "section": "5. Loading",
+      "text": "With an override of a collection's query, nested arguments wrap it as a subquery and refer to columns by the aliases the view selects (MPA-LOAD-7)."
+    },
+    {
+      "id": "MPA-LOAD-11",
+      "section": "5. Loading",
+      "text": "With a `Pooled` pool, the child queries of each level run at the same time, each on a pooled connection held for that query only, so a load uses at most the `connections` of its `Pooled`. `Pooled::snapshot` (PostgreSQL only; other databases do not compile) shares one `REPEATABLE READ READ ONLY` snapshot between the connections, imported when the load starts; `Pooled::read_committed` (any database) lets each query see what is committed when it runs. Graph loads run their queries one at a time."
+    },
+    {
+      "id": "MPA-LOAD-12",
+      "section": "5. Loading",
+      "text": "Recursive collections load as many levels as their `depth`, or all levels with `recursive = \"cte\"` (MPA-PLAN-4). A cycle in the data of a `cte` collection fails with `Error::Cycle`."
+    },
+    {
+      "id": "MPA-LOAD-13",
+      "section": "5. Loading",
+      "text": "An `Arc<T>` reference or element is decoded once per entity of a load and shared by everything that references it."
+    },
+    {
+      "id": "MPA-LOAD-14",
+      "section": "5. Loading",
+      "text": "A view with `Ref<T>` fields is a graph and MUST be loaded with `graph`, else `Error::GraphRequired`. `graph` returns a `Graph<T>` holding each entity once, with typed references and generated navigation methods (`task.manager(&graph)`); cycles end by themselves and need no `depth`."
+    },
+    {
+      "id": "MPA-PLAN-1",
+      "section": "6. Query planning",
+      "text": "A view is loaded by one root query plus one query per to-one reference, per collection and per variant table, at any depth, each batched by the keys of the rows above: never one query per row, and never a join of two collections."
+    },
+    {
+      "id": "MPA-PLAN-2",
+      "section": "6. Query planning",
+      "text": "Every selected column has an alias equal to its path. System aliases: `$key` (the key, when no field holds it), `$parent` (the parent key of a collection row), `$ref.<field>` (the foreign key of a reference), `<prefix>$tag` (the tag of an enum), `$index` (the position in an ordered list), `$map_key`."
+    },
+    {
+      "id": "MPA-PLAN-3",
+      "section": "6. Query planning",
+      "text": "Rows are decoded by alias, never by position, so queries MAY select columns in any order and extra columns are ignored."
+    },
+    {
+      "id": "MPA-PLAN-4",
+      "section": "6. Query planning",
+      "text": "A collection with `depth = n` runs its query again for each level, at most `n` levels. With `recursive = \"cte\"`, all levels come from one `WITH RECURSIVE` query whose path guard stops at cycles; it needs a collection that contains its own view directly and no `through`."
+    },
+    {
+      "id": "MPA-PLAN-5",
+      "section": "6. Query planning",
+      "text": "`mabat::plan::<T>()` returns the plan, and `Mabat::explain::<T>()` its queries with their SQL, generated or overridden."
+    },
+    {
+      "id": "MPA-OVR-1",
+      "section": "7. Overrides",
+      "text": "A registry, `Mabat::builder().register::<T>()…build(&mut conn)`, runs views with override SQL for any of their queries, from files (`overrides_dir`) or strings (`overrides`, `overrides_sql`). Writes never use overrides."
+    },
+    {
+      "id": "MPA-OVR-2",
+      "section": "7. Overrides",
+      "text": "A view has at most one override file, named after it: `TaskView.toml` (`[query.\"children.notes\"] sql = \"…\"`, optional `shadow = true`) or `TaskView.sql` (each query after a `-- mabat: query children.notes` line, optionally `, shadow`)."
+    },
+    {
+      "id": "MPA-OVR-3",
+      "section": "7. Overrides",
+      "text": "An override MUST select the aliases of section 6 that the view decodes: its columns, `$key` or the key field, `$parent` for a collection, `$ref.<field>` for references."
+    },
+    {
+      "id": "MPA-OVR-4",
+      "section": "7. Overrides",
+      "text": "A child query override MUST take the keys of the rows above: `:keys` on any database (`= ANY(:keys)` on PostgreSQL, `IN (:keys)` elsewhere), or `$1` on PostgreSQL. `:keys` is replaced as a whole token, not inside literals, quoted identifiers or longer names. A root override MAY take keys, and then MUST be loaded by key (`Error::KeysRequired`)."
+    },
+    {
+      "id": "MPA-OVR-5",
+      "section": "7. Overrides",
+      "text": "`check` and `build` prepare every query, generated and overridden, on the database without running it, and compare its columns and parameters with the view (diagnostics M0100–M0301, section 11). `build` fails with `Error::Invalid` on errors, unless `on_invalid(OnInvalid::UseGenerated)` replaces invalid overrides by the generated queries."
+    },
+    {
+      "id": "MPA-OVR-6",
+      "section": "7. Overrides",
+      "text": "A `shadow` override runs together with the generated query and logs a warning when their rows differ; `shadow_stats` counts runs and mismatches."
+    },
+    {
+      "id": "MPA-OVR-7",
+      "section": "7. Overrides",
+      "text": "`reload(&mut conn)` reads the override files again, checks them, and swaps them in atomically; invalid files leave the running overrides as they are."
+    },
+    {
+      "id": "MPA-OVR-8",
+      "section": "7. Overrides",
+      "text": "`Builder::manifest()` writes the views as JSON. The `mabat` command line tool checks override files against a manifest and a database (`mabat check`, with `--schema` to create a schema in a scratch transaction or database), explains (`mabat explain`) and scaffolds override files (`mabat scaffold`), with no Rust toolchain."
+    },
+    {
+      "id": "MPA-JSON-1",
+      "section": "8. JSON and selections",
+      "text": "`load::<T>().json(conn)` returns `serde_json::Value` objects: columns through their type's `Serialize`, `json` columns as the JSON they hold, collections as arrays, maps as objects, references as objects or `null`, and enums as objects whose `__typename` names the variant. Tuple fields are named `_0`, `_1`, …"
+    },
+    {
+      "id": "MPA-JSON-2",
+      "section": "8. JSON and selections",
+      "text": "A column whose type does not implement `Serialize` fails with `Error::Json` only when it is loaded as JSON; the view still compiles."
+    },
+    {
+      "id": "MPA-JSON-3",
+      "section": "8. JSON and selections",
+      "text": "`select(Selection)` loads only the selected fields: only their columns are selected and only their child queries run. `Selection::parse(\"name assignee { name } children { name }\")` reads GraphQL-like text."
+    },
+    {
+      "id": "MPA-JSON-4",
+      "section": "8. JSON and selections",
+      "text": "A view selected without fields loads its columns and embedded values, not its collections or references. Embedded structs and enums are loaded whole. Unknown fields fail with `PlanError::Selection`."
+    },
+    {
+      "id": "MPA-JSON-5",
+      "section": "8. JSON and selections",
+      "text": "A selection has a finite depth, so recursive and graph views load as trees as deep as it asks. A graph view loaded as JSON without a selection fails with `Error::GraphRequired`."
+    },
+    {
+      "id": "MPA-JSON-6",
+      "section": "8. JSON and selections",
+      "text": "A selection is loaded with `json`; typed terminals with a selection fail with `Error::SelectionWithoutJson`. Overrides apply to selections."
+    },
+    {
+      "id": "MPA-GQL-1",
+      "section": "9. GraphQL",
+      "text": "`mabat_graphql::schema(&pool).list::<T>(\"name\").by_key::<T>(\"name\").finish()` builds an async-graphql dynamic schema from the views and every view they reach. `registry(..)` applies a registry's overrides; `connections(n)` runs each level concurrently (MPA-LOAD-11)."
+    },
+    {
+      "id": "MPA-GQL-2",
+      "section": "9. GraphQL",
+      "text": "Types: views and embedded structs are objects named after their Rust type, with fields named as in Rust; enums with data are unions of an object per variant (`{Enum}{Variant}`, with a `_variant` field); enums without data are GraphQL enums; maps are lists of `{ key, value }`; columns are `Boolean`, `Int`, `Float`, `String` or the custom scalars of MPA-VIEW-12 (`BigInt`, `UUID`, `Date`, `Time`, `DateTime`, `NaiveDateTime`, `Decimal`, `JSON`, `Bytes`)."
+    },
+    {
+      "id": "MPA-GQL-3",
+      "section": "9. GraphQL",
+      "text": "A list field takes `where` (a filter per comparable column with `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `in`, `notIn`, `isNull`, plus `like` and `ilike` for strings, combined with `and`, `or`, `not`), `orderBy` (`[{ column: ASC | DESC }]`), `limit` and `offset`. A `by_key` field takes `key`, of the key field's type."
+    },
+    {
+      "id": "MPA-GQL-4",
+      "section": "9. GraphQL",
+      "text": "Each root field is one load of the selection set (fragments resolved, variables applied). Nested list fields take the arguments of MPA-GQL-3 for the elements of each parent (MPA-LOAD-9); selecting one collection twice with different arguments is an error."
+    },
+    {
+      "id": "MPA-WRITE-1",
+      "section": "10. Writing",
+      "text": "`save`, `save_changes` and `delete` run in a transaction, or a savepoint of the caller's transaction. Statements run when they are called: there is no session and no flush."
+    },
+    {
+      "id": "MPA-WRITE-2",
+      "section": "10. Writing",
+      "text": "Keys are assigned by the application: a saved view and the views of its owned collections MUST have a key field, else `Error::Write`."
+    },
+    {
+      "id": "MPA-WRITE-3",
+      "section": "10. Writing",
+      "text": "`save` upserts the row by key: `INSERT … ON CONFLICT (key) DO UPDATE` on PostgreSQL and SQLite, `INSERT … AS new ON DUPLICATE KEY UPDATE` on MySQL. Columns, embedded values and `json` fields are written."
+    },
+    {
+      "id": "MPA-WRITE-4",
+      "section": "10. Writing",
+      "text": "An owned collection is made equal to the value's: rows of elements that are gone are deleted with what they own, deepest first; the others are saved with the parent's key, their position for an `index` list (from 0), and their key for a map."
+    },
+    {
+      "id": "MPA-WRITE-5",
+      "section": "10. Writing",
+      "text": "A many-to-many collection replaces the rows of its link table; the linked views are not written. A to-one reference writes its foreign key only; the referenced view is not written."
+    },
+    {
+      "id": "MPA-WRITE-6",
+      "section": "10. Writing",
+      "text": "An enum stored in columns writes its tag (as a literal, so any tag column type accepts it), its variant's columns, and NULL to the other variants' columns. An enum in a table per variant upserts the variant's row and deletes the other variants' rows with what they own."
+    },
+    {
+      "id": "MPA-WRITE-7",
+      "section": "10. Writing",
+      "text": "`delete::<T, _>(key, conn)` deletes the row and what it owns (owned collections, links, variant rows), deepest first, and returns whether the row existed."
+    },
+    {
+      "id": "MPA-WRITE-8",
+      "section": "10. Writing",
+      "text": "`save_changes(&before, &mut after, conn)` writes what changed from `before` (as loaded) to `after`: columns and embedded values that differ by `PartialEq` (types without it count as changed), to-one foreign keys that differ, owned collection elements matched by key (changed ones updated, new ones saved whole, removed ones deleted with what they own, moved ones of an `index` list given their position), and link tables whose keys differ. Rows that did not change produce no statement. The two values MUST have the same key."
+    },
+    {
+      "id": "MPA-WRITE-9",
+      "section": "10. Writing",
+      "text": "A `#[view(version)]` integer column locks its row optimistically. `save` updates the row only if it has the value's version, incrementing it, else inserts it only if no row has its key; `save_changes` updates only if the row has the version. Otherwise the write fails with `Error::Conflict`, and the transaction is rolled back. A `save_changes` without changed columns does not increment the version."
+    },
+    {
+      "id": "MPA-WRITE-10",
+      "section": "10. Writing",
+      "text": "New versions are written back into the value and into the elements of its owned collections (`Vec` and maps of owned views), so the value can be saved again without reloading."
+    },
+    {
+      "id": "MPA-WRITE-11",
+      "section": "10. Writing",
+      "text": "A column type without `sqlx::Encode`, or a `json` type without `Serialize`, fails with `Error::Write` only when saved; the view still compiles."
+    },
+    {
+      "id": "MPA-WRITE-12",
+      "section": "10. Writing",
+      "text": "A view of some of a table's columns cannot be saved whole when the others are `NOT NULL` without a default, since the upsert must be able to insert; `save_changes` updates it."
+    },
+    {
+      "id": "MPA-NOT-1",
+      "section": "12. Not supported",
+      "text": "Keys generated by the database (serial, identity, `AUTO_INCREMENT`) when saving: keys come from the application (MPA-WRITE-2)."
+    },
+    {
+      "id": "MPA-NOT-2",
+      "section": "12. Not supported",
+      "text": "Saving or deleting views with `Ref<T>` fields (graphs)."
+    },
+    {
+      "id": "MPA-NOT-3",
+      "section": "12. Not supported",
+      "text": "A unit of work that collects writes and flushes them later (MPA-WRITE-1)."
+    },
+    {
+      "id": "MPA-NOT-4",
+      "section": "12. Not supported",
+      "text": "Lazy loading: everything a view declares is loaded by the load, or selected (section 8)."
+    },
+    {
+      "id": "MPA-NOT-5",
+      "section": "12. Not supported",
+      "text": "Writes through overrides, and override SQL for writes."
+    },
+    {
+      "id": "MPA-NOT-6",
+      "section": "12. Not supported",
+      "text": "Filtering by columns of embedded structs in `filter`, `nested` or GraphQL `where`."
+    },
+    {
+      "id": "MPA-NOT-7",
+      "section": "12. Not supported",
+      "text": "Arguments on map collections in GraphQL, and GraphQL mutations."
+    },
+    {
+      "id": "MPA-NOT-8",
+      "section": "12. Not supported",
+      "text": "Pipelining queries on one connection."
+    },
+    {
+      "id": "MPA-NOT-9",
+      "section": "12. Not supported",
+      "text": "Schema generation or migrations: views describe existing tables."
+    }
+  ]
+}
