@@ -1,4 +1,4 @@
-// Checks that every internal link of the built site, and its anchor, leads somewhere: node scripts/check-links.mjs
+// Checks that every internal link and image of the built site, and every anchor, leads somewhere: node scripts/check-links.mjs
 // after a build. The base path is BASE, as in astro.config.mjs.
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, dirname, posix } from 'node:path';
@@ -13,7 +13,7 @@ for (const f of files) ids.set(f, new Set([...readFileSync(f, 'utf8').matchAll(/
 let bad = 0, checked = 0;
 for (const f of files) {
   const url = base + '/' + f.slice(dist.length + 1).replace(/index\.html$/, '');
-  for (const [, href] of readFileSync(f, 'utf8').matchAll(/href="([^"]+)"/g)) {
+  for (const [, href] of readFileSync(f, 'utf8').matchAll(/(?:href|src)="([^"]+)"/g)) {
     if (/^(https?:|mailto:|data:)/.test(href)) continue;
     const [path, hash] = href.split('#');
     const abs = path === '' ? url : posix.normalize(path.startsWith('/') ? path : posix.join(url.endsWith('/') ? url : dirname(url) + '/', path));

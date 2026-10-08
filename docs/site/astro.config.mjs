@@ -53,6 +53,10 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Architecture',
+          items: [{ autogenerate: { directory: 'architecture' } }],
+        },
+        {
           label: 'Specification',
           items: [
             { label: 'MPA specification', slug: 'spec/mpa' },

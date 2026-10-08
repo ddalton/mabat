@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mabat — architecture</title>
+<style>
+  @page { size: A3 landscape; margin: 8mm; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #0f172a;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .page { break-after: page; page-break-after: always; }
+  .page:last-child { break-after: auto; page-break-after: auto; }
+  .ph { border-bottom: 2px solid #0f172a; padding-bottom: 5px; margin-bottom: 9px; display: flex; align-items: baseline; justify-content: space-between; }
+  .ph h1 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  .ph .kicker { font-size: 10.5px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: #64748b; }
+  .dek { font-size: 11.5px; line-height: 1.45; color: #334155; margin: 0 0 8px; }
+  figure { margin: 0; }
+  figure img { width: 100%; height: auto; max-height: 182mm; object-fit: contain; object-position: left top; display: block; }
+  figcaption { font-size: 11.2px; line-height: 1.45; color: #475569; margin-top: 7px; border-top: 1px solid #e2e8f0; padding-top: 6px; column-count: 3; column-gap: 9mm; }
+  figcaption b { color: #0f172a; font-weight: 600; }
+  figcaption p { margin: 0 0 5px; break-inside: avoid-column; }
+  code { font-family: Menlo, "SF Mono", Consolas, monospace; font-size: 0.92em; color: #0f172a; }
+  a { color: #4338ca; text-decoration: none; }
+  .r { font-size: 0.86em; color: #4338ca; white-space: nowrap; }
+
+  .cover { padding: 26mm 0 0 0; }
+  .cover .eyebrow { font-size: 13px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #4338ca; margin: 0 0 10px; }
+  .cover h1 { font-size: 44px; font-weight: 600; margin: 0 0 10px; letter-spacing: -0.02em; }
+  .cover .sub { font-size: 17px; color: #475569; margin: 0 0 20px; max-width: 330mm; line-height: 1.5; }
+  .notice { max-width: 330mm; border: 1.5px solid #4338ca; background: #f5f4fe; border-radius: 6px; padding: 11px 15px; margin: 0 0 20px; font-size: 13px; line-height: 1.5; color: #1e1b4b; }
+  .notice b { color: #1e1b4b; }
+  .cover .meta { font-size: 13px; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 12px; max-width: 330mm; }
+  .cover .meta b { color: #0f172a; }
+  .cover .meta p { margin: 0 0 9px; line-height: 1.5; }
+  .toc { margin-top: 18px; font-size: 13.5px; color: #475569; column-count: 2; column-gap: 30mm; max-width: 330mm; }
+  .toc div { margin-bottom: 7px; break-inside: avoid; }
+  .toc b { color: #0f172a; }
+
+  table.m { width: 100%; border-collapse: collapse; font-size: 12.6px; line-height: 1.4; }
+  table.m th, table.m td { border: 1px solid #dfe3e8; padding: 6px 9px; vertical-align: top; text-align: left; }
+  table.m thead th { color: #fff; font-size: 13.5px; font-weight: 600; padding: 8px 9px; }
+  table.m thead th.k { background: #f1f5f9; color: #475569; }
+  table.m thead th.pg { background: #33658a; }
+  table.m thead th.my { background: #b5651d; }
+  table.m thead th.sq { background: #3f6e4a; }
+  table.m tbody th { background: #f8fafc; color: #334155; font-weight: 600; width: 15%; }
+  table.m td { width: 28.3%; color: #1e293b; }
+  .after { font-size: 12.6px; line-height: 1.45; color: #475569; margin-top: 8px; column-count: 2; column-gap: 12mm; }
+  .after p { margin: 0 0 5px; break-inside: avoid-column; }
+  .after b { color: #0f172a; }
+
+  /* On screen: each page a sheet, with a toolbar to the PDF and the documentation site */
+  .toolbar { display: none; }
+  @media screen {
+    html, body { background: #e2e8f0; }
+    .toolbar { display: flex; gap: 18px; align-items: center; justify-content: center; position: sticky; top: 0; z-index: 1; padding: 10px 16px; background: #1e1b4b; font-size: 13px; }
+    .toolbar a { color: #e0e7ff; font-weight: 600; }
+    .toolbar span { color: #a5b4fc; }
+    .page { width: 420mm; min-height: 297mm; margin: 16px auto; padding: 8mm; background: #ffffff; box-shadow: 0 1px 4px rgba(15, 23, 42, .18); }
+    .cover { padding-top: 34mm; }
+  }
+  @media screen and (max-width: 440mm) {
+    .page { width: auto; min-height: 0; margin: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="toolbar"><a href="./">Mabat documentation</a><span>·</span><a href="mabat-architecture.pdf">Download the PDF</a><span>·</span><a href="https://github.com/ddalton/mabat/tree/main/docs/architecture">Source</a></nav>
+
+<!-- ============================================================ COVER -->
+<section class="page cover" id="cover">
+  <p class="eyebrow">Mabat · architecture</p>
+  <h1>How Mabat loads, serves and saves typed aggregates</h1>
+  <p class="sub">Mabat (Hebrew for “view”) loads nested, typed data from PostgreSQL, MySQL and SQLite. You declare the <b>view</b> of the data you want as Rust structs; Mabat plans the batched queries that fill it, lets a DBA replace any of them without touching your code, serves the view as JSON or GraphQL, and saves it back — without a session, proxies or lazy loading.</p>
+  <div class="notice"><b>Every claim is a rule.</b> This document explains the architecture that the <b>MPA</b> specification (the Mabat Persistence Architecture, <code>docs/mpa.md</code>) states as numbered rules, the way JPA states the contract of Java persistence providers. Where a page says what Mabat does, it cites the rule — <span class="r">MPA-WRITE-9</span> — so it can be checked against the specification, and the specification against the tests. The last page is drawn from the specification's machine-readable index, <code>docs/mpa.json</code>, at build time.</div>
+  <div class="meta">
+    <p><b>The question.</b> An ORM maps rows to objects and then decides, while your code runs, which queries to send: it loads lazily, tracks changes through a session, and flushes them later. Mabat takes the other road. What shape of data does a view declare, which queries does it become, who may change them, how do they run concurrently, and how does a value get written back — and how does that compare, point for point, with an ORM?</p>
+    <p><b>The sources.</b> The MPA specification v0.1 (<code>docs/mpa.md</code>) and its index (<code>docs/mpa.json</code>), the design document (<code>docs/design.md</code>), and the code of the <code>mabat</code> crates 0.1: <code>mabat-derive</code> (the derive), <code>mabat-core</code> (shapes, plans and SQL, with no database), <code>mabat-sqlx</code> (execution, overrides and writes), <code>mabat-graphql</code> and <code>mabat-cli</code>. The SQL on these pages is what the planner and the writer generate, abridged only where marked.</p>
+    <p><b>Regenerating.</b> <code>docs/architecture/overview/mabat-visio.py</code> draws the ten figures as one Visio file (<code>mabat-architecture.vsdx</code>) with the poster kit in <code>docs/architecture/</code> and its gates; it also writes the SVGs this document references and an EMF per figure for Office. <code>build.sh</code> runs the gates, checks every reference, renders this PDF with Chrome and checks one PDF page per section. Edit the HTML or the script, never the SVGs or the PDF.</p>
+  </div>
+  <div class="toc">
+    <div><b>1 · The short answer</b> — five stages from a struct to the database, the same shape the other way for writes, and what that changes compared with an ORM.</div>
+    <div><b>2 · A view is a shape</b> — what a declaration says, what is decoded from the row, and what becomes a query of its own.</div>
+    <div><b>3 · From shape to queries</b> — the plan of a view, its SQL, and why 20 tasks cost five queries rather than 181.</div>
+    <div><b>4 · Tuning without code</b> — override files, the checks that prepare every query at startup, shadow mode, reloads and the command line tool.</div>
+    <div><b>5 · Shapes of a result</b> — trees, shared values, graphs with cycles, and two ways to load recursion.</div>
+    <div><b>6 · Concurrency</b> — one connection, or a pool of them on one snapshot, level by level.</div>
+    <div><b>7 · JSON and GraphQL</b> — selections, the generated schema, and paging the elements of each parent in one query.</div>
+    <div><b>8 · Writing an aggregate</b> — the tree of rows, the statements, and optimistic locking with a version column.</div>
+    <div><b>9 · Change tracking, against an ORM</b> — an ORM's session, snapshots and proxies, beside two values compared by generated code.</div>
+    <div><b>10 · Three databases</b> — what differs between PostgreSQL, MySQL and SQLite, and what does not.</div>
+    <div><b>11 · The contract</b> — every capability against the areas of the specification, read from <code>docs/mpa.json</code>.</div>
+  </div>
+</section>
+
+<!-- ============================================================ PAGE 1 -->
+<section class="page" id="page-1">
+  <header class="ph">
+    <h1>The short answer</h1>
+    <span class="kicker">1 / 11 · at a glance</span>
+  </header>
+  <p class="dek">A view is a Rust struct that declares the shape of the data to load. The derive turns it into a static shape at compile time; the planner turns the shape into a tree of queries, one per relationship; the executor runs them level by level, each batched by the keys of the rows above, and decodes every row by its alias. A DBA can replace the SQL of any query, checked against the type when the application starts. Writes use the same shape the other way: an encoder builds a tree of rows, and the statements run when they are called.</p>
+  <figure>
+    <img src="diagrams/01-at-a-glance.svg" alt="Five stages left to right. You declare a view, TaskView, a struct with a to-one assignee and a collection of notes. The derive generates a static shape, a decoder and an encoder per database, with no reflection. The planner builds a tree of queries named by path — $root, assignee, notes — in the database's dialect. The executor runs the root query, then each level with the keys of the rows above, decoding by alias. The database is PostgreSQL, MySQL 8 or SQLite. Below, override files feed a registry that replaces the SQL of any query, and the executor returns typed values, JSON or a GraphQL response. Below that, writing: save, save_changes and delete go through the encoder to write statements in one transaction. At the bottom, four rows compare an ORM with Mabat: the unit of a read, the queries, who owns the SQL, and state and writes.">
+    <figcaption>
+      <p><b>Declared, not discovered.</b> A view says everything a load will fetch: its columns, embedded values, to-one references and to-many collections <span class="r">MPA-CORE-1</span>. The values it loads form an aggregate: the row, its embedded values, the rows of its owned collections and its variant tables <span class="r">MPA-CORE-2</span>. There is no lazy loading <span class="r">MPA-NOT-4</span>: a load never reaches the database again because code touched a field. The same table may have many views, each the shape one use of the data needs.</p>
+      <p><b>Generated at compile time.</b> <code>#[derive(View)]</code> generates the shape as static data, and for each enabled database a decoder and an encoder; nothing is computed by reflection at run time <span class="r">MPA-CORE-3</span>. Views whose column types cannot be written, or serialized as JSON, still compile and fail only when used that way <span class="r">MPA-WRITE-11</span> <span class="r">MPA-JSON-2</span>. <code>mabat-core</code>, which plans and renders SQL, has no database dependency, so planning is unit-tested without one.</p>
+      <p><b>Against an ORM.</b> An ORM's unit of a read is an entity, and what else loads depends on what the code touches; its queries are decided at run time, and its state is a session. Mabat's queries are fixed by the shape and can be printed before they run <span class="r">MPA-PLAN-5</span>; its values are plain structs; and its writes run when called, in your transaction <span class="r">MPA-WRITE-1</span>. Page 9 compares the two on change tracking, point by point.</p>
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ============================================================ PAGE 2 -->
+<section class="page" id="page-2">
+  <header class="ph">
+    <h1>A view is a shape</h1>
+    <span class="kicker">2 / 11 · declaring</span>
+  </header>
+  <p class="dek">Everything a view declares is either decoded from the view's own row or loaded by a query of its own. Columns, JSON columns, embedded structs and enums stored in columns come from the row of the root query, each under an alias equal to its path. A to-one reference contributes only its foreign key to the row; the referenced rows, the elements of each collection and each level of a recursive collection are fetched by queries of their own, with the keys of the rows above.</p>
+  <figure>
+    <img src="diagrams/02-view-shape.svg" alt="Left: the declaration of TaskView with an id key, a name, a JSON labels column, an embedded Window with prefix due_, an embedded enum State, a to-one assignee, a notes collection ordered by created_at, and a recursive children collection with depth 2; the Window struct and the State enum below it. Right: a zone for one row of task in the $root query holds four boxes: columns id and name and the JSON labels; the embedded struct as due.start and due.end in columns due_start and due_end; the enum, whose state.$tag names the variant and whose state.Blocked.reason is a column; and the reference's key, $ref.assignee. Arrows carry the keys of the rows down to three queries: assignee, a to-one reference; notes, a collection; and children, recursive to depth 2. Along the bottom, what the derive generates for each view: the shape, a decoder per database, an encoder per database, and a comparison for save_changes.">
+    <figcaption>
+      <p><b>Columns and paths.</b> A field without a relationship attribute is a column of the view's table, named like the field unless <code>column</code> names it; <code>Option&lt;T&gt;</code> is nullable, and a NULL in a non-<code>Option</code> field fails with <code>Error::Decode</code> <span class="r">MPA-VIEW-5</span>. The path of a field is its name joined with <code>.</code> below embedded values, references, collections and variants, such as <code>state.Blocked.reason</code> <span class="r">MPA-CORE-4</span>, and every selected column's alias is its path <span class="r">MPA-PLAN-2</span>. A <code>json</code> field is read and written with serde <span class="r">MPA-VIEW-6</span>.</p>
+      <p><b>Embedded values and enums.</b> An embedded struct lives in columns of the containing row, with an optional prefix; embedded values nest and prefixes concatenate <span class="r">MPA-VIEW-7</span>. An enum with data has a tag column naming the variant; its variants' fields are columns of the row by default <span class="r">MPA-SUM-2</span>, or rows of a table per variant <span class="r">MPA-SUM-3</span>. Decoding is strict: a NULL or unknown tag, a missing variant row, or a non-NULL column of another variant is an error unless the enum is <code>lenient</code> <span class="r">MPA-SUM-4</span>.</p>
+      <p><b>Relationships.</b> <code>to_one(fk)</code> references another view by the foreign key in this row; an <code>Option</code> reference is <code>None</code> on a NULL key, and a required one whose row is missing fails with <code>Error::MissingReference</code> <span class="r">MPA-VIEW-8</span>. <code>child(fk)</code> is a collection whose rows have <code>fk</code> equal to this row's key, with <code>order_by</code>, a many-to-many <code>through</code> table, an <code>index</code> column, a map <code>key</code>, or recursion with <code>depth</code> or <code>recursive = "cte"</code> <span class="r">MPA-VIEW-9</span>. Invalid attributes are compile errors that name the attribute <span class="r">MPA-VIEW-11</span>.</p>
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ============================================================ PAGE 3 -->
+<section class="page" id="page-3">
+  <header class="ph">
+    <h1>From shape to queries</h1>
+    <span class="kicker">3 / 11 · planning</span>
+  </header>
+  <p class="dek">The planner turns a shape into a tree of queries: one root query, and one per to-one reference, per collection and per variant table, at any depth, each batched by the keys of the rows above it. The number of queries depends on the shape, never on the number of rows, and no query joins two collections. The plan, and the SQL of each query, can be printed before anything runs.</p>
+  <figure>
+    <img src="diagrams/03-plan.svg" alt="The plan of TaskView on PostgreSQL as five queries with their SQL. $root selects id, name and assignee_id as $ref.assignee from task with a filter, order and limit. assignee, a to-one by $ref.assignee, selects from person where id = ANY($1), with the distinct $ref.assignee keys of the root rows. notes, to-many by task_id, selects id, task_id as $parent and body from note where task_id = ANY($1), ordered by created_at and id. subtasks, to-many by parent_id, selects from task where parent_id = ANY($1). subtasks.assignee, to-one, takes the $ref.assignee keys of the subtasks. Notes below: keys flow down and rows flow up; one array on PostgreSQL or a padded list elsewhere; decoding by alias. Right: the view's code, and for 20 tasks with 4 subtasks each: 5 queries with Mabat, 181 queries one per row, or one query with joins that repeats every note for every subtask.">
+    <figcaption>
+      <p><b>One query per relationship.</b> A view is loaded by one root query plus one query per reference, collection and variant table, each batched by the keys of the rows above: never one query per row, and never a join of two collections <span class="r">MPA-PLAN-1</span>. Each query is named by its path, the root being <code>$root</code> <span class="r">MPA-CORE-5</span>; overrides and nested arguments address queries by these names. <code>mabat::plan::&lt;T&gt;()</code> returns the plan and <code>Mabat::explain::&lt;T&gt;()</code> its SQL, generated or overridden <span class="r">MPA-PLAN-5</span>.</p>
+      <p><b>Aliases do the joining.</b> Every column is selected under its path; the system aliases are <code>$key</code>, <code>$parent</code> (the parent key of a collection row), <code>$ref.&lt;field&gt;</code> (a reference's foreign key), <code>&lt;prefix&gt;$tag</code>, <code>$index</code> and <code>$map_key</code> <span class="r">MPA-PLAN-2</span>. Rows are decoded by alias, never by position, so a query may select its columns in any order <span class="r">MPA-PLAN-3</span> — which is what lets a DBA rewrite it. Children are attached in the order of their query: <code>order_by</code>, then the key <span class="r">MPA-LOAD-8</span>.</p>
+      <p><b>The arithmetic.</b> For 20 tasks with 4 subtasks each, loading this view row by row — the pattern lazy loading falls into — costs 1 + 20 + 20 + 20 + 80 = 181 queries. One query with joins costs one round trip but returns, for each task, every note repeated for every subtask. Mabat runs the five queries of the plan, whatever the number of rows. Keys are bound as one array on PostgreSQL, and on MySQL and SQLite as a list padded to a power of two so statements are reused, at most 1,000 to a child statement <span class="r">MPA-DB-4</span>.</p>
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ============================================================ PAGE 4 -->
+<section class="page" id="page-4">
+  <header class="ph">
+    <h1>Tuning without code</h1>
+    <span class="kicker">4 / 11 · overrides</span>
+  </header>
+  <p class="dek">The SQL of any query of a view can be replaced by a file a DBA writes, with no change to the application. Because rows are decoded by alias, an override only has to select the aliases the view decodes and take the keys of the rows above. When the registry is built, every query — generated or overridden — is prepared on the database, without running, and its columns and parameters are compared with the view, so a wrong override stops the application at startup rather than corrupting a result later.</p>
+  <figure>
+    <img src="diagrams/04-overrides.svg" alt="Three columns. A DBA writes SQL: an overrides/TaskView.toml file replacing the notes query with a join to note_visible, taking ANY(:keys), with shadow = true; notes below: one file per view, any query by its path, the aliases the view decodes, the keys of the rows above. Build checks every query: the builder registers the view and builds, every query is prepared without running, and compared with the view; the diagnostics M0100 to M0105 and M0301 are listed; errors stop the build with Error::Invalid, or on_invalid(UseGenerated) runs the generated query instead. Loads run the registry: an immutable registry; shadow mode runs both queries and logs differences; reload swaps checked files in atomically; nested arguments wrap an override as a subquery; writes never use overrides. Along the bottom, the command line tool without a Rust toolchain: Builder::manifest(), mabat check, mabat explain, mabat scaffold.">
+    <figcaption>
+      <p><b>Files, by view and by query.</b> A registry, <code>Mabat::builder().register::&lt;T&gt;()…build(&amp;mut conn)</code>, runs views with override SQL for any of their queries, from files or strings <span class="r">MPA-OVR-1</span>. A view has at most one file, <code>TaskView.toml</code> or <code>TaskView.sql</code> <span class="r">MPA-OVR-2</span>. An override must select the aliases the view decodes <span class="r">MPA-OVR-3</span>, and a child query must take the keys of the rows above, as <code>:keys</code> on any database or <code>$1</code> on PostgreSQL <span class="r">MPA-OVR-4</span>. A stored procedure or a view in the database is as good as any other SQL, as long as it returns those aliases.</p>
+      <p><b>Checked at startup.</b> <code>check</code> and <code>build</code> prepare every query on the database without running it and compare its columns and parameters with the view <span class="r">MPA-OVR-5</span>. Problems are diagnostics with the view, the query, the file and the line: M0100 to M0104 and M0301 are errors; M0105, an optional path never selected, is a warning. <code>build</code> fails with <code>Error::Invalid</code>, unless <code>on_invalid(OnInvalid::UseGenerated)</code> runs the generated queries in place of invalid overrides. A filter or order column that a root override does not select is <code>Error::ColumnNotSelected</code> <span class="r">MPA-LOAD-7</span>.</p>
+      <p><b>Changing them safely.</b> A <code>shadow</code> override runs together with the generated query and logs a warning when their rows differ, with counts in <code>shadow_stats</code> <span class="r">MPA-OVR-6</span>. <code>reload</code> reads the files again, checks them, and swaps them in atomically; invalid files leave the running overrides as they are <span class="r">MPA-OVR-7</span>. The <code>mabat</code> tool checks, explains and scaffolds override files against a manifest the application writes, with no Rust toolchain <span class="r">MPA-OVR-8</span>. Writes never use overrides <span class="r">MPA-NOT-5</span>.</p>
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ============================================================ PAGE 5 -->
+<section class="page" id="page-5">
+  <header class="ph">
+    <h1>Shapes of a result</h1>
+    <span class="kicker">5 / 11 · trees, shared values, graphs</span>
+  </header>
+  <p class="dek">The field types of a view decide what a load returns. Plain fields make a tree of owned values, which can be cloned, compared and saved like any struct. <code>Arc&lt;T&gt;</code> shares one decoded value between everything that references the same row. <code>Ref&lt;T&gt;</code> makes the view a graph, held in an arena with each entity once, so cyclic data needs no depth limit. Recursive collections load a fixed number of levels, or every level in one recursive query.</p>
+  <figure>
+    <img src="diagrams/05-result-shapes.svg" alt="Four panels. A tree: task 1 and task 2 each own a copy of the person Ada. Shared values: task 1 and task 2 both point to one Arc of Ada, decoded once per load. A graph: Graph of T holds each entity once; Ada and Grace reference each other as manager and report, a cycle that ends by itself, with typed references and generated navigation. Recursion: depth = 2 runs one query per level, children and children.children; recursive = cte loads every level with one WITH RECURSIVE query whose path guard stops at cycles. Rows below give, for each, the field types, the terminals, and whether saving is supported.">
+    <figcaption>
+      <p><b>Trees and shared values.</b> By default a reference or element is an owned value: two tasks with the same assignee hold two equal copies. An <code>Arc&lt;T&gt;</code> reference or element is decoded once per entity of a load and shared by everything that references it <span class="r">MPA-LOAD-13</span>, which saves memory and decoding where the same rows recur. Collections are <code>Vec</code>, <code>BTreeMap</code> or <code>HashMap</code> of a view, of <code>Arc</code> or of <code>Ref</code> <span class="r">MPA-VIEW-10</span>; a list placed by an <code>index</code> column fails on a NULL or repeated index <span class="r">MPA-VIEW-9</span>.</p>
+      <p><b>Graphs.</b> A view with <code>Ref&lt;T&gt;</code> fields is a graph and must be loaded with <code>graph</code>, else <code>Error::GraphRequired</code>. It returns a <code>Graph&lt;T&gt;</code> holding each entity once, with typed references and generated navigation methods such as <code>task.manager(&amp;graph)</code>; cycles end by themselves <span class="r">MPA-LOAD-14</span>. A graph can be served as JSON only through a selection, whose finite depth unrolls it into a tree <span class="r">MPA-JSON-5</span>. Saving graphs is not supported in 0.1 <span class="r">MPA-NOT-2</span>.</p>
+      <p><b>Recursion.</b> A collection with <code>depth = n</code> runs its query again for each level, at most <code>n</code> levels; with <code>recursive = "cte"</code> every level comes from one <code>WITH RECURSIVE</code> query whose path guard stops at cycles, for a collection that contains its own view directly <span class="r">MPA-PLAN-4</span>. A cycle in the data of a <code>cte</code> collection fails with <code>Error::Cycle</code> <span class="r">MPA-LOAD-12</span>. A recursive view without either is a planning error: the depth of a tree must be known.</p>
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ============================================================ PAGE 6 -->
+<section class="page" id="page-6">
+  <header class="ph">
+    <h1>Concurrency</h1>
+    <span class="kicker">6 / 11 · connections and snapshots</span>
+  </header>
+  <p class="dek">A load runs on whatever it is given. On a connection or a transaction, every query runs in turn and sees the transaction's own uncommitted writes. On a <code>Pooled</code> pool, the queries of each level run at the same time, each on a pooled connection held for that query only — and on PostgreSQL, all of them can share one snapshot, so the levels of a load see the same database even while others write.</p>
+  <figure>
+    <img src="diagrams/06-concurrency.svg" alt="Top: one connection runs the five queries $root, assignee, notes, subtasks and subtasks.assignee one after another. Middle: Pooled::snapshot with three connections, as lanes over time. At the start, connection 1 begins REPEATABLE READ READ ONLY and exports its snapshot; connections 2 and 3 begin and set the transaction snapshot. Level 0 runs $root on connection 1; level 1 runs assignee, notes and subtasks at the same time on connections 1, 2 and 3; level 2 runs subtasks.assignee; at the end every connection rolls back. A note says every connection joins the snapshot before the first query. Bottom: rows compare a connection, Pooled::snapshot and Pooled::read_committed by the connection given, connections, what the load sees, and graphs.">
+    <figcaption>
+      <p><b>The caller's connection.</b> Wherever a load or write takes a connection, it accepts a connection, a <code>sqlx::Transaction</code>, a pooled connection or a <code>Pooled</code> pool, and every query of a load runs on the connection given, so it sees the uncommitted writes of its transaction <span class="r">MPA-DB-5</span>. That is the default because it is the one that is always correct. Queries are not pipelined on one connection <span class="r">MPA-NOT-8</span>: SQLx 0.9 has no pipelining API.</p>
+      <p><b>A pool, level by level.</b> With a <code>Pooled</code> pool the child queries of each level run together, each on a connection held for that query only, so a load uses at most the <code>connections</code> of its <code>Pooled</code> and cannot deadlock on its own pool <span class="r">MPA-LOAD-11</span>. The keys of a level are collected from the rows above before its queries start. <code>Pooled::snapshot</code> begins <code>REPEATABLE READ READ ONLY</code> on one connection, exports its snapshot, and imports it on the others; it exists only for PostgreSQL, so asking for it on MySQL or SQLite does not compile.</p>
+      <p><b>Joining up front.</b> Every connection imports the snapshot before the first query runs. If a query failed while others were still joining, its transaction could end under them; joining first removes that race. <code>Pooled::read_committed</code> works on any database and lets each query see what is committed when it runs. Graph loads run their queries one at a time on one connection, because which query reaches an entity first decides where its row comes from, and that should not vary from run to run.</p>
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ============================================================ PAGE 7 -->
+<section class="page" id="page-7">
+  <header class="ph">
+    <h1>JSON and GraphQL</h1>
+    <span class="kicker">7 / 11 · serving a view</span>
+  </header>
+  <p class="dek">A view can be loaded as JSON, whole or as a selection of its fields. A selection loads only what it names — only the selected columns, only the selected child queries — so a GraphQL request becomes one load of exactly the data it asks for. <code>mabat-graphql</code> generates the schema from the views, and turns each root field's selection set, with its arguments, into that load.</p>
+  <figure>
+    <img src="diagrams/07-serving.svg" alt="Four stages. A GraphQL request for tasks with a where filter on name and a limit of 20, selecting name, assignee name, and notes ordered by createdAt descending with a limit of 3. The selection set becomes a Selection with fields and arguments, fragments resolved and variables applied. build_selected plans only the selected columns and child queries, three queries not five, with recursion unrolled to the selection's depth. The JSON result shows a task with its assignee and three notes. Below, the SQL of the notes query: ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY created_at DESC, id) as $row, keeping rows with $row up to 3. At the right: the schema is generated from the views; one load per root field; the same without GraphQL through Selection::parse and json; overrides apply.">
+    <figcaption>
+      <p><b>JSON.</b> <code>load::&lt;T&gt;().json(conn)</code> returns <code>serde_json::Value</code> objects: columns through their type's <code>Serialize</code>, <code>json</code> columns as the JSON they hold, collections as arrays, maps as objects, references as objects or <code>null</code>, and enums as objects whose <code>__typename</code> names the variant <span class="r">MPA-JSON-1</span>. <code>select(Selection)</code> loads only the selected fields; <code>Selection::parse</code> reads GraphQL-like text <span class="r">MPA-JSON-3</span>. A view selected without fields loads its columns and embedded values, not its relationships <span class="r">MPA-JSON-4</span>. Overrides apply to selections <span class="r">MPA-JSON-6</span>.</p>
+      <p><b>A generated schema.</b> <code>mabat_graphql::schema(&amp;pool).list::&lt;T&gt;("tasks").by_key::&lt;T&gt;("task").finish()</code> builds an async-graphql dynamic schema from the views and every view they reach <span class="r">MPA-GQL-1</span>: objects for views and embedded structs, unions for enums with data, GraphQL enums for enums without, and scalars from the column types <span class="r">MPA-GQL-2</span>. List fields take <code>where</code>, <code>orderBy</code>, <code>limit</code> and <code>offset</code> <span class="r">MPA-GQL-3</span>. There are no mutations in 0.1 <span class="r">MPA-NOT-7</span>.</p>
+      <p><b>Arguments at every level.</b> Each root field is one load of its selection set <span class="r">MPA-GQL-4</span>: no resolver per field, so no N+1. Nested arguments filter, order and page the elements of each parent inside the collection's one query — the filter follows the parent keys condition, <code>order_by</code> replaces the collection's order, and <code>limit</code> and <code>offset</code> apply per parent with <code>ROW_NUMBER() OVER (PARTITION BY …)</code> <span class="r">MPA-LOAD-9</span>. Over an override, the arguments wrap it as a subquery and refer to columns by alias <span class="r">MPA-LOAD-10</span>.</p>
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ============================================================ PAGE 8 -->
+<section class="page" id="page-8">
+  <header class="ph">
+    <h1>Writing an aggregate</h1>
+    <span class="kicker">8 / 11 · save and delete</span>
+  </header>
+  <p class="dek">The shape that loads an aggregate also saves it. <code>save</code> writes the view's row and makes each owned collection in the database equal to the value's; <code>delete</code> removes the row and everything it owns. Both run in your transaction, or a savepoint of it, and each statement runs when it is called: there is no session to flush. A <code>#[view(version)]</code> column makes concurrent writers fail instead of overwriting each other.</p>
+  <figure>
+    <img src="diagrams/08-writes.svg" alt="Three columns. mabat::save of a Board: the encoder builds a tree of rows — the board row with its name, the owner's foreign key only, the state tag and variant columns and the color columns; lists, an indexed Vec, written with board_id and position, each owning its cards; labels, many-to-many, as board_label link rows only; settings, a map by name; and visibility, a table per variant. The statements, in one transaction: savepoint or begin; the upsert of the board; selecting the keys of the lists in the database; deleting the lists that are gone with their cards first; upserting the other lists and their cards; replacing the board_label links; release or commit. With a version column: an UPDATE that sets version = version + 1 where the id and the loaded version match; one row means saved; no row means insert it unless a row has its key; inserted means a new board; otherwise Error::Conflict and the transaction is rolled back. Notes: the insert if absent per database, versions written back into the value, and delete.">
+    <figcaption>
+      <p><b>Save.</b> <code>save</code> upserts the row by key — <code>INSERT … ON CONFLICT (key) DO UPDATE</code> on PostgreSQL and SQLite, <code>INSERT … AS new ON DUPLICATE KEY UPDATE</code> on MySQL — with its columns, embedded values and <code>json</code> fields <span class="r">MPA-WRITE-3</span>. An owned collection is made equal to the value's: rows of elements that are gone are deleted with what they own, deepest first, and the others are saved with the parent's key, their position for an <code>index</code> list, and their key for a map <span class="r">MPA-WRITE-4</span>. Keys come from the application <span class="r">MPA-WRITE-2</span>; keys generated by the database are not supported yet <span class="r">MPA-NOT-1</span>.</p>
+      <p><b>What is not written.</b> A many-to-many collection replaces its link rows, and the linked views are not written; a to-one reference writes its foreign key only <span class="r">MPA-WRITE-5</span>. An enum in columns writes its tag as a literal, so any tag column type accepts it, its variant's columns, and NULL to the others'; an enum in a table per variant upserts its variant's row and deletes the others' <span class="r">MPA-WRITE-6</span>. A view of only some of a table's columns cannot be saved whole when the others are <code>NOT NULL</code> without a default, since an upsert must be able to insert; <code>save_changes</code> updates it <span class="r">MPA-WRITE-12</span>.</p>
+      <p><b>Optimistic locking.</b> With a <code>#[view(version)]</code> column, <code>save</code> updates the row only if it has the value's version, incrementing it, and otherwise inserts it only if no row has its key; anything else fails with <code>Error::Conflict</code> and the transaction is rolled back <span class="r">MPA-WRITE-9</span>. MySQL counts a found row as affected by <code>ON DUPLICATE KEY</code>, so there the insert is <code>INSERT … SELECT … WHERE NOT EXISTS</code>. The new versions are written back into the value and the elements of its owned collections, so it can be saved again without reloading <span class="r">MPA-WRITE-10</span>.</p>
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ============================================================ PAGE 9 -->
+<section class="page" id="page-9">
+  <header class="ph">
+    <h1>Change tracking, against an ORM</h1>
+    <span class="kicker">9 / 11 · save_changes</span>
+  </header>
+  <p class="dek">An ORM tracks changes <b>transparently</b>: the objects you load belong to a session that keeps a snapshot of each, replaces your references and collections with proxies and wrappers that load and record on their own, and at flush compares every object with its snapshot to decide what to write. Mabat tracks changes <b>explicitly</b>: you keep the value as it was loaded, change a copy, and <code>save_changes(&amp;before, &amp;mut after)</code> compares the two with code the derive generated, writing only the rows that differ — now, in your transaction.</p>
+  <figure>
+    <img src="diagrams/09-change-tracking.svg" alt="Two columns. An ORM, transparent: the session or persistence context holds an identity map, a snapshot per object and an action queue; your objects are the ORM's, with lazy references as generated proxy subclasses, collections replaced by the ORM's own that record adds and removes, and enhanced bytecode that marks fields dirty. Four steps: load, change with no SQL yet, flush before a query or at commit by comparing every managed object with its snapshot, then SQL in the queue's order; and the same in JPA code. Mabat, explicit: code loads before, clones it into after, changes the title, removes, swaps, edits and adds sections, and calls save_changes; a comparison the derive generated for Doc compares columns by PartialEq, references by key, owned collections element by element by key, and links as lists of keys; the resulting statements update the doc's title with its version, delete the removed section, update the changed and moved section, update the moved section's position, and insert the new section. Rows below compare where the snapshot lives, how a change is noticed, when SQL runs, across requests, what can surprise you, and Rust.">
+    <figcaption>
+      <p><b>How an ORM does it.</b> JPA providers such as Hibernate keep a persistence context: an identity map with one managed object per row, a snapshot of each object's state as loaded, and a queue of pending writes. Lazy references are proxies — generated subclasses that load on first touch — and collections are replaced by the provider's own, which record changes. At flush, before a query that might see a change or at commit, each managed object is compared with its snapshot (or, with bytecode enhancement, its setters will have marked it dirty), and the differences become SQL. It is convenient and invisible, and so is when and why SQL runs.</p>
+      <p><b>How Mabat does it.</b> Values are plain structs with no session behind them, so there is nothing to intercept a change. The snapshot is <code>before</code>, a value you hold. <code>save_changes</code> compares it with <code>after</code> through a comparison the derive generated: columns and embedded values by <code>PartialEq</code> (a type without it counts as changed), to-one foreign keys, owned collection elements matched by key — changed ones updated, new ones saved whole, removed ones deleted with what they own, moved ones of an <code>index</code> list given their position — and link tables whose keys differ. Rows that did not change produce no statement <span class="r">MPA-WRITE-8</span>.</p>
+      <p><b>What it buys, and costs.</b> SQL runs exactly when you call it, in your transaction or a savepoint of it <span class="r">MPA-WRITE-1</span>; there is no unit of work that flushes later <span class="r">MPA-NOT-3</span>, and no lazy load after a session closed, because there is none <span class="r">MPA-NOT-4</span>. <code>before</code> can be kept across requests, cached or reloaded; it must be what the database held, and a <code>#[view(version)]</code> column turns a stale one into <code>Error::Conflict</code> instead of a wrong write <span class="r">MPA-WRITE-9</span>. The two values must have the same key. In Rust, which has no runtime proxies, the same explicitness is common: SeaORM's <code>ActiveModel</code> marks fields <code>Set</code> or <code>Unchanged</code> by hand.</p>
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ============================================================ PAGE 10 -->
+<section class="page" id="page-10">
+  <header class="ph">
+    <h1>Three databases</h1>
+    <span class="kicker">10 / 11 · dialects</span>
+  </header>
+  <p class="dek">The same view loads and saves on PostgreSQL, MySQL 8 and SQLite through SQLx 0.9; each enabled database gets its own decoder and encoder, and a load runs on the database of the connection it is given. Where the databases differ, Mabat uses each one's own syntax; the shapes, plans, aliases, checks and errors are the same on all three.</p>
+  <table class="m">
+    <thead>
+      <tr><th class="k"></th><th class="pg">PostgreSQL</th><th class="my">MySQL 8</th><th class="sq">SQLite</th></tr>
+    </thead>
+    <tbody>
+      <tr><th>Enabled by</th><td>the <code>postgres</code> feature, the default <span class="r">MPA-DB-1</span></td><td>the <code>mysql</code> feature</td><td>the <code>sqlite</code> feature</td></tr>
+      <tr><th>Keys of a batched query</th><td>one array parameter: <code>= ANY($1)</code></td><td><code>IN (?, …)</code>, padded to a power of two so statements are reused, at most 1,000 keys a child statement <span class="r">MPA-DB-4</span></td><td>as MySQL</td></tr>
+      <tr><th>Keys in an override</th><td><code>= ANY(:keys)</code>, or <code>$1</code> <span class="r">MPA-OVR-4</span></td><td><code>IN (:keys)</code>, expanded to the placeholders</td><td>as MySQL</td></tr>
+      <tr><th>Key types</th><td><code>i16</code>, <code>i32</code>, <code>i64</code>, <code>String</code>, <code>Uuid</code> <span class="r">MPA-VIEW-2</span></td><td>also unsigned integers</td><td>also columns without a declared type, read by value</td></tr>
+      <tr><th>Case-insensitive match</th><td><code>ILIKE</code> <span class="r">MPA-LOAD-5</span></td><td><code>LOWER(c) LIKE LOWER(?)</code></td><td><code>LOWER(c) LIKE LOWER(?)</code></td></tr>
+      <tr><th>Enum tag columns</th><td>any type, such as a PostgreSQL enum, read as text <span class="r">MPA-SUM-1</span></td><td>any type, such as <code>ENUM(…)</code>, read as text</td><td>any type, read as text</td></tr>
+      <tr><th>Concurrent loads</th><td><code>Pooled::snapshot</code> or <code>Pooled::read_committed</code> <span class="r">MPA-LOAD-11</span></td><td><code>Pooled::read_committed</code>; a snapshot does not compile</td><td><code>Pooled::read_committed</code>; a snapshot does not compile</td></tr>
+      <tr><th>Save: the upsert</th><td><code>INSERT … ON CONFLICT (key) DO UPDATE</code> <span class="r">MPA-WRITE-3</span></td><td><code>INSERT … AS new ON DUPLICATE KEY UPDATE</code></td><td><code>INSERT … ON CONFLICT (key) DO UPDATE</code></td></tr>
+      <tr><th>Versioned insert, if absent</th><td><code>INSERT … ON CONFLICT (key) DO NOTHING</code> <span class="r">MPA-WRITE-9</span></td><td><code>INSERT … SELECT … WHERE NOT EXISTS</code>, since <code>ON DUPLICATE KEY</code> counts a found row as affected</td><td><code>INSERT … ON CONFLICT (key) DO NOTHING</code></td></tr>
+      <tr><th>Types only some support</th><td colspan="3"><code>#[view(databases = "postgres, mysql")]</code> limits a view to the listed databases, for field types not every enabled database can decode, such as a PostgreSQL array, or <code>rust_decimal::Decimal</code> on SQLite <span class="r">MPA-DB-2</span>. A registry is built for one database; using it on another fails with <code>Error::WrongBackend</code> <span class="r">MPA-DB-3</span>.</td></tr>
+    </tbody>
+  </table>
+  <div class="after">
+    <p><b>One trait, three implementations.</b> <code>mabat-sqlx</code> runs everything through a <code>Backend</code> trait implemented for each database: how rows are fetched and decoded, how keys are read and bound, how statements and their arguments are executed, how column types are described for the checks, and how a snapshot begins. The derive generates a decoder and an encoder for each enabled database, so a view whose field type one database cannot handle fails to compile there, not at run time — unless it opts out of that database.</p>
+    <p><b>The same everywhere.</b> The planner and the SQL renderer in <code>mabat-core</code> take a dialect, not a connection: the plan of a view, its query names, its aliases and the order of its queries do not depend on the database. The checks of overrides prepare and describe queries on whichever database the registry is built for, and the tests run on all three databases, including end-to-end suites against the Chinook sample database on each and Pagila on PostgreSQL.</p>
+  </div>
+</section>
+
+<!-- ============================================================ PAGE 11 -->
+<section class="page" id="page-11">
+  <header class="ph">
+    <h1>The contract</h1>
+    <span class="kicker">11 / 11 · from docs/mpa.json</span>
+  </header>
+  <p class="dek">Every capability of Mabat, against the areas of the MPA specification, with the rules that define it. The matrix is drawn from <code>docs/mpa.json</code> when this document is built, so it cannot drift from the index; the index cannot drift from the specification, and neither from the crates, because a test fails when the derive accepts an attribute, or the crate has an error variant, that the index does not list.</p>
+  <figure>
+    <img src="diagrams/10-contract.svg" alt="A matrix with a row for each of the 25 capabilities in docs/mpa.json, from typed-views to delete-aggregates, each with its summary, and a column for each area of the specification — CORE, DB, VIEW, SUM, LOAD, PLAN, OVR, JSON, GQL and WRITE — with the number of rules in the area. Each cell lists the numbers of the rules of that area that define the capability. A note below counts the capabilities and rules.">
+    <figcaption>
+      <p><b>Reading it.</b> A number is a rule of its column's area: under VIEW, 9 is <span class="r">MPA-VIEW-9</span>. A capability's row says where its contract is; a column says which capabilities an area of the specification serves. The areas are the sections of the specification: concepts, databases, declaring views, enums with data, loading, query planning, overrides, JSON and selections, GraphQL, and writing. Rules that define details — the errors, the decoding of a NULL, the order of children — are in the specification without a row of their own.</p>
+      <p><b>Written for tools.</b> <code>docs/mpa.json</code> lists every capability, attribute, function, error and diagnostic with the rules that define it, and <code>llms.txt</code> at the root of the repository points assistants to it. Rule identifiers are never reused: a removed rule keeps its number, marked removed <span class="r">MPA-DOC-2</span>. A code review, an issue or an assistant can cite <span class="r">MPA-WRITE-9</span> and mean one sentence, in one version of the contract.</p>
+      <p><b>What is not there.</b> Section 12 of the specification lists what Mabat 0.1 does not do, so tools do not generate code that relies on it: keys generated by the database when saving, saving graphs, a unit of work, lazy loading, writes through overrides, filters on embedded columns, GraphQL mutations, pipelining, and schema generation or migrations — views describe existing tables <span class="r">MPA-NOT-1</span> to <span class="r">MPA-NOT-9</span>.</p>
+    </figcaption>
+  </figure>
+</section>
+
+</body>
+</html>
