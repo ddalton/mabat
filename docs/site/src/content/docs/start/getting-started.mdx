@@ -1,0 +1,100 @@
+---
+title: Getting started
+description: Add Mabat to a project, declare a view and load it.
+---
+
+import { Steps, Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+<Steps>
+
+1. **Add the crates.** Mabat runs on SQLx 0.9 with the Tokio runtime. Choose the databases with features;
+   `postgres` is the default.
+
+   <Tabs syncKey="database">
+     <TabItem label="PostgreSQL">
+     ```toml
+     [dependencies]
+     mabat = "0.1"
+     sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
+     tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+     ```
+     </TabItem>
+     <TabItem label="MySQL">
+     ```toml
+     [dependencies]
+     mabat = { version = "0.1", default-features = false, features = ["mysql"] }
+     sqlx = { version = "0.9", default-features = false, features = ["mysql", "runtime-tokio"] }
+     tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+     ```
+     </TabItem>
+     <TabItem label="SQLite">
+     ```toml
+     [dependencies]
+     mabat = { version = "0.1", default-features = false, features = ["sqlite"] }
+     sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio"] }
+     tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+     ```
+     </TabItem>
+   </Tabs>
+
+2. **Declare views** for the shape you want to read. Each view names its table; fields are columns unless an
+   attribute makes them something else.
+
+   ```rust
+   use mabat::View;
+
+   #[derive(View, Debug)]
+   #[view(table = "task")]
+   struct TaskView {
+       id: i64,
+       name: String,
+       description: Option<String>,             // a nullable column
+       #[view(to_one(fk = "assignee_id"))]
+       assignee: Option<PersonView>,            // a reference, loaded in one batched query
+       #[view(child(fk = "parent_id", order_by = "position"))]
+       children: Vec<SubtaskView>,              // a collection, loaded in one batched query
+   }
+
+   #[derive(View, Debug)]
+   #[view(table = "person")]
+   struct PersonView {
+       id: i64,
+       #[view(column = "full_name")]
+       name: String,
+   }
+
+   #[derive(View, Debug)]
+   #[view(table = "task")]
+   struct SubtaskView {
+       id: i64,
+       name: String,
+   }
+   ```
+
+3. **Load** on a connection, a transaction or a pool connection.
+
+   ```rust
+   use mabat::filter::col;
+
+   let mut conn = sqlx::PgConnection::connect(&url).await?;
+   let task = mabat::load::<TaskView>().by_key(1_i64).one(&mut conn).await?;
+   let open = mabat::load::<TaskView>()
+       .filter(col("status").eq("open"))
+       .order_by("name")
+       .limit(20)
+       .all(&mut conn)
+       .await?;
+   ```
+
+4. **See the queries** Mabat runs: one for the tasks, one for the assignees, one for the subtasks.
+
+   ```rust
+   println!("{}", mabat::plan::<TaskView>()?.explain());
+   ```
+
+</Steps>
+
+<Aside type="tip" title="Next">
+  [Declaring views](../../guides/views/) covers every attribute; [Tuning with overrides](../../guides/overrides/)
+  shows how a DBA replaces a query; [Saving aggregates](../../guides/writing/) writes views back.
+</Aside>

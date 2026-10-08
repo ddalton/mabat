@@ -1,0 +1,93 @@
+/* Mabat's theme for Starlight: a deep indigo accent, Inter for text and JetBrains Mono for code. */
+
+:root {
+  --sl-font: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --sl-font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+  --sl-content-width: 48rem;
+}
+
+/* Dark mode */
+:root {
+  --sl-color-accent-low: #1e1b4b;
+  --sl-color-accent: #6366f1;
+  --sl-color-accent-high: #c7d2fe;
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #e2e8f0;
+  --sl-color-gray-2: #cbd5e1;
+  --sl-color-gray-3: #94a3b8;
+  --sl-color-gray-4: #64748b;
+  --sl-color-gray-5: #334155;
+  --sl-color-gray-6: #1e293b;
+  --sl-color-black: #0b1120;
+}
+
+/* Light mode */
+:root[data-theme='light'] {
+  --sl-color-accent-low: #e0e7ff;
+  --sl-color-accent: #4338ca;
+  --sl-color-accent-high: #1e1b4b;
+  --sl-color-white: #0f172a;
+  --sl-color-gray-1: #1e293b;
+  --sl-color-gray-2: #334155;
+  --sl-color-gray-3: #475569;
+  --sl-color-gray-4: #94a3b8;
+  --sl-color-gray-5: #cbd5e1;
+  --sl-color-gray-6: #f1f5f9;
+  --sl-color-gray-7: #f8fafc;
+  --sl-color-black: #ffffff;
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3 {
+  letter-spacing: -0.015em;
+}
+
+/* Tables read as reference: quiet borders, small caps headers */
+.sl-markdown-content table {
+  display: table;
+  width: 100%;
+  font-size: var(--sl-text-sm);
+}
+.sl-markdown-content th {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: var(--sl-text-xs);
+  color: var(--sl-color-gray-3);
+}
+
+/* Code reads literally: no ligatures that turn -< or -> into arrows */
+code,
+pre,
+kbd {
+  font-variant-ligatures: none;
+}
+
+/* Rule identifiers, such as MPA-WRITE-9: links that do not break, and definitions set as monospace labels */
+.sl-markdown-content a[href*='#mpa-'] {
+  white-space: nowrap;
+}
+.rule-id {
+  scroll-margin-top: calc(var(--sl-nav-height) + 1.5rem);
+}
+.rule-id + strong {
+  font-family: var(--sl-font-mono);
+  font-size: 0.82em;
+  font-weight: 600;
+  color: var(--sl-color-accent);
+  margin-inline-end: 0.25em;
+}
+.rule-id:target + strong {
+  background: var(--sl-color-accent-low);
+  border-radius: 0.25rem;
+  padding: 0.05em 0.3em;
+}
+
+/* Mermaid diagrams centred, without the code frame */
+pre.mermaid {
+  display: flex;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 1rem 0;
+}
