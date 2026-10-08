@@ -14,6 +14,7 @@ refract-core = { path = "crates/refract-core", version = "0.1.0" }
 refract-derive = { path = "crates/refract-derive", version = "0.1.0" }
 refract-sqlx = { path = "crates/refract-sqlx", version = "0.1.0" }
 
+arc-swap = "1"
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }

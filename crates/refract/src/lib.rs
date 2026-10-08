@@ -40,8 +40,8 @@
 
 pub use refract_derive::View;
 pub use refract_sqlx::{
-    Builder, Diagnostic, Embedded, Error, Key, Load, Node, OnInvalid, Origin, Refract, Report, Severity, ShadowSummary,
-    View, load, plan, scaffold,
+    Builder, Diagnostic, Embedded, Error, Key, Load, Node, OnInvalid, Origin, Refract, Reloaded, Report, Severity,
+    ShadowSummary, View, load, plan, scaffold,
 };
 
 /// The query plan of a view and its SQL.

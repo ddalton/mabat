@@ -2,10 +2,13 @@
 
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use arc_swap::ArcSwap;
 
 use refract_core::sql::{self, Layout, RootOptions};
 use refract_core::{Link, QueryPlan, ViewShape};
@@ -81,13 +84,28 @@ pub enum OnInvalid {
 }
 
 /// Builds a [`Refract`] registry. Created by [`Refract::builder`].
-#[derive(Default)]
+#[derive(Clone, Default)]
 #[must_use = "a builder does nothing until it is built"]
 pub struct Builder {
     views: Vec<ViewEntry>,
     dirs: Vec<PathBuf>,
-    inline: Vec<(String, String)>,
+    inline: Vec<Source>,
     on_invalid: OnInvalid,
+}
+
+/// The content of an override file, before it is parsed.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Source {
+    view: String,
+    file: String,
+    format: Format,
+    content: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Format {
+    Toml,
+    Sql,
 }
 
 impl Builder {
@@ -101,8 +119,10 @@ impl Builder {
         self
     }
 
-    /// Read override files from a directory: one TOML file per view, named after the view,
-    /// e.g. `TaskView.toml`. Other files are ignored.
+    /// Read override files from a directory: one file per view, named after the view,
+    /// either TOML (`TaskView.toml`) or SQL with a marker line before each query
+    /// (`TaskView.sql`). Other files are ignored. The directory is read again by
+    /// [`Refract::reload`].
     pub fn overrides_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.dirs.push(dir.into());
         self
@@ -111,11 +131,22 @@ impl Builder {
     /// The overrides of a view as TOML, in the format of an override file. For tests and
     /// for overrides that are embedded in the binary.
     pub fn overrides(mut self, view: impl Into<String>, toml: impl Into<String>) -> Self {
-        self.inline.push((view.into(), toml.into()));
+        let view = view.into();
+        let file = format!("{view}.toml (inline)");
+        self.inline.push(Source { view, file, format: Format::Toml, content: toml.into() });
         self
     }
 
-    /// What to do when an override does not pass the checks, [`OnInvalid::Fail`] by default.
+    /// The overrides of a view as SQL, in the format of a `.sql` override file.
+    pub fn overrides_sql(mut self, view: impl Into<String>, sql: impl Into<String>) -> Self {
+        let view = view.into();
+        let file = format!("{view}.sql (inline)");
+        self.inline.push(Source { view, file, format: Format::Sql, content: sql.into() });
+        self
+    }
+
+    /// What to do when an override does not pass the checks at build time,
+    /// [`OnInvalid::Fail`] by default.
     pub fn on_invalid(mut self, on_invalid: OnInvalid) -> Self {
         self.on_invalid = on_invalid;
         self
@@ -133,7 +164,9 @@ impl Builder {
     /// it. When the connection is in a transaction, each one is prepared in a savepoint
     /// that is rolled back, so a failing statement does not abort the transaction.
     pub async fn check(&self, conn: &mut PgConnection) -> Result<Report, Error> {
-        Ok(self.run_checks(conn).await?.1)
+        let mut report = Report::default();
+        let sources = self.read_sources(&mut report);
+        Ok(self.run_checks(conn, &sources, report).await?.1)
     }
 
     /// Check the views and the overrides against the database, as [`Builder::check`] does,
@@ -144,7 +177,10 @@ impl Builder {
     /// override is involved in, such as a generated query that does not match the
     /// database, always fail.
     pub async fn build(self, conn: &mut PgConnection) -> Result<Refract, Error> {
-        let (checked, report) = self.run_checks(conn).await?;
+        let mut report = Report::default();
+        let sources = self.read_sources(&mut report);
+        let fingerprint = fingerprint(&sources, &report);
+        let (checked, report) = self.run_checks(conn, &sources, report).await?;
         let fails = match self.on_invalid {
             OnInvalid::Fail => !report.is_ok(),
             OnInvalid::UseGenerated => report.errors().any(|d| d.origin.is_none() || d.code == "R0301"),
@@ -152,13 +188,19 @@ impl Builder {
         if fails {
             return Err(Error::Invalid(report));
         }
-        let views = checked.into_iter().map(|c| (shape_id(c.shape), c)).collect();
-        Ok(Refract { views, report })
+        Ok(Refract {
+            builder: self,
+            state: ArcSwap::from_pointee(State::new(checked, report)),
+            files: Mutex::new(Fingerprints { active: fingerprint, rejected: None }),
+        })
     }
 
-    async fn run_checks(&self, conn: &mut PgConnection) -> Result<(Vec<Checked>, Report), Error> {
-        let mut report = Report::default();
-
+    async fn run_checks(
+        &self,
+        conn: &mut PgConnection,
+        sources: &[Source],
+        mut report: Report,
+    ) -> Result<(Vec<Checked>, Report), Error> {
         let mut names: HashMap<&str, usize> = HashMap::new();
         for view in &self.views {
             *names.entry(view.shape.name).or_default() += 1;
@@ -177,12 +219,13 @@ impl Builder {
             }
         }
 
-        let files = self.read_files(&mut report);
+        let files = parse_sources(sources, &mut report);
         let checked = check::check(conn, &self.views, files, &mut report).await.map_err(Error::Check)?;
         Ok((checked, report))
     }
 
-    fn read_files(&self, report: &mut Report) -> Vec<OverrideFile> {
+    /// Read the override files of the directories, and the inline overrides.
+    fn read_sources(&self, report: &mut Report) -> Vec<Source> {
         let mut sources = Vec::new();
         for dir in &self.dirs {
             let entries = match std::fs::read_dir(dir) {
@@ -192,37 +235,63 @@ impl Builder {
                     continue;
                 }
             };
-            let mut paths: Vec<PathBuf> = entries
+            let mut paths: Vec<(PathBuf, Format)> = entries
                 .filter_map(|entry| entry.ok().map(|e| e.path()))
-                .filter(|path| path.extension().is_some_and(|ext| ext == "toml"))
+                .filter_map(|path| {
+                    let format = match path.extension()?.to_str()? {
+                        "toml" => Format::Toml,
+                        "sql" => Format::Sql,
+                        _ => return None,
+                    };
+                    Some((path, format))
+                })
                 .collect();
-            paths.sort();
-            for path in paths {
+            paths.sort_by(|a, b| a.0.cmp(&b.0));
+            for (path, format) in paths {
                 let file = path.display().to_string();
                 let view = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 match std::fs::read_to_string(&path) {
-                    Ok(content) => sources.push((view, file, content)),
+                    Ok(content) => sources.push(Source { view, file, format, content }),
                     Err(e) => report.push(file_error(&file, 1, format!("cannot read the file: {e}"))),
                 }
             }
         }
-        for (view, content) in &self.inline {
-            sources.push((view.clone(), format!("{view}.toml (inline)"), content.clone()));
-        }
-
-        let mut files: Vec<OverrideFile> = Vec::new();
-        for (view, file, content) in sources {
-            if files.iter().any(|f| f.view == view) {
-                report.push(file_error(&file, 1, format!("{view} already has an override file")));
-                continue;
-            }
-            match overrides::parse(&view, &file, &content) {
-                Ok(parsed) => files.push(parsed),
-                Err((origin, message)) => report.push(file_error(&origin.file, origin.line, message)),
-            }
-        }
-        files
+        sources.extend(self.inline.iter().cloned());
+        sources
     }
+}
+
+fn parse_sources(sources: &[Source], report: &mut Report) -> Vec<OverrideFile> {
+    let mut files: Vec<OverrideFile> = Vec::new();
+    for source in sources {
+        if let Some(other) = files.iter().find(|f| f.view == source.view) {
+            report.push(file_error(
+                &source.file,
+                1,
+                format!("{} already has an override file, {}", source.view, other.file),
+            ));
+            continue;
+        }
+        let parsed = match source.format {
+            Format::Toml => overrides::parse(&source.view, &source.file, &source.content),
+            Format::Sql => overrides::parse_sql(&source.view, &source.file, &source.content),
+        };
+        match parsed {
+            Ok(parsed) => files.push(parsed),
+            Err((origin, message)) => report.push(file_error(&origin.file, origin.line, message)),
+        }
+    }
+    files
+}
+
+/// A hash of the override files and the problems reading them, to tell whether they changed.
+fn fingerprint(sources: &[Source], read_problems: &Report) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    sources.hash(&mut hasher);
+    for diagnostic in read_problems.diagnostics() {
+        diagnostic.to_string().hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn file_error(file: &str, line: usize, message: String) -> Diagnostic {
@@ -243,7 +312,8 @@ fn shape_id(shape: &'static ViewShape) -> usize {
 
 /// The registered views, their plans and their checked overrides.
 ///
-/// Build it once at startup and share it; it is immutable.
+/// Build it once at startup and share it. Loads see a consistent set of overrides: one
+/// that started before a [`Refract::reload`] finishes with the overrides it started with.
 ///
 /// ```ignore
 /// let refract = Refract::builder()
@@ -255,8 +325,39 @@ fn shape_id(shape: &'static ViewShape) -> usize {
 /// let task = refract.load::<TaskView>().by_key(id).one(&mut *tx).await?;
 /// ```
 pub struct Refract {
-    views: HashMap<usize, Checked>,
-    report: Report,
+    builder: Builder,
+    state: ArcSwap<State>,
+    files: Mutex<Fingerprints>,
+}
+
+/// The checked views, replaced as a whole by a reload.
+struct State {
+    views: HashMap<usize, Arc<Checked>>,
+    report: Arc<Report>,
+}
+
+impl State {
+    fn new(checked: Vec<Checked>, report: Report) -> State {
+        let views = checked.into_iter().map(|c| (shape_id(c.shape), Arc::new(c))).collect();
+        State { views, report: Arc::new(report) }
+    }
+}
+
+/// The override files in use, and the last ones a reload rejected.
+struct Fingerprints {
+    active: u64,
+    rejected: Option<u64>,
+}
+
+/// The result of [`Refract::reload`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reloaded {
+    /// The override files are the same as at the last build or reload attempt; nothing
+    /// was checked.
+    Unchanged,
+    /// The override files changed, passed the checks and are in use. The report has the
+    /// warnings.
+    Updated(Report),
 }
 
 impl Refract {
@@ -267,25 +368,84 @@ impl Refract {
     /// Start loading values of a registered view, with its overrides.
     ///
     /// Loading a view that is not registered fails with [`Error::NotRegistered`].
-    pub fn load<T: View>(&self) -> Load<'_, T> {
-        Load::registered(self.views.get(&shape_id(T::shape())))
+    pub fn load<T: View>(&self) -> Load<T> {
+        Load::registered(self.checked::<T>())
+    }
+
+    fn checked<T: View>(&self) -> Option<Arc<Checked>> {
+        self.state.load().views.get(&shape_id(T::shape())).cloned()
     }
 
     /// The plan of a registered view.
-    pub fn plan<T: View>(&self) -> Option<&QueryPlan> {
-        self.views.get(&shape_id(T::shape())).map(|c| &c.plan)
+    pub fn plan<T: View>(&self) -> Option<Arc<QueryPlan>> {
+        self.checked::<T>().map(|c| c.plan.clone())
     }
 
     /// The warnings of checking the views, and with [`OnInvalid::UseGenerated`] the errors
-    /// of the overrides that are not used.
-    pub fn report(&self) -> &Report {
-        &self.report
+    /// of the overrides that are not used. After a reload, the report of the reload.
+    pub fn report(&self) -> Arc<Report> {
+        self.state.load().report.clone()
+    }
+
+    /// Read the override files again and, if they changed, check them and put them in use.
+    ///
+    /// The change is all or nothing: if the new files have any error, the overrides in use
+    /// stay as they are and the reload fails with [`Error::Invalid`], whatever
+    /// [`OnInvalid`] is. The same files are not checked again until they change, so this
+    /// can be called on a timer, on `SIGHUP` or from an admin endpoint:
+    ///
+    /// ```ignore
+    /// let mut interval = tokio::time::interval(Duration::from_secs(10));
+    /// loop {
+    ///     interval.tick().await;
+    ///     match refract.reload(&mut *pool.acquire().await?).await {
+    ///         Ok(Reloaded::Updated(_)) => tracing::info!("overrides reloaded"),
+    ///         Ok(Reloaded::Unchanged) => {}
+    ///         Err(e) => tracing::error!("overrides not reloaded: {e}"),
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Shadow statistics are kept for overrides whose SQL did not change.
+    pub async fn reload(&self, conn: &mut PgConnection) -> Result<Reloaded, Error> {
+        let mut report = Report::default();
+        let sources = self.builder.read_sources(&mut report);
+        let fingerprint = fingerprint(&sources, &report);
+        {
+            let files = self.files.lock().unwrap_or_else(|e| e.into_inner());
+            if files.active == fingerprint || files.rejected == Some(fingerprint) {
+                return Ok(Reloaded::Unchanged);
+            }
+        }
+
+        let (mut checked, report) = self.builder.run_checks(conn, &sources, report).await?;
+        if !report.is_ok() {
+            self.files.lock().unwrap_or_else(|e| e.into_inner()).rejected = Some(fingerprint);
+            return Err(Error::Invalid(report));
+        }
+
+        let previous = self.state.load();
+        for view in &mut checked {
+            let Some(old) = previous.views.get(&shape_id(view.shape)) else { continue };
+            for (query, active) in &mut view.overrides {
+                if let Some(old) = old.overrides.get(query)
+                    && old.sql == active.sql
+                    && old.shadow == active.shadow
+                {
+                    active.stats = old.stats.clone();
+                }
+            }
+        }
+
+        self.state.store(Arc::new(State::new(checked, report.clone())));
+        *self.files.lock().unwrap_or_else(|e| e.into_inner()) = Fingerprints { active: fingerprint, rejected: None };
+        Ok(Reloaded::Updated(report))
     }
 
     /// A readable description of the queries of a registered view, showing the SQL that
     /// runs for each: the override, or the generated SQL.
     pub fn explain<T: View>(&self) -> Option<String> {
-        let checked = self.views.get(&shape_id(T::shape()))?;
+        let checked = self.checked::<T>()?;
         let mut out = String::new();
         let mut queries = Vec::new();
         checked.plan.walk(&mut |plan| queries.push(plan));
@@ -316,8 +476,9 @@ impl Refract {
 
     /// The statistics of every shadowed override.
     pub fn shadow_stats(&self) -> Vec<ShadowSummary> {
+        let state = self.state.load();
         let mut summaries = Vec::new();
-        for checked in self.views.values() {
+        for checked in state.views.values() {
             for (query, active) in &checked.overrides {
                 if !active.shadow {
                     continue;
