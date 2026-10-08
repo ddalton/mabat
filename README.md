@@ -351,6 +351,28 @@ scripts/with-postgres.sh cargo run --release -p mabat --example parity   # bench
 
 Without a database (`MABAT_TEST_DATABASE_URL` unset), the database tests are skipped.
 
+### End-to-end tests
+
+The `mabat-e2e` crate tests Mabat against two well-known sample databases, both MIT licensed, and compares
+every load with an independent answer computed in SQL:
+
+- **[Pagila](https://github.com/devrimgunduz/pagila)** (a DVD rental store) covers:
+  - a PostgreSQL enum and a domain
+  - `text[]` arrays and `numeric` money
+  - payments in a partitioned table
+  - many-to-many links between films and actors, loaded as a graph of 200 actors and 997 films
+  - a reference cycle between stores and their staff
+  - overrides that derive an enum from legacy columns and call a stored function
+- **[Chinook](https://github.com/lerocha/chinook-database)** (a music store) covers:
+  - invoices whose totals must equal the sum of their lines exactly
+  - the recursive employee hierarchy, loaded as trees in both modes
+  - employees, customers and invoices as a graph
+  - albums in maps and playlists of tracks
+
+Each dataset is loaded once per database into a schema named after a hash of its SQL (`mabat_e2e_pagila_…`,
+`mabat_e2e_chinook_…`), and the tests only read it. `scripts/with-postgres.sh` starts with an empty database
+each time. With a database of your own, drop these schemas when you no longer need them.
+
 Mabat carries forward the ideas of [XOR](https://github.com/ddalton/xor), a Java library built around the same
 "view as contract" concept, along with the lessons learned building it.
 

@@ -195,8 +195,13 @@ async fn check_query(
 ///
 /// Returns the database's message if the statement does not prepare.
 async fn inspect(conn: &mut PgConnection, sql: &str) -> Result<Result<PgStatement, String>, sqlx::Error> {
+    // SQLx caches prepared statements by their SQL. Postgres infers the parameter types of a
+    // statement prepared without arguments, e.g. `smallint[]` for `smallint_column = ANY($1)`,
+    // while a load binds integer keys as `bigint[]`: the comment keeps the statements of the
+    // checks apart from the statements that loads run on the same connection.
+    let sql = format!("/* mabat check */ {sql}");
     let mut tx = conn.begin().await?;
-    let result = (&mut *tx).prepare(AssertSqlSafe(sql.to_string()).into_sql_str()).await;
+    let result = (&mut *tx).prepare(AssertSqlSafe(sql).into_sql_str()).await;
     tx.rollback().await?;
     match result {
         Ok(statement) => Ok(Ok(statement)),

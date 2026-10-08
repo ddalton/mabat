@@ -6,7 +6,7 @@ mod common;
 use common::TestDb;
 use common::fixture::*;
 use mabat::query::{Link, QueryPlan};
-use mabat::{Error, Mabat, OnInvalid, Report, Severity};
+use mabat::{Error, Mabat, OnInvalid, Report, Severity, View};
 
 /// A query of a plan as editable parts, rendered the way a DBA would write it.
 #[derive(Clone)]
@@ -623,6 +623,44 @@ async fn sql_override_files() {
     let error = report.errors().next().unwrap();
     assert_eq!(error.code, "M0100", "{report}");
     assert!(error.notes[0].starts_with("TaskView already has an override file"), "{report}");
+
+    db.drop().await;
+}
+
+/// Checks prepare statements on the connection they are given. A load on the same
+/// connection must not reuse them: Postgres infers `$1` of `smallint_key = ANY($1)` as
+/// `smallint[]` there, while loads bind integer keys as `bigint[]`.
+#[tokio::test]
+async fn checks_do_not_change_the_statements_of_loads() {
+    #[derive(View, Debug, PartialEq)]
+    #[view(table = "box")]
+    struct BoxView {
+        name: String,
+        #[view(child(fk = "box_id", order_by = "id"))]
+        items: Vec<ItemView>,
+    }
+
+    #[derive(View, Debug, PartialEq)]
+    #[view(table = "item")]
+    struct ItemView {
+        label: String,
+    }
+
+    let ddl = "CREATE TABLE box (id SMALLINT PRIMARY KEY, name TEXT NOT NULL);
+               CREATE TABLE item (id SMALLINT PRIMARY KEY, box_id SMALLINT NOT NULL REFERENCES box (id), label TEXT NOT NULL);
+               INSERT INTO box VALUES (1, 'tools'), (2, 'toys');
+               INSERT INTO item VALUES (10, 1, 'hammer'), (11, 1, 'saw'), (20, 2, 'ball');";
+    let Some(mut db) = TestDb::new("check_statements", ddl).await else { return };
+    let overrides = "-- mabat: query items\n\
+                     SELECT i.id AS \"$key\", i.box_id AS \"$parent\", i.label AS \"label\"\n\
+                     FROM item i WHERE i.box_id = ANY($1) ORDER BY i.id\n";
+    let mabat = Mabat::builder().register::<BoxView>().overrides_sql("BoxView", overrides).build(&mut db.conn).await;
+    let mabat = mabat.unwrap();
+    assert!(mabat.report().diagnostics().is_empty(), "{}", mabat.report());
+
+    let boxes = mabat.load::<BoxView>().by_keys([1_i16, 2]).order_by("id").all(&mut db.conn).await.unwrap();
+    let labels: Vec<Vec<&str>> = boxes.iter().map(|b| b.items.iter().map(|i| i.label.as_str()).collect()).collect();
+    assert_eq!(labels, [vec!["hammer", "saw"], vec!["ball"]]);
 
     db.drop().await;
 }

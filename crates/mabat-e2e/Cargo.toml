@@ -1,0 +1,20 @@
+[package]
+name = "mabat-e2e"
+description = "End-to-end tests of Mabat against the Pagila and Chinook sample databases"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+# Test only, with 5 MB of sample data; never published
+publish = false
+
+[dependencies]
+chrono.workspace = true
+mabat.workspace = true
+rust_decimal = "1"
+sqlx = { workspace = true, features = ["rust_decimal"] }
+
+[dev-dependencies]
+tokio.workspace = true

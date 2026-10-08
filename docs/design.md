@@ -825,6 +825,21 @@ database.
 - **Benchmarks** (`criterion`): each view against hand-written SQLx for the same SQL, at 1, 100 and 10,000
   roots. The goal is decoding overhead within about 10%.
 
+> **As built:**
+>
+> - **Integration tests** run against a throwaway PostgreSQL cluster (`scripts/with-postgres.sh`) or CI's
+>   PostgreSQL service, not `testcontainers`.
+> - **End-to-end tests** (`mabat-e2e`) run against the Pagila and Chinook sample databases, comparing every load
+>   with SQL.
+> - **The parity benchmark** is the `parity` example.
+>
+> The end-to-end tests found two bugs that the hand-written test schemas had missed:
+>
+> - **Shared prepared statements:** statements prepared by the checks were reused by loads on the same
+>   connection, with the `smallint[]` parameter type Postgres had inferred for them.
+> - **A panic in the manifest:** SQLx's check for `text[]` panics on a type declared only by name, and the
+>   manifest's type matching passed it one. It now resolves SQLx's own built-in types.
+
 ## 17. Milestones
 
 | # | Milestone | Scope | Exit criteria |
