@@ -11,7 +11,7 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 
 use refract_core::sql::{self, Layout, RootOptions};
-use refract_core::{Link, QueryPlan, ViewShape};
+use refract_core::{ChildQuery, QueryPlan, ViewShape};
 use sqlx::PgConnection;
 
 use crate::check::{self, Checked, ViewEntry};
@@ -479,13 +479,7 @@ impl Refract {
 
 fn explain_query(out: &mut String, plan: &QueryPlan, overrides: &Overrides, depth: usize) {
     let indent = "  ".repeat(depth);
-    let link = match &plan.link {
-        Link::Root => String::new(),
-        Link::Child { fk } => format!(" (to-many by {fk})"),
-        Link::ToOne { ref_alias } => format!(" (to-one by {ref_alias})"),
-        Link::Variant { tag_alias, tag_value } => format!(" (variant where {tag_alias} = '{tag_value}')"),
-    };
-    let _ = writeln!(out, "{indent}{}: {}{link}", plan.query_name(), plan.shape.name);
+    let _ = writeln!(out, "{indent}{}: {}{}", plan.query_name(), plan.shape.name, plan.link.describe());
     match overrides.get(plan.query_name()) {
         Some(active) => {
             let shadow = if active.shadow { ", shadowed" } else { "" };
@@ -499,7 +493,16 @@ fn explain_query(out: &mut String, plan: &QueryPlan, overrides: &Overrides, dept
         }
     }
     for child in &plan.children {
-        explain_query(out, &child.plan, overrides, depth + 1);
+        let field = plan.shape.fields[child.field_index].name;
+        match &child.query {
+            ChildQuery::Query(child) => explain_query(out, child, overrides, depth + 1),
+            ChildQuery::Repeat { up, depth: levels } => {
+                let _ = writeln!(out, "{indent}  {field}: repeats the query {up} level(s) up, at most {levels} levels");
+            }
+            ChildQuery::Same => {
+                let _ = writeln!(out, "{indent}  {field}: all levels in this query");
+            }
+        }
     }
 }
 

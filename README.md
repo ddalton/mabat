@@ -3,7 +3,7 @@
 Typed aggregate reads for Rust, with SQL you can tune without changing code.
 
 > **Status:** early development, not published yet. Milestones 1 (struct views, PostgreSQL, reads), 2 (enums
-> with data) and 3 (overrides checked at startup) are implemented. See the [design document](docs/design.md) for the
+> with data), 3 (overrides checked at startup) and 4 (collections and recursive views) are implemented. See the [design document](docs/design.md) for the
 > plan.
 
 Refract loads nested, typed data from PostgreSQL. The shape of the result is declared with ordinary Rust structs,
@@ -74,6 +74,49 @@ let total = refract::load::<TaskView>().filter(col("status").eq("open")).count(&
 // The queries Refract runs
 println!("{}", refract::plan::<TaskView>()?.explain());
 ```
+
+## Collections and recursive views
+
+```rust
+#[derive(View)]
+#[view(table = "playlist")]
+struct PlaylistView {
+    name: String,
+    // many-to-many through a link table, placed by its index column whatever the row order
+    #[view(child(through = "playlist_song", fk = "playlist_id", target = "song_id", index = "seq"))]
+    songs: Vec<SongView>,
+    // a map keyed by a column (BTreeMap or HashMap)
+    #[view(child(fk = "playlist_id", key = "name"))]
+    settings: BTreeMap<String, SettingView>,
+}
+
+#[derive(View)]
+#[view(table = "category")]
+struct CategoryTree {
+    name: String,
+    // a tree loaded level by level: one batched query per level, at most 5 levels
+    #[view(child(fk = "parent_id", index = "position", depth = 5))]
+    children: Vec<CategoryTree>,
+}
+
+#[derive(View)]
+#[view(table = "category")]
+struct CategoryCte {
+    name: String,
+    // a tree of any depth loaded with one WITH RECURSIVE query
+    #[view(child(fk = "parent_id", order_by = "name", recursive = "cte"))]
+    children: Vec<CategoryCte>,
+}
+```
+
+Recursive views are owned trees, so they need no `Rc` or `RefCell`.
+
+- **Overrides:** a recursive collection has one query name, such as `children`, so one override tunes every
+  level.
+- **Nested collections:** with `recursive = "cte"`, collections under the recursive view (each category's
+  products, say) load with one query for all levels.
+- **Cycles:** rows whose parents form a cycle can't be a tree, and loading them is an error rather than an
+  endless loop.
 
 ## Enums with data
 
@@ -204,7 +247,7 @@ ORDER BY n.id;
 | Enums with data: `tag` and `table_per_variant` strategies, nested enums, JSON fields | Done (M2) |
 | Filters on the root query, counting | Done |
 | SQL overrides checked at startup, shadow mode, scaffolding, reloading | Done (M3) |
-| Ordered lists, maps, many-to-many, recursive views | Planned (M4) |
+| Ordered lists, maps, many-to-many, recursive views | Done (M4) |
 | Shared (`Arc`) and graph (`Ref<T>`) representations for cyclic data | Planned (M5) |
 | GraphQL selection sets | Planned (M7) |
 

@@ -1,0 +1,5 @@
+error: a map collection needs `key = "..."`, the column of the map key
+  --> tests/ui/map_without_key.rs:12:12
+   |
+12 |     #[view(child(fk = "playlist_id"))]
+   |            ^^^^^

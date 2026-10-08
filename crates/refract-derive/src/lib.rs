@@ -54,8 +54,27 @@ enum FieldSpec {
     Column { column: String },
     Json { column: String },
     Embed { prefix: String, ty: Type },
-    Child { fk: String, order_by: Vec<(String, bool)>, element: Type },
+    Child(Box<ChildSpec>),
     ToOne { fk: String, optional: bool, target: Type },
+}
+
+struct ChildSpec {
+    fk: String,
+    order_by: Vec<(String, bool)>,
+    /// The view of the elements.
+    element: Type,
+    /// The key type of a map collection.
+    map_key_type: Option<Type>,
+    /// `(table, target)`
+    through: Option<(String, String)>,
+    index: Option<String>,
+    map_key: Option<String>,
+    recursion: Option<RecursionSpec>,
+}
+
+enum RecursionSpec {
+    Depth(u32),
+    Cte(Option<u32>),
 }
 
 /// How a field is named: a named field, or the position of a tuple field.
@@ -223,7 +242,7 @@ fn parse_variants(data: &DataEnum, strategy: Strategy) -> syn::Result<Vec<Varian
 
         if strategy == Strategy::Tag {
             for field in &fields {
-                if matches!(field.spec, FieldSpec::Child { .. } | FieldSpec::ToOne { .. }) {
+                if matches!(field.spec, FieldSpec::Child(_) | FieldSpec::ToOne { .. }) {
                     return Err(syn::Error::new(
                         field.span,
                         "a variant stored in columns can only contain columns, embedded values and json fields; \
@@ -276,23 +295,8 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
             } else if meta.path.is_ident("json") {
                 json = true;
             } else if meta.path.is_ident("child") {
-                let mut fk = None;
-                let mut order_by = Vec::new();
-                meta.parse_nested_meta(|inner| {
-                    if inner.path.is_ident("fk") {
-                        fk = Some(inner.value()?.parse::<LitStr>()?.value());
-                    } else if inner.path.is_ident("order_by") {
-                        let lit = inner.value()?.parse::<LitStr>()?;
-                        order_by = parse_order_by(&lit)?;
-                    } else {
-                        return Err(inner.error("unknown `child` attribute, expected `fk` or `order_by`"));
-                    }
-                    Ok(())
-                })?;
-                let fk = fk.ok_or_else(|| syn::Error::new(span, "`child` needs `fk = \"...\"`"))?;
-                let element = generic_argument(&ty, "Vec")
-                    .ok_or_else(|| syn::Error::new(ty.span(), "a `child` field needs to be a `Vec` of a view"))?;
-                set(&mut spec, FieldSpec::Child { fk, order_by, element: element.clone() }, span)?;
+                let child = parse_child(&meta, &ty)?;
+                set(&mut spec, FieldSpec::Child(Box::new(child)), span)?;
             } else if meta.path.is_ident("to_one") {
                 let mut fk = None;
                 meta.parse_nested_meta(|inner| {
@@ -354,6 +358,107 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
     Ok(ViewField { member, name, span, ty, spec })
 }
 
+fn parse_child(meta: &syn::meta::ParseNestedMeta<'_>, ty: &Type) -> syn::Result<ChildSpec> {
+    let span = meta.path.span();
+    let mut fk = None;
+    let mut order_by = Vec::new();
+    let mut through = None;
+    let mut target = None;
+    let mut index = None;
+    let mut map_key = None;
+    let mut depth = None;
+    let mut cte = false;
+    meta.parse_nested_meta(|inner| {
+        let string = || -> syn::Result<String> { Ok(inner.value()?.parse::<LitStr>()?.value()) };
+        if inner.path.is_ident("fk") {
+            fk = Some(string()?);
+        } else if inner.path.is_ident("order_by") {
+            let lit = inner.value()?.parse::<LitStr>()?;
+            order_by = parse_order_by(&lit)?;
+        } else if inner.path.is_ident("through") {
+            through = Some(string()?);
+        } else if inner.path.is_ident("target") {
+            target = Some(string()?);
+        } else if inner.path.is_ident("index") {
+            index = Some(string()?);
+        } else if inner.path.is_ident("key") {
+            map_key = Some(string()?);
+        } else if inner.path.is_ident("depth") {
+            let lit = inner.value()?.parse::<syn::LitInt>()?;
+            let value: u32 = lit.base10_parse()?;
+            if value == 0 {
+                return Err(syn::Error::new(lit.span(), "`depth` needs to be at least 1"));
+            }
+            depth = Some(value);
+        } else if inner.path.is_ident("recursive") {
+            let lit = inner.value()?.parse::<LitStr>()?;
+            if lit.value() != "cte" {
+                return Err(syn::Error::new(lit.span(), "expected `recursive = \"cte\"`"));
+            }
+            cte = true;
+        } else {
+            return Err(inner.error(
+                "unknown `child` attribute, expected `fk`, `order_by`, `through`, `target`, `index`, `key`, \
+                 `depth` or `recursive`",
+            ));
+        }
+        Ok(())
+    })?;
+
+    let fk = fk.ok_or_else(|| syn::Error::new(span, "`child` needs `fk = \"...\"`"))?;
+    let through = match (through, target) {
+        (Some(table), Some(target)) => Some((table, target)),
+        (None, None) => None,
+        _ => return Err(syn::Error::new(span, "`through` and `target` need to be used together")),
+    };
+
+    let (element, map_key_type) = match (generic_argument(ty, "Vec"), map_arguments(ty)) {
+        (Some(element), _) => {
+            if map_key.is_some() {
+                return Err(syn::Error::new(ty.span(), "`key` needs a `BTreeMap` or `HashMap` field"));
+            }
+            (element.clone(), None)
+        }
+        (None, Some((key, value))) => {
+            if map_key.is_none() {
+                return Err(syn::Error::new(span, "a map collection needs `key = \"...\"`, the column of the map key"));
+            }
+            if index.is_some() {
+                return Err(syn::Error::new(span, "`index` places the elements of a `Vec`, not of a map"));
+            }
+            (value.clone(), Some(key.clone()))
+        }
+        (None, None) => {
+            return Err(syn::Error::new(
+                ty.span(),
+                "a `child` field needs to be a `Vec` of a view, or a `BTreeMap` or `HashMap` of views",
+            ));
+        }
+    };
+
+    let recursion = match (depth, cte) {
+        (depth, true) => Some(RecursionSpec::Cte(depth)),
+        (Some(depth), false) => Some(RecursionSpec::Depth(depth)),
+        (None, false) => None,
+    };
+    Ok(ChildSpec { fk, order_by, element, map_key_type, through, index, map_key, recursion })
+}
+
+/// The key and value types of `BTreeMap<K, V>` or `HashMap<K, V>`.
+fn map_arguments(ty: &Type) -> Option<(&Type, &Type)> {
+    let Type::Path(path) = ty else { return None };
+    let segment = path.path.segments.last()?;
+    if segment.ident != "BTreeMap" && segment.ident != "HashMap" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &segment.arguments else { return None };
+    let mut types = args.args.iter().filter_map(|arg| match arg {
+        GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    });
+    Some((types.next()?, types.next()?))
+}
+
 fn parse_order_by(lit: &LitStr) -> syn::Result<Vec<(String, bool)>> {
     let mut result = Vec::new();
     for term in lit.value().split(',') {
@@ -399,16 +504,46 @@ fn field_shape(field: &ViewField) -> TokenStream2 {
                 shape: <#ty as ::refract::Embedded>::shape,
             }
         },
-        FieldSpec::Child { fk, order_by, element } => {
+        FieldSpec::Child(child) => {
+            let ChildSpec { fk, order_by, element, through, index, map_key, recursion, .. } = &**child;
             let order_by = order_by.iter().map(|(column, descending)| {
                 quote! { ::refract::__private::OrderBy { column: #column, descending: #descending } }
             });
+            let option = |value: &Option<String>| match value {
+                Some(value) => quote! { ::core::option::Option::Some(#value) },
+                None => quote! { ::core::option::Option::None },
+            };
+            let through = match through {
+                Some((table, target)) => quote! {
+                    ::core::option::Option::Some(::refract::__private::Through { table: #table, target: #target })
+                },
+                None => quote! { ::core::option::Option::None },
+            };
+            let index = option(index);
+            let map_key = option(map_key);
+            let recursion = match recursion {
+                Some(RecursionSpec::Depth(depth)) => {
+                    quote! { ::core::option::Option::Some(::refract::__private::Recursion::Depth(#depth)) }
+                }
+                Some(RecursionSpec::Cte(depth)) => {
+                    let depth = match depth {
+                        Some(depth) => quote! { ::core::option::Option::Some(#depth) },
+                        None => quote! { ::core::option::Option::None },
+                    };
+                    quote! { ::core::option::Option::Some(::refract::__private::Recursion::Cte { depth: #depth }) }
+                }
+                None => quote! { ::core::option::Option::None },
+            };
             quote! {
-                ::refract::__private::FieldKind::Child {
+                ::refract::__private::FieldKind::Child(::refract::__private::Child {
                     fk: #fk,
                     order_by: &[#(#order_by),*],
                     shape: <#element as ::refract::View>::shape,
-                }
+                    through: #through,
+                    index: #index,
+                    map_key: #map_key,
+                    recursion: #recursion,
+                })
             }
         }
         FieldSpec::ToOne { fk, optional, target } => quote! {
@@ -489,7 +624,13 @@ fn decode_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStrea
             let field_index = scope.field_index(index);
             quote! { <#ty as ::refract::Embedded>::decode_embedded(row, node, #prefix, #field_index)? }
         }
-        FieldSpec::Child { element, .. } => quote! { ::refract::__private::children::<#element>(row, node, #index)? },
+        FieldSpec::Child(child) => {
+            let element = &child.element;
+            match &child.map_key_type {
+                None => quote! { ::refract::__private::children::<#element>(row, node, #index)? },
+                Some(key) => quote! { ::refract::__private::map::<#key, #element, #ty>(row, node, #index)? },
+            }
+        }
         FieldSpec::ToOne { optional, target, .. } => {
             let ref_alias = format!("$ref.{name}");
             if *optional {
@@ -519,9 +660,14 @@ fn describe_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStr
             let field_index = scope.field_index(index);
             quote! { <#ty as ::refract::Embedded>::describe_embedded(description, #prefix, #field_index); }
         }
-        FieldSpec::Child { element: target, .. } | FieldSpec::ToOne { target, .. } => {
-            quote! { description.view::<#target>(#index); }
+        FieldSpec::Child(child) => {
+            let element = &child.element;
+            match &child.map_key_type {
+                None => quote! { description.view::<#element>(#index); },
+                Some(key) => quote! { description.map::<#key, #element>(#index); },
+            }
         }
+        FieldSpec::ToOne { target, .. } => quote! { description.view::<#target>(#index); },
     }
 }
 
@@ -578,7 +724,7 @@ fn expand_view(ident: &Ident, table: &str, key: &str, fields: &[ViewField]) -> s
 
 fn expand_embedded(ident: &Ident, fields: &[ViewField]) -> syn::Result<TokenStream2> {
     for field in fields {
-        if matches!(field.spec, FieldSpec::Child { .. } | FieldSpec::ToOne { .. }) {
+        if matches!(field.spec, FieldSpec::Child(_) | FieldSpec::ToOne { .. }) {
             return Err(syn::Error::new(
                 field.span,
                 "an embedded struct can only contain columns and other embedded structs",

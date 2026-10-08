@@ -12,6 +12,13 @@ use crate::shape::OrderBy;
 /// Table alias of the entity selected by a query.
 const TABLE_ALIAS: &str = "t0";
 
+/// Table alias of the link table of a many-to-many collection.
+const LINK_ALIAS: &str = "j";
+
+/// Name and alias of the recursive CTE of a recursive collection.
+const TREE: &str = "\"$tree\"";
+const TREE_ALIAS: &str = "r";
+
 /// Options of the root query.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RootOptions {
@@ -84,17 +91,51 @@ pub fn select_with(plan: &QueryPlan, root: &RootOptions, layout: Layout) -> Stri
         Layout::Line => (", ", " "),
         Layout::Multiline => (",\n       ", "\n"),
     };
-    let mut sql = String::from("SELECT ");
+    let table = quote_ident(plan.shape.table);
+    let key = quote_ident(plan.shape.key_column);
+    let mut sql = String::new();
+    if let (Some(cte), Link::Child { fk, .. }) = (&plan.cte, &plan.link) {
+        // All levels of a recursive collection: the keys of the rows, then their columns, each
+        // row once even if it is below several of the parent keys. The path of keys stops the
+        // recursion at cycles in the data.
+        let fk = quote_ident(fk);
+        let limit = cte.depth.map(|depth| format!(" AND {TREE_ALIAS}.\"depth\" < {depth}")).unwrap_or_default();
+        let _ = write!(
+            sql,
+            "WITH RECURSIVE {TREE} AS ({clause}SELECT {TABLE_ALIAS}.{key} AS \"k\", ARRAY[{TABLE_ALIAS}.{key}] AS \"path\", \
+             1 AS \"depth\" FROM {table} AS {TABLE_ALIAS} WHERE {TABLE_ALIAS}.{fk} = ANY($1){clause}UNION ALL{clause}\
+             SELECT {TABLE_ALIAS}.{key}, {TREE_ALIAS}.\"path\" || {TABLE_ALIAS}.{key}, {TREE_ALIAS}.\"depth\" + 1 \
+             FROM {table} AS {TABLE_ALIAS} JOIN {TREE} AS {TREE_ALIAS} ON {TABLE_ALIAS}.{fk} = {TREE_ALIAS}.\"k\" \
+             WHERE {TABLE_ALIAS}.{key} <> ALL({TREE_ALIAS}.\"path\"){limit}{clause}){clause}"
+        );
+    }
+    sql.push_str("SELECT ");
     for (i, column) in plan.columns.iter().enumerate() {
         if i > 0 {
             sql.push_str(column_separator);
         }
         let cast = if column.as_text { "::text" } else { "" };
-        let _ = write!(sql, "{TABLE_ALIAS}.{}{cast} AS {}", quote_ident(&column.column), quote_ident(&column.alias));
+        let source = if column.from_link { LINK_ALIAS } else { TABLE_ALIAS };
+        let _ = write!(sql, "{source}.{}{cast} AS {}", quote_ident(&column.column), quote_ident(&column.alias));
     }
-    let _ = write!(sql, "{clause}FROM {} AS {TABLE_ALIAS}", quote_ident(plan.shape.table));
+    if plan.cte.is_some() {
+        let _ = write!(
+            sql,
+            "{clause}FROM (SELECT DISTINCT \"k\" FROM {TREE}) AS {TREE_ALIAS} \
+             JOIN {table} AS {TABLE_ALIAS} ON {TABLE_ALIAS}.{key} = {TREE_ALIAS}.\"k\""
+        );
+    } else {
+        let _ = write!(sql, "{clause}FROM {table} AS {TABLE_ALIAS}");
+    }
+    if let Link::Child { through: Some(through), .. } = &plan.link {
+        let _ = write!(
+            sql,
+            " JOIN {} AS {LINK_ALIAS} ON {LINK_ALIAS}.{} = {TABLE_ALIAS}.{key}",
+            quote_ident(through.table),
+            quote_ident(through.target)
+        );
+    }
 
-    let key = quote_ident(plan.shape.key_column);
     let order_by: &[OrderBy] = match &plan.link {
         Link::Root => {
             let key = format!("{TABLE_ALIAS}.{key}");
@@ -103,8 +144,10 @@ pub fn select_with(plan: &QueryPlan, root: &RootOptions, layout: Layout) -> Stri
             }
             &root.order_by
         }
-        Link::Child { fk } => {
-            let _ = write!(sql, "{clause}WHERE {TABLE_ALIAS}.{} = ANY($1)", quote_ident(fk));
+        Link::Child { .. } if plan.cte.is_some() => &plan.order_by,
+        Link::Child { fk, through } => {
+            let source = if through.is_some() { LINK_ALIAS } else { TABLE_ALIAS };
+            let _ = write!(sql, "{clause}WHERE {source}.{} = ANY($1)", quote_ident(fk));
             &plan.order_by
         }
         Link::ToOne { .. } | Link::Variant { .. } => {
@@ -227,14 +270,16 @@ fn trim_statement(sql: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shape::{Field, FieldKind, ViewShape};
+    use crate::shape::{Child, Field, FieldKind, ViewShape};
 
     static ITEM_FIELDS: [Field; 1] = [Field { name: "label", kind: FieldKind::Column { column: "my \"label\"" } }];
     static ITEM: ViewShape = ViewShape { name: "Item", table: "item", key_column: "id", fields: &ITEM_FIELDS };
 
     static ORDER: [OrderBy; 1] = [OrderBy::asc("position")];
-    static LIST_FIELDS: [Field; 1] =
-        [Field { name: "items", kind: FieldKind::Child { fk: "list_id", order_by: &ORDER, shape: || &ITEM } }];
+    static LIST_FIELDS: [Field; 1] = [Field {
+        name: "items",
+        kind: FieldKind::Child(Child { order_by: &ORDER, ..Child::new("list_id", || &ITEM) }),
+    }];
     static LIST: ViewShape = ViewShape { name: "List", table: "list", key_column: "id", fields: &LIST_FIELDS };
 
     #[test]
@@ -273,7 +318,7 @@ mod tests {
     fn multiline_layout() {
         let plan = QueryPlan::build(&LIST).unwrap();
         assert_eq!(
-            select_with(&plan.children[0].plan, &RootOptions::default(), Layout::Multiline),
+            select_with(plan.children[0].plan().unwrap(), &RootOptions::default(), Layout::Multiline),
             "SELECT t0.\"id\" AS \"$key\",\n       t0.\"list_id\" AS \"$parent\",\n       \
              t0.\"my \"\"label\"\"\" AS \"label\"\nFROM \"item\" AS t0\nWHERE t0.\"list_id\" = ANY($1)\n\
              ORDER BY t0.\"position\", t0.\"id\""
@@ -348,7 +393,7 @@ mod tests {
     #[test]
     fn child_select() {
         let plan = QueryPlan::build(&LIST).unwrap();
-        let child = &plan.children[0].plan;
+        let child = plan.children[0].plan().unwrap();
         // root options do not apply to child queries
         let options = RootOptions { limit: Some(1), ..RootOptions::default() };
         assert_eq!(

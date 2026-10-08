@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use refract_core::sql::{self, RootOptions};
-use refract_core::{KEY_ALIAS, Link, PARENT_ALIAS, QueryPlan, ViewShape};
+use refract_core::{INDEX_ALIAS, KEY_ALIAS, Link, MAP_KEY_ALIAS, PARENT_ALIAS, QueryPlan, ViewShape};
 use sqlx::postgres::{PgStatement, PgTypeInfo};
 use sqlx::{AssertSqlSafe, Column, Connection, Either, Executor, PgConnection, SqlSafeStr, Statement, TypeInfo};
 
@@ -89,7 +89,7 @@ pub(crate) async fn check(
         }
 
         let mut overrides = Overrides::new();
-        let context = Context { view: view.shape.name, by_query: &by_query };
+        let context = Context { view: view.shape.name, by_query: &by_query, map_key: None };
         check_query(conn, &context, &plan, view.describe, None, &mut overrides, report).await?;
         checked.push(Checked { shape: view.shape, plan: Arc::new(plan), overrides });
     }
@@ -115,9 +115,12 @@ pub(crate) async fn check(
     Ok(checked)
 }
 
+#[derive(Clone, Copy)]
 struct Context<'a> {
     view: &'static str,
     by_query: &'a HashMap<&'a str, &'a QueryOverride>,
+    /// The type of the map key of the query, for a map collection.
+    map_key: Option<&'a ColumnType>,
 }
 
 /// The key class the query is linked to its parent query with: the class of the parent's
@@ -202,18 +205,21 @@ fn check_query<'a>(
             );
         }
 
+        // Queries that are repeated for the levels of a recursive collection are checked once
         for child in &plan.children {
-            let child_class = classes.as_ref().and_then(|classes| match &child.plan.link {
+            let Some(child_plan) = child.plan() else { continue };
+            let child_class = classes.as_ref().and_then(|classes| match &child_plan.link {
                 Link::Child { .. } | Link::Variant { .. } => classes.get(&plan.key_alias).copied(),
                 Link::ToOne { ref_alias } => classes.get(ref_alias).copied(),
                 Link::Root => None,
             });
-            let describe = match child.variant {
+            let (describe, map_key) = match child.variant {
                 None => description.child(child.field_index),
-                Some(variant) => description.variant(child.field_index, variant),
+                Some(variant) => description.variant(child.field_index, variant).map(|describe| (describe, None)),
             }
             .expect("the description and the shape of a view have the same fields");
-            check_query(conn, context, &child.plan, describe, child_class, overrides, report).await?;
+            let child_context = Context { map_key, ..*context };
+            check_query(conn, &child_context, child_plan, describe, child_class, overrides, report).await?;
         }
         Ok(())
     })
@@ -281,7 +287,9 @@ impl Query<'_> {
             .iter()
             .map(|c| {
                 let alias = c.alias.as_str();
-                if alias.starts_with('$') {
+                if alias == MAP_KEY_ALIAS {
+                    Expected { alias, column: self.context.map_key, key: false }
+                } else if alias.starts_with('$') {
                     Expected { alias, column: None, key: true }
                 } else {
                     Expected { alias, column: self.description.column_type(alias), key: alias == self.plan.key_alias }
@@ -333,6 +341,13 @@ impl Query<'_> {
                 ));
                 continue;
             }
+            if name == INDEX_ALIAS && KeyClass::of(ty) != Some(KeyClass::Int) {
+                errors.push(format!(
+                    "column {n} \"{name}\" has type {}; it places the elements of the list, so it needs an integer type",
+                    ty.name()
+                ));
+                continue;
+            }
             if expected.key {
                 match KeyClass::of(ty) {
                     None => errors.push(format!(
@@ -370,6 +385,12 @@ impl Query<'_> {
                 Some(column) if column.optional => missing_optional.push(expected.alias),
                 _ if expected.alias == PARENT_ALIAS => errors
                     .push(format!("column \"{PARENT_ALIAS}\" is not selected; it attaches the rows to their parent")),
+                _ if expected.alias == INDEX_ALIAS => {
+                    errors.push(format!("column \"{INDEX_ALIAS}\" is not selected; it places the elements of the list"))
+                }
+                _ if expected.alias == MAP_KEY_ALIAS => {
+                    errors.push(format!("column \"{MAP_KEY_ALIAS}\" is not selected; it is the key of each element"))
+                }
                 _ if expected.alias.starts_with('$') => {
                     errors.push(format!("column \"{}\" is not selected; it holds a key", expected.alias))
                 }

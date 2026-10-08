@@ -10,10 +10,11 @@ pub mod plan;
 pub mod shape;
 pub mod sql;
 
-pub use plan::{ChildPlan, Link, PlanError, QueryPlan, SelectColumn};
+pub use plan::{ChildPlan, ChildQuery, Cte, Link, PlanError, QueryPlan, SelectColumn};
 pub use plan::{SumPlan, VariantPlan};
 pub use shape::{
-    EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, SumShape, SumStrategy, Variant, VariantData, ViewShape,
+    Child, EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, Recursion, SumShape, SumStrategy, Through, Variant,
+    VariantData, ViewShape,
 };
 
 /// Alias of the key column of the entity selected by a query.
@@ -27,6 +28,12 @@ pub const ROOT_QUERY: &str = "$root";
 
 /// Last segment of the alias of the tag column of an enum, e.g. `status.$tag`.
 pub const TAG_ALIAS: &str = "$tag";
+
+/// Alias of the column that places an element in an ordered list.
+pub const INDEX_ALIAS: &str = "$index";
+
+/// Alias of the column whose value is the key of an element in a map.
+pub const MAP_KEY_ALIAS: &str = "$map_key";
 
 /// Prefix of the alias of a to-one foreign key column, followed by the field name.
 pub const REF_ALIAS_PREFIX: &str = "$ref.";

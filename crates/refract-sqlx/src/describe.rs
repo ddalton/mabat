@@ -14,8 +14,9 @@ pub type DescribeFn = fn(&mut Description);
 #[derive(Default)]
 pub struct Description {
     pub(crate) columns: Vec<ColumnType>,
-    /// Describe functions of the views of child and to-one fields, by field index.
-    pub(crate) children: Vec<(usize, DescribeFn)>,
+    /// Describe functions of the views of child and to-one fields, by field index, with the
+    /// type of the map key of a map collection.
+    pub(crate) children: Vec<(usize, DescribeFn, Option<ColumnType>)>,
     /// Describe functions of the variants of enums stored in a table per variant, by field
     /// index and variant.
     pub(crate) variants: Vec<(usize, &'static str, DescribeFn)>,
@@ -56,7 +57,14 @@ impl Description {
 
     /// A child or to-one field whose values are views of type `C`.
     pub fn view<C: View>(&mut self, field_index: usize) {
-        self.children.push((field_index, C::describe));
+        self.children.push((field_index, C::describe, None));
+    }
+
+    /// A map collection whose values are views of type `C`, keyed by `K`.
+    pub fn map<K: Type<Postgres>, C: View>(&mut self, field_index: usize) {
+        let mut key = Description::default();
+        key.column::<K>(refract_core::MAP_KEY_ALIAS, false);
+        self.children.push((field_index, C::describe, key.columns.pop()));
     }
 
     /// The variant `variant` of an enum stored in a table per variant in the field
@@ -73,8 +81,9 @@ impl Description {
         self.columns.iter().find(|c| c.alias == alias)
     }
 
-    pub(crate) fn child(&self, field_index: usize) -> Option<DescribeFn> {
-        self.children.iter().find(|(i, _)| *i == field_index).map(|(_, describe)| *describe)
+    /// The describe function of a child field, and the type of its map key.
+    pub(crate) fn child(&self, field_index: usize) -> Option<(DescribeFn, Option<&ColumnType>)> {
+        self.children.iter().find(|(i, _, _)| *i == field_index).map(|(_, describe, key)| (*describe, key.as_ref()))
     }
 }
 
