@@ -60,6 +60,9 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **JSON and selections (M7).** `Load::json` loads views as JSON, and `Load::select` with a `Selection`
   (built in code or parsed from GraphQL-like text) loads only the selected fields: only their columns are
   selected and only their child queries run. Recursive and graph views load as trees as deep as the selection.
+- **Arguments of nested collections.** `Load::nested` with a `Nested` filters, orders and pages the elements
+  of a to-many collection for each parent, in the collection's one query, also through overrides. Nested GraphQL
+  lists take `where`, `orderBy`, `limit` and `offset`.
 - **GraphQL (M7).** The `mabat-graphql` crate generates an async-graphql schema from views: object types,
   unions for enums with data, GraphQL enums, map entries, and root fields with `where`, `orderBy`, `limit`,
   `offset` and lookup by key. Each root field is one load of the selected fields. An example server serves

@@ -38,6 +38,11 @@
 //! - `orderBy`: a list of `{ column: ASC | DESC }`, applied in order.
 //! - `limit` and `offset`.
 //!
+//! A list nested in an object takes the same arguments, for the elements of each parent:
+//! `tasks { subtasks(orderBy: [{ position: ASC }], limit: 3) { name } }` loads the first three
+//! subtasks of each task, with one query for all tasks. A collection selected twice, under
+//! two aliases, needs the same arguments both times.
+//!
 //! A [`SchemaBuilder::by_key`] field takes the `key` of a view, of the type of its key field.
 
 mod args;
@@ -99,6 +104,7 @@ pub struct SchemaBuilder<B: Backend> {
 /// What a root field asks a load for.
 struct Request {
     selection: Selection,
+    nested: Vec<(String, mabat::Nested)>,
     keys: Vec<Key>,
     condition: Option<Condition>,
     order: Vec<(&'static str, bool)>,
@@ -141,15 +147,12 @@ where
         let field = Field::new(name, TypeRef::named_nn_list_nn(type_name), move |ctx| {
             let loader = loader.clone();
             FieldFuture::new(async move {
-                let mut request = request(shape, &ctx.ctx.field());
-                if let Some(filter) = ctx.args.get("where") {
-                    request.condition = Some(args::condition(shape, &filter.object()?)?);
-                }
-                if let Some(order) = ctx.args.get("orderBy") {
-                    request.order = args::order(shape, &order)?;
-                }
-                request.limit = count(&ctx, "limit")?;
-                request.offset = count(&ctx, "offset")?;
+                let mut request = request(shape, &ctx.ctx.field())?;
+                let arguments = args::Arguments::parse(shape, |name| ctx.args.get(name).map(|v| v.as_value().clone()))?;
+                request.condition = arguments.condition;
+                request.order = arguments.order;
+                request.limit = arguments.limit;
+                request.offset = arguments.offset;
                 let values = loader(request).await.map_err(|e| async_graphql::Error::new(e.to_string()))?;
                 Ok(Some(FieldValue::list(values.into_iter().map(FieldValue::owned_any))))
             })
@@ -172,8 +175,8 @@ where
         let field = Field::new(name, TypeRef::named(type_name), move |ctx| {
             let loader = loader.clone();
             FieldFuture::new(async move {
-                let mut request = request(shape, &ctx.ctx.field());
-                request.keys = vec![args::key(key_scalar, &ctx.args.try_get("key")?)?];
+                let mut request = request(shape, &ctx.ctx.field())?;
+                request.keys = vec![args::key(key_scalar, ctx.args.try_get("key")?.as_value())?];
                 let mut values = loader(request).await.map_err(|e| async_graphql::Error::new(e.to_string()))?;
                 Ok(values.pop().map(FieldValue::owned_any))
             })
@@ -198,6 +201,9 @@ where
                 };
                 if !request.keys.is_empty() {
                     load = load.by_keys(request.keys);
+                }
+                for (path, nested) in request.nested {
+                    load = load.nested(path, nested);
                 }
                 if let Some(condition) = request.condition {
                     load = load.filter(condition);
@@ -241,26 +247,21 @@ where
     }
 }
 
-/// A request for the fields a root field selects.
-fn request(shape: &'static mabat::shape::ViewShape, field: &async_graphql::SelectionField<'_>) -> Request {
-    Request {
-        selection: resolve::selection(shape, field),
+/// A request for the fields a root field selects, with the arguments of its nested
+/// collections.
+fn request(
+    shape: &'static mabat::shape::ViewShape,
+    field: &async_graphql::SelectionField<'_>,
+) -> async_graphql::Result<Request> {
+    let mut nested = Vec::new();
+    let selection = resolve::selection(shape, field, "", &mut nested)?;
+    Ok(Request {
+        selection,
+        nested: nested.into_iter().map(|(path, _, nested)| (path, nested)).collect(),
         keys: Vec::new(),
         condition: None,
         order: Vec::new(),
         limit: None,
         offset: None,
-    }
-}
-
-/// A `limit` or `offset` argument, which cannot be negative.
-fn count(ctx: &dynamic::ResolverContext<'_>, name: &str) -> async_graphql::Result<Option<u64>> {
-    match ctx.args.get(name) {
-        None => Ok(None),
-        Some(value) if value.is_null() => Ok(None),
-        Some(value) => {
-            let count = value.i64()?;
-            u64::try_from(count).map(Some).map_err(|_| format!("{name} cannot be negative").into())
-        }
-    }
+    })
 }

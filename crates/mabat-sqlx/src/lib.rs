@@ -120,7 +120,60 @@ pub struct Load<T> {
     options: RootOptions,
     condition: Option<filter::Condition>,
     selection: Option<Selection>,
+    nested: Vec<(String, Nested)>,
     _view: PhantomData<fn() -> T>,
+}
+
+/// Which elements of a to-many collection to load, for each parent, and in which order: a
+/// filter on the collection's table, an order that replaces the collection's, and a page.
+/// See [`Load::nested`].
+#[derive(Debug, Clone, Default)]
+pub struct Nested {
+    condition: Option<filter::Condition>,
+    order_by: Vec<OrderBy>,
+    limit: Option<u64>,
+    offset: Option<u64>,
+}
+
+impl Nested {
+    pub fn new() -> Nested {
+        Nested::default()
+    }
+
+    /// Only load elements whose row matches the condition. Conditions of several calls all
+    /// need to match.
+    pub fn filter(mut self, condition: filter::Condition) -> Self {
+        self.condition = Some(match self.condition.take() {
+            Some(existing) => existing.and(condition),
+            None => condition,
+        });
+        self
+    }
+
+    /// Order the elements of each parent by a column of the collection's table, ascending,
+    /// instead of the collection's order.
+    pub fn order_by(mut self, column: &'static str) -> Self {
+        self.order_by.push(OrderBy::asc(column));
+        self
+    }
+
+    /// Order the elements of each parent by a column, descending.
+    pub fn order_by_desc(mut self, column: &'static str) -> Self {
+        self.order_by.push(OrderBy::desc(column));
+        self
+    }
+
+    /// Load at most `limit` elements for each parent.
+    pub fn limit(mut self, limit: u64) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Skip the first `offset` elements of each parent.
+    pub fn offset(mut self, offset: u64) -> Self {
+        self.offset = Some(offset);
+        self
+    }
 }
 
 enum Source {
@@ -140,6 +193,7 @@ impl<T: View> Load<T> {
             options: RootOptions::default(),
             condition: None,
             selection: None,
+            nested: Vec::new(),
             _view: PhantomData,
         }
     }
@@ -215,6 +269,29 @@ impl<T: View> Load<T> {
         self
     }
 
+    /// Load only some of the elements of the to-many collection at `path`, the name of its
+    /// query, such as `children` or `children.notes`, and in another order. The paging
+    /// applies to the elements of each parent, with one query for all parents.
+    ///
+    /// ```ignore
+    /// use mabat::Nested;
+    /// use mabat::filter::col;
+    /// // Every task with its three most recent open subtasks
+    /// let tasks = mabat::load::<TaskView>()
+    ///     .nested("children", Nested::new().filter(col("done").eq(false)).order_by_desc("created_at").limit(3))
+    ///     .all(&mut conn)
+    ///     .await?;
+    /// ```
+    ///
+    /// The arguments of a collection at every level of a recursive view apply to each level.
+    /// With an override of the collection's query, the columns need to be selected by its view.
+    pub fn nested(mut self, path: impl Into<String>, nested: Nested) -> Self {
+        let path = path.into();
+        self.nested.retain(|(p, _)| *p != path);
+        self.nested.push((path, nested));
+        self
+    }
+
     /// The plan and overrides to run, the keys, the root options and the filter values.
     fn prepare<B: Backend>(self) -> Result<Option<Prepared>, Error> {
         let view = T::shape().name;
@@ -246,7 +323,42 @@ impl<T: View> Load<T> {
             None => (None, Vec::new()),
         };
         let options = RootOptions { by_keys: keys.is_some(), filter, ..self.options };
-        Ok(Some(Prepared { plan, overrides, keys, options, values }))
+
+        // The arguments of collections, for their queries
+        let mut nested = Vec::new();
+        for (path, args) in self.nested {
+            let mut query = None;
+            plan.walk(&mut |p| {
+                if p.query_name() == path {
+                    query = Some((matches!(p.link, mabat_core::Link::Child { .. }), p.cte.is_some()));
+                }
+            });
+            let reason = match query {
+                None => Some("no query of the view has this name"),
+                Some((false, _)) => Some("only to-many collections take arguments"),
+                Some((true, true)) => Some("a collection loaded with `recursive = \"cte\"` takes no arguments"),
+                Some((true, false)) => None,
+            };
+            if let Some(reason) = reason {
+                return Err(Error::NestedArguments { view, path, reason });
+            }
+            let (filter, values) = match args.condition {
+                Some(condition) => {
+                    let (filter, values) = condition.into_parts();
+                    (Some(filter), values)
+                }
+                None => (None, Vec::new()),
+            };
+            let options = RootOptions {
+                filter,
+                order_by: args.order_by,
+                limit: args.limit,
+                offset: args.offset,
+                ..RootOptions::default()
+            };
+            nested.push((path, options, values));
+        }
+        Ok(Some(Prepared { plan, overrides, keys, options, values, nested }))
     }
 
     /// Load all matching values.
@@ -360,6 +472,8 @@ struct Prepared {
     keys: Option<key::KeyList>,
     options: RootOptions,
     values: Vec<filter::Bound>,
+    /// The arguments of collections: the name of their query, their options and values.
+    nested: Vec<(String, RootOptions, Vec<filter::Bound>)>,
 }
 
 impl Prepared {
@@ -373,11 +487,12 @@ impl Prepared {
         let plan = &*self.plan;
         let path = String::new();
         let entities = identity.graph;
-        let values = &self.values;
-        let options = &self.options;
+        let mut args = node::QueryArgs::new(self.options, self.values);
+        for (name, options, values) in self.nested {
+            args.nest(name, options, values);
+        }
         let node =
-            node::load::<B>(&runner, plan, options, self.keys, overrides, values, path, Vec::new(), identity, entities)
-                .await?;
+            node::load::<B>(&runner, plan, &args, self.keys, overrides, path, Vec::new(), identity, entities).await?;
         runner.finish().await?;
         Ok(node)
     }

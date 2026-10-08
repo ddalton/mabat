@@ -215,6 +215,21 @@ that isn't NULL is also an error, unless the enum is marked `lenient`. Variant f
 the variant, such as `state.Blocked.reason.$tag` or `state.Closed.0`, and overrides use them like any other
 path.
 
+## Arguments of nested collections
+
+A collection can be filtered, ordered and paged for each parent, still with one query for all parents:
+
+```rust
+// Every task with its three most recent open subtasks
+let tasks = mabat::load::<TaskView>()
+    .nested("children", Nested::new().filter(col("done").eq(false)).order_by_desc("created_at").limit(3))
+    .all(&mut conn)
+    .await?;
+```
+
+Paging per parent uses `ROW_NUMBER() OVER (PARTITION BY …)`, on PostgreSQL, MySQL 8 and SQLite alike. With an
+override of the collection's query, the arguments apply to it as a subquery.
+
 ## JSON and selections
 
 Any view also loads as JSON, whole or a selection of its fields. A selection is written like a GraphQL
@@ -255,7 +270,8 @@ let schema = mabat_graphql::schema(&pool)
 Views and embedded structs become object types, enums with data become unions (`... on StateBlocked { reason }`),
 enums without data become GraphQL enums, and maps become lists of `{ key, value }` entries. A `where` argument
 filters the columns of the view with `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `in`, `notIn`, `isNull`, `like` and
-`ilike`, combined with `and`, `or` and `not`. Overrides of a registry apply with `.registry(..)`, and
+`ilike`, combined with `and`, `or` and `not`. Nested lists take the same arguments for the elements of each
+parent, such as `tasks { subtasks(orderBy: [{ position: ASC }], limit: 3) { name } }`. Overrides of a registry apply with `.registry(..)`, and
 `.connections(n)` runs the queries of a level concurrently. `cargo run -p mabat-graphql --example chinook` serves
 the Chinook music store with GraphiQL.
 
@@ -385,7 +401,7 @@ ORDER BY n.id;
 | Concurrent loads on a pool, with a shared snapshot on PostgreSQL | Done (M6) |
 | JSON loads and selections of fields | Done (M7) |
 | GraphQL schema generated from views (`mabat-graphql`) | Done (M7) |
-| Arguments on nested GraphQL fields (filters and paging of collections) | Planned |
+| Arguments of nested collections: filters, order and paging per parent, also in GraphQL | Done |
 
 Loading 1,000 tasks with 10 subtasks each takes about 8% longer than hand-written SQLx code running the same two
 queries (`crates/mabat/examples/parity.rs`).

@@ -6,8 +6,8 @@
 use async_graphql::SelectionField;
 use async_graphql::dynamic::{FieldFuture, FieldValue, ResolverContext};
 use async_graphql::{Name, Value};
-use mabat::Selection;
 use mabat::shape::{EmbeddedKind, FieldKind, ViewShape};
+use mabat::{Nested, Selection};
 use serde_json::Value as Json;
 
 /// The field of a JSON object that names the variant of an enum.
@@ -88,30 +88,58 @@ fn typename(value: &Json) -> async_graphql::Result<&str> {
     value.get(TYPENAME).and_then(Json::as_str).ok_or_else(|| "an enum has no __typename".into())
 }
 
-/// The selection of a field of type `shape` in a query: the fields of its selection set,
-/// with the views of collections and references selected by their own selection sets.
-/// Embedded structs and enums are loaded whole, and the entries of a map select the fields
-/// of its `value`.
-pub(crate) fn selection(shape: &'static ViewShape, field: &SelectionField<'_>) -> Selection {
+/// The arguments of the nested collections of a query: the name of their query, their
+/// arguments as written, and as a [`Nested`].
+pub(crate) type NestedArguments = Vec<(String, Vec<(Name, Value)>, Nested)>;
+
+/// The selection of a field of type `shape` in a query at `path`: the fields of its
+/// selection set, with the views of collections and references selected by their own
+/// selection sets. Embedded structs and enums are loaded whole, and the entries of a map
+/// select the fields of its `value`. The arguments of nested collections are added to
+/// `nested`.
+pub(crate) fn selection(
+    shape: &'static ViewShape,
+    field: &SelectionField<'_>,
+    path: &str,
+    nested: &mut NestedArguments,
+) -> async_graphql::Result<Selection> {
     let mut selection = Selection::new();
     for sub in field.selection_set() {
         let Some(view_field) = shape.fields.iter().find(|f| f.name == sub.name()) else { continue };
+        let sub_path =
+            if path.is_empty() { view_field.name.to_string() } else { format!("{path}.{}", view_field.name) };
         selection = match &view_field.kind {
             FieldKind::Column { .. } | FieldKind::Embedded { .. } => selection.field(view_field.name),
             FieldKind::Child(child) if child.map_key.is_some() => {
-                let mut nested = Selection::new();
+                let mut fields = Selection::new();
                 for entry in sub.selection_set().filter(|s| s.name() == "value") {
-                    nested.merge(self::selection((child.shape)(), &entry));
+                    fields.merge(self::selection((child.shape)(), &entry, &sub_path, nested)?);
                 }
-                selection.nested(view_field.name, nested)
+                selection.nested(view_field.name, fields)
             }
-            FieldKind::Child(child) => selection.nested(view_field.name, self::selection((child.shape)(), &sub)),
+            FieldKind::Child(child) => {
+                let target = (child.shape)();
+                let arguments = sub.arguments()?;
+                match nested.iter().find(|(p, _, _)| *p == sub_path) {
+                    Some((_, existing, _)) if *existing != arguments => {
+                        return Err(format!("`{sub_path}` is selected twice with different arguments").into());
+                    }
+                    Some(_) => {}
+                    None if arguments.is_empty() => {}
+                    None => {
+                        let get = |name: &str| arguments.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone());
+                        let parsed = crate::args::Arguments::parse(target, get)?.nested();
+                        nested.push((sub_path.clone(), arguments, parsed));
+                    }
+                }
+                selection.nested(view_field.name, self::selection(target, &sub, &sub_path, nested)?)
+            }
             FieldKind::ToOne { shape: target, .. } => {
-                selection.nested(view_field.name, self::selection(target(), &sub))
+                selection.nested(view_field.name, self::selection(target(), &sub, &sub_path, nested)?)
             }
         };
     }
-    selection
+    Ok(selection)
 }
 
 /// `true` if every variant of an embedded enum is a unit variant, so it is a GraphQL enum.

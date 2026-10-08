@@ -63,6 +63,10 @@ name = "json"
 required-features = ["postgres"]
 
 [[test]]
+name = "nested"
+required-features = ["postgres"]
+
+[[test]]
 name = "pooled"
 required-features = ["postgres"]
 
