@@ -60,6 +60,9 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **JSON and selections (M7).** `Load::json` loads views as JSON, and `Load::select` with a `Selection`
   (built in code or parsed from GraphQL-like text) loads only the selected fields: only their columns are
   selected and only their child queries run. Recursive and graph views load as trees as deep as the selection.
+- **The MPA specification.** `docs/mpa.md`, the Mabat Persistence Architecture, states Mabat's contract as
+  numbered rules; `docs/mpa.json` indexes its capabilities, attributes, functions, errors and diagnostics, and
+  `llms.txt` points AI tools to both. A test keeps the index in step with the derive and the errors.
 - **Saving changes and optimistic locking (M8).** `mabat::save_changes(&before, &mut after, conn)` writes only
   what changed: the columns that differ, new and removed elements, and links that differ. `#[view(version)]`
   versions rows; a stale version fails with `Error::Conflict`, and new versions are written back into the value.

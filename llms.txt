@@ -1,0 +1,27 @@
+# Mabat
+
+> Typed aggregate reads and writes for Rust on PostgreSQL, MySQL and SQLite. Views are Rust structs deriving `mabat::View`; each is loaded with one batched query per relationship, its queries can be replaced by checked SQL override files, it can be served as JSON or as a generated GraphQL schema, and it can be saved and deleted as an aggregate, with optimistic locking. The contract is the MPA (Mabat Persistence Architecture) specification.
+
+When writing or reviewing code that uses Mabat, follow the rules of the MPA specification and cite their ids (such as `MPA-WRITE-9` for `#[view(version)]`). Do not use what its section 12 lists as not supported, such as database-generated keys or saving `Ref<T>` graphs.
+
+## Specification
+
+- [MPA specification](docs/mpa.md): every attribute, loading mode, override rule, JSON and GraphQL behaviour, write semantics, error and diagnostic, as numbered rules
+- [MPA index](docs/mpa.json): the same as JSON, with capabilities, attributes, functions, errors and diagnostics mapped to their rules
+
+## Guides
+
+- [README](README.md): overview, examples of every feature, installation and development
+- [Design document](docs/design.md): goals, the reasoning behind the architecture, and what was built for each milestone
+- [Changelog](CHANGELOG.md): what each version adds
+
+## Crates
+
+- [mabat](crates/mabat): the crate applications use: `#[derive(View)]`, loading, overrides, JSON, writes
+- [mabat-graphql](crates/mabat-graphql): a GraphQL schema generated from views, with async-graphql
+- [mabat-cli](crates/mabat-cli): the `mabat` tool that checks, explains and scaffolds override SQL from a manifest
+
+## Optional
+
+- [GraphQL example server](crates/mabat-graphql/examples/chinook.rs): the Chinook music store with GraphiQL
+- [End-to-end tests](crates/mabat-e2e/tests): Pagila and Chinook on every database, examples of every feature in use
