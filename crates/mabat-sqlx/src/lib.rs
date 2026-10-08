@@ -8,6 +8,7 @@ mod describe;
 mod error;
 pub mod filter;
 mod graph;
+mod graph_write;
 mod json;
 mod key;
 pub mod manifest;
@@ -142,6 +143,7 @@ where
 {
     use sqlx::Connection;
     let row = value.write()?;
+    no_graph_refs(&row)?;
     let mut conn = conn.source().single().await?;
     let mut tx = conn.begin().await.map_err(Error::Connection)?;
     let written = write::save_row::<C::Backend>(&mut tx, row, None).await?;
@@ -172,11 +174,47 @@ where
         });
     }
     let row = after.write_changes(before)?;
+    no_graph_refs(&row)?;
     let mut conn = conn.source().single().await?;
     let mut tx = conn.begin().await.map_err(Error::Connection)?;
     let written = write::save_row::<C::Backend>(&mut tx, row, None).await?;
     tx.commit().await.map_err(Error::Connection)?;
     after.written(&written)
+}
+
+/// Values with references into a graph are saved with [`save_graph`], which knows the keys of
+/// the entities they point to.
+fn no_graph_refs<B: Backend>(row: &write::RowWrite<B>) -> Result<(), Error> {
+    if row.has_graph_refs() {
+        return Err(Error::Write {
+            view: row.shape().name,
+            message: "it has references into a graph (`Ref<T>`): save the graph with `save_graph`".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Save every entity of a graph, in a transaction: each as [`save`] saves a value, with its
+/// references (`Ref<T>`) written as the keys of the entities they point to.
+///
+/// An entity is saved after the entities it references, so that their keys exist, generated
+/// by the database or not; in a cycle of references, the optional ones are written NULL
+/// first and set once every entity of the cycle is saved. A collection of references is
+/// written as its relationship is stored: its links are replaced in a link table, or its
+/// elements' foreign key is set, and unset for rows no longer in it, unless the elements
+/// reference the entity by that column themselves, which must then agree with it. Generated
+/// keys and new versions are written back into the entities.
+pub async fn save_graph<R, C>(graph: &mut Graph<R>, conn: &mut C) -> Result<(), Error>
+where
+    R: ViewEncoder<C::Backend> + Send + Sync + 'static,
+    C: Conn,
+    <C::Backend as sqlx::Database>::Connection: Send,
+{
+    use sqlx::Connection;
+    let mut conn = conn.source().single().await?;
+    let mut tx = conn.begin().await.map_err(Error::Connection)?;
+    graph_write::save::<C::Backend, R>(&mut tx, graph.arenas_mut()).await?;
+    tx.commit().await.map_err(Error::Connection)
 }
 
 /// Delete the aggregate of a view with the key, in a transaction: the row and what it owns,
@@ -591,6 +629,7 @@ pub mod __private {
     pub use crate::Key;
     pub use crate::describe::{DescribeFn, Description};
     pub use crate::graph::GraphBuilder;
+    pub use crate::graph_write::GraphTypes;
     pub use crate::json::{
         JsonFallback, JsonProbe, JsonViaSerialize, field_name, json_children, json_map, json_merge, json_object,
         json_raw, json_to_one,

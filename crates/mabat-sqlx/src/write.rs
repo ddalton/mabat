@@ -16,7 +16,7 @@ use crate::key::{Key, KeyList};
 use crate::{Error, ViewDecoder};
 
 /// The most keys of one statement.
-const MAX_KEYS: usize = 1000;
+pub(crate) const MAX_KEYS: usize = 1000;
 
 /// The row of a value to write, with what it owns. Also a link of a many-to-many
 /// collection, whose key is the key of the linked value.
@@ -41,6 +41,32 @@ pub struct RowWrite<B: Backend> {
     removed: Vec<(usize, Vec<Key>)>,
     /// For an update of an element of an ordered list: its position before.
     previous_position: Option<usize>,
+    /// References into a graph (`Ref<T>`), resolved to keys when the graph is saved.
+    pub(crate) graph_refs: Vec<GraphRef>,
+    /// Collections of references into a graph (`Vec<Ref<T>>`): the field and its elements.
+    pub(crate) graph_collections: Vec<(usize, Vec<GraphTarget>)>,
+}
+
+/// An entity of a graph: the shape of its type and its index in the arena.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GraphTarget {
+    pub(crate) shape: fn() -> &'static ViewShape,
+    pub(crate) index: usize,
+}
+
+impl GraphTarget {
+    /// The entity, as the arenas of the graph identify it.
+    pub(crate) fn id(&self) -> (usize, usize) {
+        (crate::graph::shape_id((self.shape)()), self.index)
+    }
+}
+
+/// A to-one reference into a graph, written as the key of the entity it points to.
+#[derive(Debug, Clone)]
+pub(crate) struct GraphRef {
+    pub(crate) column: String,
+    pub(crate) target: Option<GraphTarget>,
+    pub(crate) optional: bool,
 }
 
 /// How a row is written.
@@ -66,6 +92,11 @@ impl Written {
     #[doc(hidden)]
     pub fn version(&self) -> Option<i64> {
         self.version
+    }
+
+    /// The key of the row that the database generated, if it was inserted.
+    pub(crate) fn key(&self) -> Option<&Key> {
+        self.key.as_ref()
     }
 
     /// The key the database generated for the row, if it was inserted.
@@ -100,7 +131,62 @@ impl<B: Backend> RowWrite<B> {
             version: None,
             removed: Vec::new(),
             previous_position: None,
+            graph_refs: Vec::new(),
+            graph_collections: Vec::new(),
         }
+    }
+
+    /// A to-one reference into a graph: `fk` is written as the key of the entity it points to
+    /// when the graph is saved.
+    #[doc(hidden)]
+    pub fn graph_reference<T: crate::View>(&mut self, fk: &str, target: Option<crate::Ref<T>>, optional: bool) {
+        let target = target.map(|r| GraphTarget { shape: T::shape, index: r.index() });
+        self.graph_refs.push(GraphRef { column: fk.to_string(), target, optional });
+    }
+
+    /// A collection of references into a graph: its elements, in order.
+    #[doc(hidden)]
+    pub fn graph_collection<T: crate::View>(&mut self, field_index: usize, elements: &[crate::Ref<T>]) {
+        let elements = elements.iter().map(|r| GraphTarget { shape: T::shape, index: r.index() }).collect();
+        self.graph_collections.push((field_index, elements));
+    }
+
+    /// Whether the row or a row it owns has references into a graph.
+    pub(crate) fn has_graph_refs(&self) -> bool {
+        !self.graph_refs.is_empty()
+            || !self.graph_collections.is_empty()
+            || self.collections.iter().flat_map(|(_, rows)| rows).any(RowWrite::has_graph_refs)
+            || self.variants.iter().filter_map(|(_, _, row)| row.as_ref()).any(RowWrite::has_graph_refs)
+    }
+
+    /// Write `column` as `key`, or NULL.
+    pub(crate) fn bind_key(&mut self, column: String, key: Option<&Key>) -> Result<(), Error> {
+        match key {
+            Some(key) => {
+                B::add_key(&mut self.args, key).map_err(|e| self.error(format!("cannot encode `{column}`: {e}")))?;
+                self.columns.push((column, ColumnValue::Bound));
+            }
+            None => self.null(column),
+        }
+        Ok(())
+    }
+
+    /// The shape of the row's view.
+    pub(crate) fn shape(&self) -> &'static ViewShape {
+        self.shape
+    }
+
+    /// The key of the row, if it has one yet.
+    pub(crate) fn row_key(&self) -> Option<&Key> {
+        self.key.as_ref()
+    }
+
+    /// The rows the row owns: of its owned collections and its variant tables.
+    pub(crate) fn owned_rows_mut(&mut self) -> impl Iterator<Item = &mut RowWrite<B>> {
+        self.collections
+            .iter_mut()
+            .flat_map(|(_, rows)| rows.iter_mut())
+            .chain(self.variants.iter_mut().filter_map(|(_, _, row)| row.as_mut()))
     }
 
     /// The database generates the key: a row without one is inserted, and its key read.
@@ -243,6 +329,15 @@ pub trait ViewEncoder<B: Backend>: ViewDecoder<B> {
     /// Whether the database generates the key of the view: `#[view(generated)]`.
     fn generated_key() -> bool {
         false
+    }
+
+    /// Register the views of the entities of a graph that this view's references lead to.
+    #[doc(hidden)]
+    fn graph_types(types: &mut crate::graph_write::GraphTypes<B>)
+    where
+        Self: Sized,
+    {
+        let _ = types;
     }
 
     /// The row of the value, with what it owns.
@@ -504,7 +599,11 @@ where
             version,
             removed,
             previous_position,
+            graph_refs,
+            graph_collections,
         } = row;
+        // References into a graph are resolved by `save_graph` before a row is written
+        debug_assert!(graph_refs.is_empty() && graph_collections.is_empty(), "unresolved graph references");
         let encode = |e: sqlx::error::BoxDynError| Error::Write { view: shape.name, message: e.to_string() };
         let mut written = Written::default();
         // A row whose key the database generates, without one, is new: insert it and read its key
@@ -718,7 +817,7 @@ where
 }
 
 /// The `select` keys of the rows of `shape`'s table whose `column` is one of `keys`.
-async fn select_keys<B: Backend>(
+pub(crate) async fn select_keys<B: Backend>(
     conn: &mut B::Connection,
     shape: &'static ViewShape,
     select: &str,
@@ -761,7 +860,9 @@ where
         }
         for field in shape.fields {
             match &field.kind {
-                FieldKind::Child(child) if !child.graph => match child.through {
+                // Its links, also to entities of a graph; the rows of a collection of references
+                // are other entities, which it does not own
+                FieldKind::Child(child) if child.through.is_some() || !child.graph => match child.through {
                     Some(through) => {
                         delete_rows::<B>(&mut *conn, shape, through.table, child.fk, &keys).await.map(drop)?
                     }

@@ -228,7 +228,8 @@ pub use mabat_derive::View;
 pub use mabat_sqlx::{
     Backend, Builder, Conn, Diagnostic, Embedded, EmbeddedDecoder, EmbeddedEncoder, Error, Graph, Key, Load, Mabat,
     Nested, Node, OnInvalid, Origin, Pooled, Ref, Reloaded, Report, RowWrite, Selection, SelectionError, Severity,
-    ShadowSummary, View, ViewDecoder, ViewEncoder, Written, delete, load, plan, save, save_changes, scaffold,
+    ShadowSummary, View, ViewDecoder, ViewEncoder, Written, delete, load, plan, save, save_changes, save_graph,
+    scaffold,
 };
 pub use mabat_sqlx::{filter, manifest};
 

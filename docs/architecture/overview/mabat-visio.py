@@ -685,7 +685,7 @@ def fig_results(doc):
                           "all, one, optional, json"]),
         ("SAVING", ["save, save_changes, delete",
                     "save writes the referencing key only (MPA-WRITE-5)",
-                    "not supported in 0.1 (MPA-NOT-2)",
+                    "save_graph, ordered by references (MPA-WRITE-14)",
                     "save writes every level it holds"]),
     ])
     return p
@@ -1111,6 +1111,22 @@ def load_index():
         return json.load(fh)
 
 
+def numbers(nums):
+    """Rule numbers as text, with runs of three or more as ranges: 1, 3–6."""
+    out, nums = [], sorted(nums)
+    i = 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        if j - i >= 2:
+            out.append("%d–%d" % (nums[i], nums[j]))
+        else:
+            out.extend(str(n) for n in nums[i:j + 1])
+        i = j + 1
+    return out
+
+
 def fig_contract(doc):
     index = load_index()
     caps = index["capabilities"]
@@ -1142,8 +1158,8 @@ def fig_contract(doc):
               line_weight=0.006, title_size=6.9, title_bold=False, valign=1,
               rounding=0, title_color=SUB)
         for i, a in enumerate(AREAS):
-            nums = [r.split("-")[2] for r in c["rules"]
-                    if r.split("-")[1] == a]
+            nums = numbers([int(r.split("-")[2]) for r in c["rules"]
+                            if r.split("-")[1] == a])
             cited.update(r for r in c["rules"])
             p.box(x0 + nw + sw + i * aw, y, aw, rh, ", ".join(nums), "",
                   fill=MABAT_F if nums else band, line=ROW_L,

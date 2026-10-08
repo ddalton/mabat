@@ -73,7 +73,7 @@ impl<T> fmt::Debug for Ref<T> {
 }
 
 /// The address of a view's static shape, which identifies the view type.
-fn shape_id(shape: &'static ViewShape) -> usize {
+pub(crate) fn shape_id(shape: &'static ViewShape) -> usize {
     std::ptr::from_ref(shape) as usize
 }
 
@@ -82,14 +82,24 @@ fn next_graph_id() -> u32 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
+/// The arenas of a graph: `Vec<T>` by the shape of `T`.
+pub(crate) type Arenas = HashMap<usize, Box<dyn Any + Send + Sync>>;
+
 /// Entities of several types in arenas, with the root entities of a load of `R`.
 ///
-/// `Graph` is `Send + Sync`; share it with `Arc<Graph<R>>`.
+/// `Graph` is `Send + Sync`; share it with `Arc<Graph<R>>`. Change entities with
+/// [`Graph::get_mut`], add them with [`Graph::insert`], and save them all with
+/// [`save_graph`](crate::save_graph).
 pub struct Graph<R> {
     id: u32,
-    /// `Vec<T>` by the shape of `T`.
-    arenas: HashMap<usize, Box<dyn Any + Send + Sync>>,
+    arenas: Arenas,
     roots: Vec<Ref<R>>,
+}
+
+impl<R> Default for Graph<R> {
+    fn default() -> Self {
+        Graph::new()
+    }
 }
 
 impl<R: View> Graph<R> {
@@ -110,6 +120,40 @@ impl<R: View> Graph<R> {
 }
 
 impl<R> Graph<R> {
+    /// An empty graph, to build new entities in and save them with
+    /// [`save_graph`](crate::save_graph).
+    pub fn new() -> Graph<R> {
+        Graph { id: next_graph_id(), arenas: HashMap::new(), roots: Vec::new() }
+    }
+
+    /// Add an entity to the graph, and get a reference to it, to refer to it from other
+    /// entities. A new entity whose key the database generates has the key `None`.
+    pub fn insert<T: View>(&mut self, value: T) -> Ref<T> {
+        let arena = self
+            .arenas
+            .entry(shape_id(T::shape()))
+            .or_insert_with(|| Box::new(Vec::<T>::new()))
+            .downcast_mut::<Vec<T>>()
+            .expect("arenas are stored by their type");
+        arena.push(value);
+        Ref {
+            index: u32::try_from(arena.len() - 1).expect("fewer than 2^32 entities"),
+            graph: self.id,
+            _type: PhantomData,
+        }
+    }
+
+    /// Make an entity of the graph one of its roots.
+    pub fn add_root(&mut self, root: Ref<R>) {
+        self.check(root);
+        self.roots.push(root);
+    }
+
+    /// The arenas, for saving.
+    pub(crate) fn arenas_mut(&mut self) -> &mut Arenas {
+        &mut self.arenas
+    }
+
     /// The entity a reference points to.
     pub fn get<T: View>(&self, r: Ref<T>) -> &T {
         self.check(r);

@@ -197,7 +197,9 @@ let tasks = mabat::load::<TaskView>()
   that references it.
 - **MPA-LOAD-14** A view with `Ref<T>` fields is a graph and MUST be loaded with `graph`, else
   `Error::GraphRequired`. `graph` returns a `Graph<T>` holding each entity once, with typed references and
-  generated navigation methods (`task.manager(&graph)`); cycles end by themselves and need no `depth`.
+  generated navigation methods (`task.manager(&graph)`); cycles end by themselves and need no `depth`. A graph is
+  also built in code: `Graph::new()` makes an empty one, `insert` adds an entity and returns its `Ref`,
+  `add_root` makes an entity a root, and `get_mut` changes one; `save_graph` saves it (MPA-WRITE-14).
 
 ## 6. Query planning
 
@@ -301,7 +303,8 @@ mabat::delete::<Board, _>(board.id, &mut tx).await?;        // the board and wha
   variant's columns, and NULL to the other variants' columns. An enum in a table per variant upserts the
   variant's row and deletes the other variants' rows with what they own.
 - **MPA-WRITE-7** `delete::<T, _>(key, conn)` deletes the row and what it owns (owned collections, links, variant
-  rows), deepest first, and returns whether the row existed.
+  rows), deepest first, and returns whether the row existed. Its links to entities of a graph are deleted with it;
+  the entities themselves, and the rows that reference it, are not changed.
 - **MPA-WRITE-8** `save_changes(&before, &mut after, conn)` writes what changed from `before` (as loaded) to
   `after`: columns and embedded values that differ by `PartialEq` (types without it count as changed), to-one
   foreign keys that differ, owned collection elements matched by key (changed ones updated, new ones saved whole,
@@ -327,6 +330,26 @@ mabat::delete::<Board, _>(board.id, &mut tx).await?;        // the board and wha
   `GENERATED ALWAYS`. `save_changes` of a value without a key, and a reference or link to one, fail with
   `Error::Write`. `generated` on any other field, or on a key that is not an `Option` of an integer, is a compile
   error.
+- **MPA-WRITE-14** `save_graph(&mut graph, conn)` saves every entity of a graph in one transaction (MPA-WRITE-1),
+  each as `save` saves a value, with its `Ref<T>` and `Option<Ref<T>>` fields written as the keys of the entities
+  they point to. New versions and generated keys are written back into the entities. Every view of the graph's
+  entities MUST be reachable from the view of its roots through references, else `Error::Write`. `save` and
+  `save_changes` of a value with references into a graph fail with `Error::Write`.
+- **MPA-WRITE-15** An entity is saved after the entities whose keys it needs: those its row references, those whose
+  collections write its foreign key (MPA-WRITE-16), and those that values it owns reference. In a cycle of such
+  dependencies, the optional references (`Option<Ref<T>>`) between entities of the cycle are written NULL first and
+  set once every entity of the cycle is saved; if the required ones alone form a cycle, the save fails with
+  `Error::Write`.
+- **MPA-WRITE-16** A `Vec<Ref<T>>` collection by the foreign key `fk` of `T`'s table is the inverse of a reference
+  of `T` by that same column to this view, if `T` has one: the reference is written, and the two MUST agree (each
+  element references the entity, and each entity of the graph that references it is an element), else
+  `Error::Write`. Otherwise the collection writes its elements' `fk`, and their position for an `index` list; rows
+  of `T` with the entity's key in `fk` that are no longer elements get NULL there, and are not deleted. An element
+  of two such collections fails with `Error::Write`.
+- **MPA-WRITE-17** A `Vec<Ref<T>>` collection through a link table replaces the entity's link rows, with positions
+  for an `index` list (MPA-WRITE-5).
+- **MPA-WRITE-18** Values owned by an entity MAY have `Ref<T>` fields, written as keys; collections of references
+  are saved only on entities, and one in an owned value fails with `Error::Write`.
 
 ## 11. Errors and diagnostics
 
@@ -356,7 +379,7 @@ Every failure is a `mabat::Error`; messages name the view and the path.
 | `NotRegistered` | a registry load of a view that is not registered | MPA-OVR-1 |
 | `WrongBackend`, `ManifestBackend` | a registry or manifest used on another database | MPA-DB-3, MPA-OVR-8 |
 | `Connection` | a pooled connection could not be opened or join its snapshot | MPA-LOAD-11 |
-| `Write` | a value that cannot be written | MPA-WRITE-2, MPA-WRITE-11, MPA-WRITE-13 |
+| `Write` | a value that cannot be written | MPA-WRITE-2, MPA-WRITE-11, MPA-WRITE-13, MPA-WRITE-14, MPA-WRITE-15, MPA-WRITE-16 |
 | `Conflict` | a version or row changed since the value was loaded | MPA-WRITE-9 |
 
 Diagnostics of `check`, `build`, `reload` and `mabat check`, each with a severity, the view, the query, the file
@@ -377,7 +400,7 @@ and line, and notes:
 Mabat 0.1 does not do the following; tools SHOULD NOT generate code that relies on it.
 
 - **MPA-NOT-1** Removed: keys generated by the database are supported (MPA-WRITE-13).
-- **MPA-NOT-2** Saving or deleting views with `Ref<T>` fields (graphs).
+- **MPA-NOT-2** Removed: graphs are saved with `save_graph` (MPA-WRITE-14).
 - **MPA-NOT-3** A unit of work that collects writes and flushes them later (MPA-WRITE-1).
 - **MPA-NOT-4** Lazy loading: everything a view declares is loaded by the load, or selected (section 8).
 - **MPA-NOT-5** Writes through overrides, and override SQL for writes.
@@ -385,3 +408,4 @@ Mabat 0.1 does not do the following; tools SHOULD NOT generate code that relies 
 - **MPA-NOT-7** Arguments on map collections in GraphQL, and GraphQL mutations.
 - **MPA-NOT-8** Pipelining queries on one connection.
 - **MPA-NOT-9** Schema generation or migrations: views describe existing tables.
+- **MPA-NOT-10** Saving only what changed in a graph: `save_graph` writes every entity (MPA-WRITE-14).
