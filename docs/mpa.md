@@ -238,8 +238,10 @@ let tasks = mabat::load::<TaskView>()
   invalid files leave the running overrides as they are.
 - **MPA-OVR-8** `Builder::manifest()` writes the views as JSON. The `mabat` command line tool checks override
   files against a manifest and a database (`mabat check`, with `--schema` to create a schema in a scratch
-  transaction or database), explains (`mabat explain`) and scaffolds override files (`mabat scaffold`), with no
-  Rust toolchain.
+  transaction or database), explains (`mabat explain`) and scaffolds override files from the generated SQL of
+  every query or of the queries named with `--query` (`mabat scaffold`), with no Rust toolchain. With `--out`,
+  `scaffold` writes to the view's file in a directory, adding to an existing file and never replacing a query
+  it already overrides.
 
 ## 8. JSON and selections
 

@@ -48,7 +48,7 @@ shadow = true
   and SQLite ([MPA-OVR-4](../../spec/mpa/#mpa-ovr-4)).
 - System aliases: `$key`, `$parent`, `$ref.<field>`, `<prefix>$tag`, `$index`, `$map_key`
   ([MPA-PLAN-2](../../spec/mpa/#mpa-plan-2)).
-- `mabat::scaffold::<TaskView, sqlx::Postgres>()` writes a file with the generated SQL of every query, as a
+- `mabat::scaffold::<TaskView, sqlx::Postgres>()` returns a file with the generated SQL of every query, as a
   starting point.
 
 ## Checked at startup
