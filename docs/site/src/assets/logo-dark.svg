@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>Mabat</title>
+  <!-- An aggregate: a tree of entities, with the branches a view loads in color and the others faded -->
+  <path d="M32 18 L14 40 M32 18 L32 40 M32 18 L50 40 M32 40 L24 54 M32 40 L40 54" stroke="#3a3d63" stroke-width="3" stroke-linecap="round"/>
+  <path d="M32 18 L14 40 M32 18 L32 40 M32 40 L40 54" stroke="#8b8cf6" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="50" cy="40" r="5" fill="#3a3d63"/>
+  <circle cx="24" cy="54" r="4.5" fill="#3a3d63"/>
+  <circle cx="32" cy="14" r="7" fill="#8b8cf6"/>
+  <circle cx="14" cy="40" r="5.5" fill="#8b8cf6"/>
+  <circle cx="32" cy="40" r="5.5" fill="#8b8cf6"/>
+  <circle cx="40" cy="54" r="4.5" fill="#8b8cf6"/>
+</svg>

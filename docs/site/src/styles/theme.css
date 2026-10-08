@@ -173,3 +173,10 @@ pre.mermaid {
   font-size: 0.82em;
   white-space: nowrap;
 }
+
+/* The home page's mark: a size at which its strokes stay light */
+.hero > img,
+.hero > picture img {
+  max-width: 13rem;
+  justify-self: center;
+}
