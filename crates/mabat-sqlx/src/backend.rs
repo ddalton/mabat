@@ -437,6 +437,7 @@ macro_rules! bind_each {
 pub(crate) use {bind_each, common_methods, connection};
 
 /// The key in the first column of a row an insert returned.
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) fn returned_key<B: Backend>(row: &B::Row) -> Result<Key, sqlx::Error> {
     let ty = B::column_type(row, 0);
     let kind = B::key_kind(ty).ok_or_else(|| sqlx::Error::ColumnDecode {
