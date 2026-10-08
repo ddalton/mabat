@@ -44,6 +44,12 @@ pub enum Error {
     #[error("{view}: the rows of the recursive collection `{path}` form a cycle, which a tree cannot hold")]
     Cycle { view: &'static str, path: String },
 
+    #[error("a reference into the graph points to a {view} that was not loaded")]
+    UnloadedReference { view: &'static str },
+
+    #[error("{view} has references into a graph (`Ref<T>`); load it with `.graph(..)`")]
+    GraphRequired { view: &'static str },
+
     #[error("{view}: two elements of the map `{path}` have the same key")]
     DuplicateMapKey { view: &'static str, path: String },
 

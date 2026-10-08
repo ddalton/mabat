@@ -8,12 +8,14 @@ use std::time::Instant;
 
 use refract_core::sql::{self, RootOptions};
 use refract_core::{
-    ChildPlan, ChildQuery, INDEX_ALIAS, KEY_ALIAS, Link, MAP_KEY_ALIAS, PARENT_ALIAS, QueryPlan, TAG_ALIAS,
+    ChildQuery, FieldKind, INDEX_ALIAS, KEY_ALIAS, Link, MAP_KEY_ALIAS, PARENT_ALIAS, QueryPlan, REF_ALIAS_PREFIX,
+    TAG_ALIAS, ViewShape,
 };
 use sqlx::postgres::PgRow;
 use sqlx::{AssertSqlSafe, Column, Decode, PgConnection, Postgres, Row, Type, ValueRef};
 
 use crate::filter::Bound;
+use crate::graph::{GraphBuilder, Identity, Ref};
 use crate::key::{Key, KeyArray, KeyColumn};
 use crate::registry::{ActiveOverride, Overrides};
 use crate::{Error, View};
@@ -22,6 +24,7 @@ use crate::{Error, View};
 #[derive(Debug)]
 pub struct Node {
     view: &'static str,
+    shape: &'static ViewShape,
     path: String,
     rows: Vec<PgRow>,
     /// Alias of the key column, see [`QueryPlan::key_alias`].
@@ -33,6 +36,12 @@ pub struct Node {
     children: Vec<ChildEntry>,
     /// The enums stored in the rows, for strict decoding.
     sums: Vec<SumColumns>,
+    /// The entities seen by the load, for graphs and shared values.
+    identity: Arc<Identity>,
+    /// For the entities of a graph: whether each row is the first one of its entity. Only
+    /// the first row of an entity is decoded and has its fields loaded. `None` if all rows
+    /// are.
+    fresh: Option<Vec<bool>>,
 }
 
 #[derive(Debug)]
@@ -82,7 +91,8 @@ impl Node {
         join(&self.path, alias)
     }
 
-    fn new(view: &'static str, path: String, rows: Vec<PgRow>, plan: &QueryPlan) -> Result<Node, Error> {
+    fn new(path: String, rows: Vec<PgRow>, plan: &QueryPlan, identity: &Arc<Identity>) -> Result<Node, Error> {
+        let view = plan.shape.name;
         let mut key_columns = Vec::new();
         let mut sums = Vec::new();
         if let Some(row) = rows.first() {
@@ -108,9 +118,10 @@ impl Node {
             if let Link::Child { .. } = plan.link {
                 aliases.push((PARENT_ALIAS.to_string(), PARENT_ALIAS.to_string()));
             }
-            for child in plan.children.iter().filter_map(ChildPlan::plan) {
-                if let Link::ToOne { ref_alias } = &child.link {
-                    aliases.push((ref_alias.clone(), ref_alias.clone()));
+            for field in plan.shape.fields {
+                if let FieldKind::ToOne { .. } = field.kind {
+                    let ref_alias = format!("{REF_ALIAS_PREFIX}{}", field.name);
+                    aliases.push((ref_alias.clone(), ref_alias));
                 }
             }
             if plan.columns.iter().any(|c| c.alias == INDEX_ALIAS) {
@@ -125,7 +136,18 @@ impl Node {
                 key_columns.push((name, column));
             }
         }
-        Ok(Node { view, path, rows, key_alias: plan.key_alias.clone(), key_columns, children: Vec::new(), sums })
+        Ok(Node {
+            view,
+            shape: plan.shape,
+            path,
+            rows,
+            key_alias: plan.key_alias.clone(),
+            key_columns,
+            children: Vec::new(),
+            sums,
+            identity: identity.clone(),
+            fresh: None,
+        })
     }
 
     fn key(&self, row: &PgRow, alias: &str) -> Result<Option<Key>, Error> {
@@ -307,6 +329,116 @@ pub fn to_one<C: View>(row: &PgRow, node: &Node, field_index: usize, ref_alias: 
     }
 }
 
+/// A reference to the entity of a to-one field of a graph view, `None` if the foreign key is
+/// NULL.
+#[doc(hidden)]
+pub fn reference<C: View>(row: &PgRow, node: &Node, ref_alias: &str) -> Result<Option<Ref<C>>, Error> {
+    Ok(node.key(row, ref_alias)?.map(|key| node.identity.reference::<C>(key)))
+}
+
+/// A reference to the entity of a required to-one field of a graph view.
+#[doc(hidden)]
+pub fn reference_required<C: View>(row: &PgRow, node: &Node, ref_alias: &str) -> Result<Ref<C>, Error> {
+    reference(row, node, ref_alias)?
+        .ok_or_else(|| Error::MissingReference { view: node.view, path: node.path_of(ref_alias) })
+}
+
+/// References to the elements of a collection of a graph view.
+#[doc(hidden)]
+pub fn references<C: View>(row: &PgRow, node: &Node, field_index: usize) -> Result<Vec<Ref<C>>, Error> {
+    match node.key(row, KEY_ALIAS)? {
+        Some(key) => Ok(node.identity.references::<C>(node.shape, field_index, &key)),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Decode a to-one field shared by all the rows that reference the same entity.
+#[doc(hidden)]
+pub fn shared_to_one<C: View>(
+    row: &PgRow,
+    node: &Node,
+    field_index: usize,
+    ref_alias: &str,
+) -> Result<Option<Arc<C>>, Error> {
+    let (child, by_key) = node.child(field_index).expect("plan and decoder disagree on the fields of a view");
+    let Some(key) = node.key(row, ref_alias)? else {
+        return Ok(None);
+    };
+    match by_key.get(&key).and_then(|indices| indices.first()) {
+        Some(&i) => node.identity.shared(key, || C::decode(&child.rows[i], child)).map(Some),
+        None => Err(Error::MissingReference { view: node.view, path: child.path.clone() }),
+    }
+}
+
+/// Decode a required to-one field shared by all the rows that reference the same entity.
+#[doc(hidden)]
+pub fn shared_to_one_required<C: View>(
+    row: &PgRow,
+    node: &Node,
+    field_index: usize,
+    ref_alias: &str,
+) -> Result<Arc<C>, Error> {
+    shared_to_one(row, node, field_index, ref_alias)?
+        .ok_or_else(|| Error::MissingReference { view: node.view, path: node.path_of(ref_alias) })
+}
+
+/// Decode the elements of a collection, each entity shared by all the collections it is in.
+#[doc(hidden)]
+pub fn shared_children<C: View>(row: &PgRow, node: &Node, field_index: usize) -> Result<Vec<Arc<C>>, Error> {
+    let Some((child, by_key)) = node.child(field_index) else { return Ok(Vec::new()) };
+    let Some(indices) = node.key(row, KEY_ALIAS)?.and_then(|key| by_key.get(&key)) else { return Ok(Vec::new()) };
+    indices
+        .iter()
+        .map(|&i| {
+            let row = &child.rows[i];
+            match child.key(row, KEY_ALIAS)? {
+                Some(key) => child.identity.shared(key, || C::decode(row, child)),
+                None => C::decode(row, child).map(Arc::new),
+            }
+        })
+        .collect()
+}
+
+/// Store the entities of the rows in the graph, each once.
+#[doc(hidden)]
+pub fn graph_store<T: View>(node: &Node, graph: &mut GraphBuilder) -> Result<(), Error> {
+    for (i, row) in node.rows.iter().enumerate() {
+        if node.fresh.as_ref().is_some_and(|fresh| !fresh[i]) {
+            continue;
+        }
+        if let Some(key) = node.key(row, KEY_ALIAS)? {
+            graph.store::<T>(key, || T::decode(row, node))?;
+        }
+    }
+    Ok(())
+}
+
+/// Visit the rows of a child field for a graph: store them if they are entities of the
+/// graph, and visit their own child fields.
+#[doc(hidden)]
+pub fn graph_visit<C: View>(
+    node: &Node,
+    field_index: usize,
+    graph: &mut GraphBuilder,
+    entity: bool,
+) -> Result<(), Error> {
+    for entry in node.children.iter().filter(|c| c.field_index == field_index && c.variant.is_none()) {
+        // The rows of a recursive collection loaded with one query are this node's rows
+        if let Some(child) = &entry.node {
+            C::decode_graph(child, graph, entity)?;
+        }
+    }
+    Ok(())
+}
+
+impl Node {
+    /// The keys of the rows, in row order.
+    pub(crate) fn row_keys(&self) -> Result<Vec<Key>, Error> {
+        let keys = self.rows.iter().map(|row| self.key(row, KEY_ALIAS)).collect::<Result<Vec<_>, _>>()?;
+        Ok(keys.into_iter().flatten().collect())
+    }
+}
+
 /// Decode a required to-one reference of the row.
 #[doc(hidden)]
 pub fn to_one_required<C: View>(row: &PgRow, node: &Node, field_index: usize, ref_alias: &str) -> Result<C, Error> {
@@ -322,7 +454,8 @@ type NodeFuture<'a> = Pin<Box<dyn Future<Output = Result<Node, Error>> + Send + 
 /// override in `overrides` run the override instead of the generated SQL.
 ///
 /// `path` is the path of the rows in the root view, and `ancestors` the queries above, to
-/// run them again for the levels of a recursive collection.
+/// run them again for the levels of a recursive collection. `entities` says that the rows
+/// are entities of a graph, which are loaded once.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn load<'a>(
     conn: &'a mut PgConnection,
@@ -333,6 +466,8 @@ pub(crate) fn load<'a>(
     values: &'a [Bound],
     path: String,
     ancestors: Vec<&'a QueryPlan>,
+    identity: Arc<Identity>,
+    entities: bool,
 ) -> NodeFuture<'a> {
     Box::pin(async move {
         let view = plan.shape.name;
@@ -373,7 +508,11 @@ pub(crate) fn load<'a>(
             _ => fetch(conn, plan, &sql, keys, values).await?,
         };
 
-        let mut node = Node::new(view, path, rows, plan)?;
+        let mut node = Node::new(path, rows, plan, &identity)?;
+        if identity.graph && entities {
+            let keys = node.rows.iter().map(|row| node.key(row, KEY_ALIAS)).collect::<Result<Vec<_>, _>>()?;
+            node.fresh = Some(identity.fetch(plan.shape, keys));
+        }
         let mut chain = ancestors;
         chain.push(plan);
 
@@ -417,7 +556,11 @@ pub(crate) fn load<'a>(
             };
             let mut seen = HashSet::new();
             let mut keys = Vec::new();
-            for row in &node.rows {
+            for (i, row) in node.rows.iter().enumerate() {
+                // Later rows of an entity of a graph are not loaded again
+                if node.fresh.as_ref().is_some_and(|fresh| !fresh[i]) {
+                    continue;
+                }
                 // A variant table is only queried for the rows of the variant
                 if let Some((tag_alias, tag_value)) = tag {
                     let tag = row.try_get::<Option<&str>, _>(tag_alias).map_err(|source| Error::Decode {
@@ -436,14 +579,30 @@ pub(crate) fn load<'a>(
                 }
             }
 
+            // A graph fetches each entity and expands each collection of an entity once
+            let graph_edge = identity.graph && plan.shape.fields[child.field_index].kind.is_graph_edge();
+            if graph_edge {
+                match &target.link {
+                    Link::ToOne { .. } => identity.not_fetched(target.shape, &mut keys),
+                    Link::Child { .. } => identity.expand(plan.shape, child.field_index, &mut keys),
+                    _ => {}
+                }
+            }
+
             let child_node = if keys.is_empty() {
-                Node::new(target.shape.name, path, Vec::new(), target)?
+                Node::new(path, Vec::new(), target, &identity)?
             } else {
                 let keys = KeyArray::new(keys).map_err(|_| Error::MixedKeys { view: target.shape.name })?;
-                load(&mut *conn, target, options, Some(keys), overrides, &[], path, chain.clone()).await?
+                let ancestors = chain.clone();
+                let identity = identity.clone();
+                load(&mut *conn, target, options, Some(keys), overrides, &[], path, ancestors, identity, graph_edge)
+                    .await?
             };
 
             let by_key = child_node.group(attach_alias(&target.link))?;
+            if graph_edge && matches!(target.link, Link::Child { .. }) {
+                node.record_edges(plan.shape, child.field_index, &by_key, &child_node)?;
+            }
             node.children.push(ChildEntry {
                 field_index: child.field_index,
                 variant: child.variant,
@@ -480,6 +639,27 @@ impl Node {
             }
         }
         Ok(by_key)
+    }
+
+    /// Record the keys of the elements of a graph collection for each parent key.
+    fn record_edges(
+        &self,
+        shape: &'static ViewShape,
+        field_index: usize,
+        by_key: &HashMap<Key, Vec<usize>>,
+        children: &Node,
+    ) -> Result<(), Error> {
+        for (parent, indices) in by_key {
+            let keys = indices
+                .iter()
+                .map(|&i| children.key(&children.rows[i], KEY_ALIAS))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect();
+            self.identity.edges(shape, field_index, parent.clone(), keys);
+        }
+        Ok(())
     }
 
     /// Fail if the parent keys of the rows form a cycle, which a tree cannot hold: decoding

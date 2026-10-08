@@ -423,6 +423,13 @@ pub struct TaskShared {
 
 If the shape contains a cycle, the derive macro rejects `representation = "shared"` and suggests `graph`.
 
+> **M5:** there is no `representation` attribute.
+>
+> - **Selecting it:** the field type chooses: `Arc<T>`, `Option<Arc<T>>` or `Vec<Arc<T>>`.
+> - **Identity:** values are shared per load by view type and key, across fields and collections. A person who
+>   is both the assignee and the reviewer, or on two projects, is one allocation.
+> - **Cycles:** a cycle of `Arc` fields fails to plan like any unannotated cycle.
+
 ### 7.3 Graph
 
 For genuinely cyclic models, the result is a `Graph`: one arena per entity type, with relationships stored as
@@ -462,6 +469,33 @@ Properties:
 
 Loading a graph uses the same planner. Each entity type is loaded with batched queries, and every `Ref` is
 resolved through the identity map, so cycles cost nothing extra.
+
+> **M5:** as implemented:
+>
+> - **Selecting it:** the field types choose: `Ref<T>`, `Option<Ref<T>>` and `Vec<Ref<T>>`, with no
+>   `representation` attribute.
+> - **Loading:**
+>   - A view with references is loaded with `.graph(conn)`, which returns `Graph<R>` with the matching rows
+>     as roots. `.all()` fails with `Error::GraphRequired`.
+>   - The graph holds every entity reachable through references. A cycle through a reference needs no
+>     `depth`: it plans as a repeated query, and the load fetches each entity once (a to-one query skips keys
+>     already fetched) and expands each collection of an entity once.
+>   - A row of an entity fetched before is a duplicate. It isn't decoded again and its fields aren't loaded
+>     again. Owned values inside entities keep tree semantics.
+> - **Decoding:**
+>   - Edges are recorded while loading, then each entity is decoded once into the arena of its type.
+>   - A `Ref` is an arena index allocated by key, so an entity can be referenced before it is decoded.
+>   - Owned values inside entities, such as `Vec<Note>` where `Note` has a `Ref<Employee>`, are decoded as
+>     trees, and their references are part of the graph.
+> - **API:**
+>   - `Graph`: `roots()`, `root()`, `root_refs()`, `get(r)`, `get_mut(r)`, `all::<T>()` and `count::<T>()`.
+>   - A `Ref` used with another graph panics.
+>   - The derive generates a navigation method per reference field, named after it: `parent(&g)`,
+>     `children(&g)`.
+> - **Not done yet:**
+>   - JSON with `$id`/`$ref`, which comes with GraphQL (section 13).
+>   - Recording changes for writes (section 14).
+>   - References inside variant tables.
 
 ## 8. Query planning
 
@@ -785,7 +819,7 @@ database.
 | M2 | Sum types (**done**) | `tag`, `table_per_variant`, `json`; nested sums; strict decoding | Every strategy tested with generated SQL |
 | M3 | Overrides (**done**) | Override files, startup validation, `refract check`, shadow mode | Mutation-style checks pass |
 | M4 | Collections and recursion (**done**) | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
-| M5 | Shared and graph | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
+| M5 | Shared and graph (**done**; `$id`/`$ref` JSON moves to M7) | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
 | M6 | More databases, concurrency | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |
 | M7 | GraphQL | Sub-shapes from look-ahead; field arguments | Example server |
 | M8 | Writes (optional) | Aggregate insert and update; graph save with SCC ordering | Round-trip property tests |
