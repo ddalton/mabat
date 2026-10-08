@@ -861,6 +861,7 @@ name = "refract-sqlx"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "chrono",
  "refract-core",
  "serde",
  "sqlx",

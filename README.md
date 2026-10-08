@@ -60,8 +60,16 @@ struct NoteView {
 // One aggregate, on a pooled connection or inside a transaction
 let task = refract::load::<TaskView>().by_key(id).one(&mut *conn).await?;
 
-// Many, with ordering and paging of the root rows
-let page = refract::load::<TaskView>().order_by("name").limit(20).offset(40).all(&mut *conn).await?;
+// Many, filtered, ordered and paged
+use refract::filter::col;
+let page = refract::load::<TaskView>()
+    .filter(col("status").eq("open") & col("assignee_id").is_in([1_i64, 2, 3]))
+    .order_by("name")
+    .limit(20)
+    .offset(40)
+    .all(&mut *conn)
+    .await?;
+let total = refract::load::<TaskView>().filter(col("status").eq("open")).count(&mut *conn).await?;
 
 // The queries Refract runs
 println!("{}", refract::plan::<TaskView>()?.explain());
@@ -194,7 +202,7 @@ ORDER BY n.id;
 | To-many children and to-one references, nested, batched | Done (M1) |
 | Decoding by column alias, errors that name the view and path | Done (M1) |
 | Enums with data: `tag` and `table_per_variant` strategies, nested enums, JSON fields | Done (M2) |
-| Filters on the root query | Planned |
+| Filters on the root query, counting | Done |
 | SQL overrides checked at startup, shadow mode, scaffolding, reloading | Done (M3) |
 | Ordered lists, maps, many-to-many, recursive views | Planned (M4) |
 | Shared (`Arc`) and graph (`Ref<T>`) representations for cyclic data | Planned (M5) |

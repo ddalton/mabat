@@ -61,6 +61,10 @@ pub enum Error {
     #[error("{view}: the override of the root query ({origin}) takes the keys as $1, so load it by_key or by_keys")]
     KeysRequired { view: &'static str, origin: String },
 
-    #[error("{view}: cannot order by `{column}`, the root query is overridden and the view does not select the column")]
-    UnknownOrderBy { view: &'static str, column: String },
+    /// A column used by `order_by` or `filter` is not selected by the view, and the root
+    /// query is overridden, so it can only refer to the columns the view selects.
+    #[error(
+        "{view}: cannot order or filter by `{column}`: the root query is overridden and the view does not select it"
+    )]
+    ColumnNotSelected { view: &'static str, column: String },
 }

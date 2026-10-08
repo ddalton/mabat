@@ -115,7 +115,8 @@ it can pick representations Rust handles well (section 7) instead of forcing poi
 - **Compile-time checking of override SQL.** Overrides change at runtime by design; they're checked at
   startup and in CI.
 - **Inheritance.** Rust has none. Sum types and composition cover the same modeling needs.
-- **A query language of its own.** Filtering uses SeaQuery expressions or override SQL.
+- **A query language of its own.** Filtering covers comparisons, lists, patterns and boolean groups on the
+  root table; anything else is override SQL.
 
 ## 4. Concepts
 
@@ -188,8 +189,22 @@ pub struct TaskSummary {
 
 > **M1:** loading is the free function `refract::load::<T>()`, with `by_key`, `by_keys`, `order_by`,
 > `order_by_desc`, `limit` and `offset`, run with `all`, `one` or `optional` on a `&mut PgConnection`.
-> Filters with SeaQuery expressions aren't implemented yet. They were planned for M2, which became sum types
-> only.
+>
+> **Filters:** filters use a small API of Refract's own, `refract::filter`, not SeaQuery.
+>
+> - **Why not SeaQuery:** a SeaQuery expression renders its own placeholders and needs its own SQLx binder,
+>   which may not support SQLx 0.9 yet, while the keys are already bound as `$1`.
+> - **The API:** `col(..)` builds `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `is_null`, `is_not_null`, `is_in`,
+>   `not_in`, `like` and `ilike` conditions. They combine with `and` (`&`), `or` (`|`), `!`,
+>   `Condition::all` and `Condition::any`. Several `filter` calls are all applied.
+> - **Binding:** values are bound after the keys. A list is bound as one array (`= ANY($n)`), so the
+>   statement is the same for any length, and an empty list is a constant.
+> - **Columns:** filters name columns of the view's table, like `order_by`. With an override of the root
+>   query, they are applied to the override as a subquery and refer to the columns the view selects.
+> - **Counting:** `count()` runs `SELECT count(*)` with the same keys and filters, ignoring ordering and
+>   paging.
+> - **Scope:** filters apply to the root query only; filters on child collections come with GraphQL field
+>   arguments (section 13).
 >
 > **M3:** the registry takes no pool. `build(&mut conn)` checks the views on the connection it is given and
 > returns an immutable `Refract`; every load still takes its own connection or transaction. The free function
@@ -206,10 +221,10 @@ let refract = Refract::builder()
 // by key
 let task: TaskView = refract.load::<TaskView>().by_key(task_id).one(&mut tx).await?;
 
-// with a filter, using SeaQuery expressions on the root
+// with a filter on the root
 let open: Vec<TaskView> = refract
     .load::<TaskView>()
-    .filter(Expr::col("status_kind").eq("open"))
+    .filter(col("status_kind").eq("open"))
     .order_by("name")
     .limit(50)
     .all(&mut tx)
@@ -447,10 +462,11 @@ Rules:
 3. On PostgreSQL, child queries bind the parent keys as an array: `WHERE fk = ANY($1)`. Other databases use
    batched `IN` lists sized to the database's limit.
 4. Queries at the same depth are independent and can run concurrently (section 11).
-5. Generated SQL is built with SeaQuery's AST, never by editing strings.
-   **M1:** a small internal renderer (`refract_core::sql`) builds the SELECT statements directly from the plan,
-   with every identifier quoted. M1 needs only SELECT, `= ANY($1)`, ORDER BY, LIMIT and OFFSET, and this
-   avoids depending on the new SeaQuery 1.0 API before filters need it.
+5. Generated SQL is built from an AST, never by editing strings.
+   **As built:** a small internal renderer (`refract_core::sql`) builds the statements from the plan and the
+   filter tree (`refract_core::filter`), with every identifier quoted and every value bound. Refract needs
+   only SELECT, `= ANY($n)`, simple conditions, ORDER BY, LIMIT, OFFSET and `count(*)`, so it doesn't depend
+   on SeaQuery.
 6. Every selected column gets an alias equal to its path. The key column is selected once: under the alias of
    the field that holds it, or as `$key` if no field does. Generated queries and override queries are therefore
    decoded the same way.
@@ -531,8 +547,8 @@ System columns:
 >
 > - **Root query:** it takes either no parameter or the array of root keys as `$1`. Without a parameter, it is
 >   used as a subquery, which `by_keys`, `order_by`, `limit` and `offset` filter, order and page. `order_by`
->   then refers to columns the view selects. With `$1`, the load needs `by_key` or `by_keys`. Named filters
->   arrive with filters, which are not implemented yet.
+>   then refers to columns the view selects, as do filters, whose values are bound after the keys. With `$1`,
+>   the load needs `by_key` or `by_keys`.
 > - **Other queries:** they take the array of the keys they are selected by as `$1`.
 > - **Key columns:** they must hold integer, text or uuid values. A `$parent` column must hold the same kind of
 >   key as its parent, and a referenced view's key the same kind as the reference.
@@ -703,7 +719,7 @@ Writes never go through override SQL. Overrides are for reads.
 | --- | --- | --- |
 | `refract-core` | Shape IR, paths, planner, decoder runtime, `Graph`/`Ref`, errors | none (no database) |
 | `refract-derive` | `#[derive(View)]` proc macro; generates the static shape and the decoder | `syn`, `quote` |
-| `refract-sqlx` | Executor, SQL generation with SeaQuery, validation, overrides, shadow mode | `sqlx` 0.9, `sea-query` 1.x |
+| `refract-sqlx` | Executor, filters, validation, overrides, shadow mode | `sqlx` 0.9 |
 | `refract-cli` | `refract check`, `refract explain`, `refract scaffold` (generate an override from the generated SQL) | `refract-sqlx`, `clap` |
 | `refract-graphql` | Sub-shapes from `async-graphql` look-ahead | `async-graphql` 7.x |
 | `refract` | Facade that re-exports the above behind features | all |
@@ -745,7 +761,7 @@ database.
 | XOR (Java) | Origin of the view and override concept, query splitting, ordering writes with SCC and topological sort |
 | Blaze-Persistence Entity Views (Java) | Typed views over JPA; no runtime-swappable SQL |
 | MyBatis (Java) | SQL kept outside the code with result maps; no checking against types, flat or manually nested |
-| Diesel, SeaORM, SQLx (Rust) | Foundations and neighbors; Refract builds on SQLx and SeaQuery |
+| Diesel, SeaORM, SQLx (Rust) | Foundations and neighbors; Refract builds on SQLx |
 | Ecto / Elixir preloads | Batched child queries per association; inspiration for the planner |
 | petgraph, slotmap (Rust) | Arena and typed-index patterns behind the graph representation |
 | Haskell `lens` prisms | The optics vocabulary for sum types |
