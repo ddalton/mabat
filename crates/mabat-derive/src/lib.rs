@@ -879,6 +879,116 @@ fn json_fields(fields: &[ViewField], scope: Scope<'_>, selected: bool) -> TokenS
     }}
 }
 
+/// The statement that writes a field, whose value is the reference `value`, to `row`. In a
+/// prefixed scope, column names start with the runtime `prefix`.
+fn write_value(field: &ViewField, index: usize, value: TokenStream2, scope: Scope<'_>, view: &str) -> TokenStream2 {
+    let column = |name: &str| match scope {
+        Scope::Row => quote! { ::std::string::String::from(#name) },
+        Scope::Prefixed(_) => quote! { ::std::format!("{}{}", prefix, #name) },
+    };
+    let graph = quote! {
+        return ::core::result::Result::Err(__mabat::Error::Write {
+            view: #view,
+            message: ::std::string::String::from("references into a graph (`Ref<T>`) cannot be saved yet"),
+        });
+    };
+    let probes = quote! {
+        #[allow(unused_imports)]
+        use __mabat::__private::{JsonWriteFallback as _, JsonWriteViaSerialize as _, WriteFallback as _, WriteViaEncode as _};
+    };
+    let borrow = |ty: &Type, value: TokenStream2| quote! { ::core::borrow::Borrow::<#ty>::borrow(#value) };
+    match &field.spec {
+        FieldSpec::Column { column: name } => {
+            let ty = &field.ty;
+            let column = column(name);
+            quote! {{ #probes (&__mabat::__private::WriteProbe::<#ty, __Backend>::NEW).write_column(row, #column, #value)?; }}
+        }
+        FieldSpec::Json { column: name } => {
+            let ty = &field.ty;
+            let column = column(name);
+            quote! {{ #probes (&__mabat::__private::JsonWriteProbe::<#ty, __Backend>::NEW).write_json(row, #column, #value)?; }}
+        }
+        FieldSpec::Embed { prefix: name, ty } => {
+            let prefix = match scope {
+                Scope::Row => quote! { #name },
+                Scope::Prefixed(_) => quote! { &::std::format!("{}{}", prefix, #name) },
+            };
+            let field_index = scope.field_index(index);
+            quote! { <#ty as __mabat::EmbeddedEncoder<__Backend>>::write_embedded(#value, row, #prefix, #field_index)?; }
+        }
+        FieldSpec::Child(child) => {
+            if child.form == Form::Graph {
+                return graph;
+            }
+            let element = &child.element;
+            let element_value = borrow(element, quote! { element });
+            let target_key = quote! { __mabat::__private::target_key::<#element, __Backend>(#element_value)? };
+            let map_key = |row: TokenStream2| match (&child.map_key, &child.map_key_type) {
+                (Some(name), Some(key)) => quote! {
+                    #probes
+                    (&__mabat::__private::WriteProbe::<#key, __Backend>::NEW)
+                        .write_column(&mut #row, ::std::string::String::from(#name), key)?;
+                },
+                _ => quote! {},
+            };
+            let pairs = if child.map_key_type.is_some() {
+                quote! { (#value).iter() }
+            } else {
+                quote! { (#value).iter().map(|element| ((), element)) }
+            };
+            if child.through.is_some() {
+                let set_map_key = map_key(quote! { link });
+                quote! {{
+                    let mut links = ::std::vec::Vec::new();
+                    #[allow(unused_variables)]
+                    for (key, element) in #pairs {
+                        let mut link = __mabat::__private::RowWrite::<__Backend>::new(<#element as __mabat::View>::shape());
+                        link.set_key(::core::option::Option::Some(#target_key));
+                        #set_map_key
+                        links.push(link);
+                    }
+                    row.links(#index, links);
+                }}
+            } else {
+                let set_map_key = map_key(quote! { element_row });
+                quote! {{
+                    let mut rows = ::std::vec::Vec::new();
+                    #[allow(unused_variables)]
+                    for (key, element) in #pairs {
+                        #[allow(unused_mut)]
+                        let mut element_row = <#element as __mabat::ViewEncoder<__Backend>>::write(#element_value)?;
+                        #set_map_key
+                        rows.push(element_row);
+                    }
+                    row.collection(#index, rows);
+                }}
+            }
+        }
+        FieldSpec::ToOne { fk, optional, target, form } => {
+            if *form == Form::Graph {
+                return graph;
+            }
+            let key = |value: TokenStream2| {
+                let value = borrow(target, value);
+                quote! { __mabat::__private::target_key::<#target, __Backend>(#value)? }
+            };
+            let referenced = if *optional {
+                let key = key(quote! { target });
+                quote! {
+                    match #value {
+                        ::core::option::Option::Some(target) => ::core::option::Option::Some(#key),
+                        ::core::option::Option::None => ::core::option::Option::None,
+                    }
+                }
+            } else {
+                let key = key(value);
+                quote! { ::core::option::Option::Some(#key) }
+            };
+            quote! { row.reference(#fk, #referenced)?; }
+        }
+    }
+}
+
 /// The statement that describes the Rust type of a field to `description`.
 fn describe_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStream2 {
     let ty = &field.ty;
@@ -989,6 +1099,34 @@ fn expand_view(
     let describers: Vec<TokenStream2> = describers.collect();
     let visits: Vec<TokenStream2> = visits.collect();
     let json = json_fields(fields, Scope::Row, true);
+    let writes: Vec<TokenStream2> = fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let value = match &field.member {
+                Member::Named(member) => quote! { &self.#member },
+                Member::Unnamed => quote! { &self.#index },
+            };
+            write_value(field, index, value, Scope::Row, &ident.to_string())
+        })
+        .collect();
+    // The key of a value is its key field
+    let key_field = fields.iter().find(|f| matches!(&f.spec, FieldSpec::Column { column } if column == key));
+    let key_value = match key_field {
+        Some(field) => {
+            let ty = &field.ty;
+            let member = match &field.member {
+                Member::Named(member) => quote! { #member },
+                Member::Unnamed => quote! { 0 },
+            };
+            quote! {{
+                #[allow(unused_imports)]
+                use __mabat::__private::{KeyFallback as _, KeyViaInto as _};
+                (&__mabat::__private::KeyProbe::<#ty>::NEW).key(&self.#member)
+            }}
+        }
+        None => quote! { ::core::option::Option::None },
+    };
     let decoders = per_backend(databases, |backend| {
         quote! {
             impl __mabat::ViewDecoder<#backend> for #ident {
@@ -1029,6 +1167,23 @@ fn expand_view(
                     #[allow(dead_code)]
                     type __Backend = #backend;
                     ::core::result::Result::Ok(__mabat::__private::json_object(::core::option::Option::None, #json))
+                }
+            }
+
+            impl __mabat::ViewEncoder<#backend> for #ident {
+                fn key(&self) -> ::core::option::Option<__mabat::__private::Key> {
+                    #key_value
+                }
+
+                #[allow(unused_variables, unreachable_code)]
+                fn write(&self) -> ::core::result::Result<__mabat::__private::RowWrite<#backend>, __mabat::Error> {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    let mut value = __mabat::__private::RowWrite::<#backend>::new(<Self as __mabat::View>::shape());
+                    let row = &mut value;
+                    #(#writes)*
+                    row.set_key(<Self as __mabat::ViewEncoder<#backend>>::key(self));
+                    ::core::result::Result::Ok(value)
                 }
             }
         }
@@ -1122,6 +1277,22 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) ->
     let json_body = quote! {
         ::core::result::Result::Ok(__mabat::__private::json_object(::core::option::Option::None, #json))
     };
+    let view_name_str = ident.to_string();
+    let writes: Vec<TokenStream2> = fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let value = match &field.member {
+                Member::Named(member) => quote! { &self.#member },
+                Member::Unnamed => quote! { &self.#index },
+            };
+            write_value(field, index, value, scope, &view_name_str)
+        })
+        .collect();
+    let write_body = quote! {
+        #(#writes)*
+        ::core::result::Result::Ok(())
+    };
     let decoders = per_backend(databases, |backend| {
         quote! {
             impl __mabat::EmbeddedDecoder<#backend> for #ident {
@@ -1158,6 +1329,20 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) ->
                     #[allow(dead_code)]
                     type __Backend = #backend;
                     #json_body
+                }
+            }
+
+            impl __mabat::EmbeddedEncoder<#backend> for #ident {
+                #[allow(unused_variables, unreachable_code)]
+                fn write_embedded(
+                    &self,
+                    row: &mut __mabat::__private::RowWrite<#backend>,
+                    prefix: &str,
+                    field_index: usize,
+                ) -> ::core::result::Result<(), __mabat::Error> {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    #write_body
                 }
             }
         }
@@ -1262,6 +1447,73 @@ fn expand_sum(
         }
     });
     let tag_values = variants.iter().map(|v| &v.tag_value);
+
+    // Writing: the tag, then the variant's columns with NULL for the other variants', or the
+    // variant's table row
+    let write_arms: Vec<TokenStream2> = variants
+        .iter()
+        .map(|variant| {
+            let variant_ident = &variant.ident;
+            let name = variant.ident.unraw().to_string();
+            let tag_value = &variant.tag_value;
+            let bindings: Vec<Ident> = (0..variant.fields.len()).map(|i| format_ident!("__field{i}")).collect();
+            let pattern = match variant.style {
+                Style::Unit => quote! { Self::#variant_ident },
+                Style::Named => {
+                    let members = variant.fields.iter().map(|f| match &f.member {
+                        Member::Named(member) => quote! { #member },
+                        Member::Unnamed => quote! { 0 },
+                    });
+                    quote! { Self::#variant_ident { #(#members: #bindings),* } }
+                }
+                Style::Tuple => quote! { Self::#variant_ident ( #(#bindings),* ) },
+            };
+            let write_tag = quote! { row.literal(::std::format!("{}{}", prefix, #tag), #tag_value); };
+            match (&variant.table, variant.style) {
+                (None, _) => {
+                    let writes = variant.fields.iter().enumerate().zip(&bindings).map(|((i, field), binding)| {
+                        write_value(field, i, quote! { #binding }, Scope::Prefixed(""), &enum_name)
+                    });
+                    quote! {
+                        #pattern => {
+                            #write_tag
+                            #(#writes)*
+                            row.null_other_variants(<Self as __mabat::Embedded>::shape(), prefix, #name);
+                        }
+                    }
+                }
+                (Some(_), Style::Unit) => quote! {
+                    #pattern => {
+                        #write_tag
+                        row.variant(field_index, #name, ::core::option::Option::None);
+                    }
+                },
+                (Some(_), _) => {
+                    let writes = variant.fields.iter().enumerate().zip(&bindings).map(|((i, field), binding)| {
+                        write_value(field, i, quote! { #binding }, Scope::Row, &enum_name)
+                    });
+                    quote! {
+                        #pattern => {
+                            #write_tag
+                            let table = __mabat::__private::variant_table(<Self as __mabat::Embedded>::shape(), #name);
+                            let mut value = __mabat::__private::RowWrite::<__Backend>::new(table);
+                            {
+                                let row = &mut value;
+                                #(#writes)*
+                            }
+                            row.variant(field_index, #name, ::core::option::Option::Some(value));
+                        }
+                    }
+                }
+            }
+        })
+        .collect();
+    let write_body = quote! {
+        match self {
+            #(#write_arms)*
+        }
+        ::core::result::Result::Ok(())
+    };
 
     // Decoding as JSON: an object with the variant's name and fields
     let json_arms: Vec<TokenStream2> = variants
@@ -1371,6 +1623,20 @@ fn expand_sum(
                     #[allow(dead_code)]
                     type __Backend = #backend;
                     #json_body
+                }
+            }
+
+            impl __mabat::EmbeddedEncoder<#backend> for #ident {
+                #[allow(unused_variables, unreachable_code)]
+                fn write_embedded(
+                    &self,
+                    row: &mut __mabat::__private::RowWrite<#backend>,
+                    prefix: &str,
+                    field_index: usize,
+                ) -> ::core::result::Result<(), __mabat::Error> {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    #write_body
                 }
             }
         }

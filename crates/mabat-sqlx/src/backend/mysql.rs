@@ -17,6 +17,13 @@ bind_each!(MySql);
 impl Backend for MySql {
     const DIALECT: Dialect = Dialect::MySql;
 
+    fn add_keys(
+        args: &mut <MySql as sqlx::Database>::Arguments,
+        keys: &crate::key::KeyList,
+    ) -> Result<(), sqlx::error::BoxDynError> {
+        add_each_key(args, keys)
+    }
+
     common_methods!(MySql, MySqlConnection, MySqlRow);
 
     fn key_kind(ty: &MySqlTypeInfo) -> Option<KeyKind> {

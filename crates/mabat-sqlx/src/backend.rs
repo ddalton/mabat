@@ -90,6 +90,27 @@ pub trait Backend: Database + Sized {
         Vec::new()
     }
 
+    /// Run a statement with arguments: the number of rows it affected.
+    fn execute_args<'c>(
+        conn: &'c mut Self::Connection,
+        sql: String,
+        args: Self::Arguments,
+    ) -> BoxFuture<'c, Result<u64, sqlx::Error>>;
+
+    /// Run a query with arguments and fetch its rows.
+    fn fetch_args<'c>(
+        conn: &'c mut Self::Connection,
+        sql: String,
+        args: Self::Arguments,
+    ) -> BoxFuture<'c, Result<Vec<Self::Row>, sqlx::Error>>;
+
+    /// Add a key to the arguments of a statement.
+    fn add_key(args: &mut Self::Arguments, key: &Key) -> Result<(), sqlx::error::BoxDynError>;
+
+    /// Add keys to the arguments of a statement, as [`Backend::fetch`] binds them: one array
+    /// on PostgreSQL, else one argument per key.
+    fn add_keys(args: &mut Self::Arguments, keys: &KeyList) -> Result<(), sqlx::error::BoxDynError>;
+
     /// Begin a read-only transaction on a connection of the pool that shares a snapshot:
     /// the snapshot of `import`, or a new one whose id is returned, for
     /// [`crate::Pooled::snapshot`]. Only PostgreSQL shares snapshots.
@@ -257,6 +278,37 @@ macro_rules! common_methods {
             })
         }
 
+        fn execute_args<'c>(
+            conn: &'c mut $conn,
+            sql: String,
+            args: <$db as sqlx::Database>::Arguments,
+        ) -> crate::backend::BoxFuture<'c, Result<u64, sqlx::Error>> {
+            Box::pin(async move {
+                let done = sqlx::query_with(sqlx::AssertSqlSafe(sql), args).execute(conn).await?;
+                Ok(done.rows_affected())
+            })
+        }
+
+        fn fetch_args<'c>(
+            conn: &'c mut $conn,
+            sql: String,
+            args: <$db as sqlx::Database>::Arguments,
+        ) -> crate::backend::BoxFuture<'c, Result<Vec<$row>, sqlx::Error>> {
+            Box::pin(async move { sqlx::query_with(sqlx::AssertSqlSafe(sql), args).fetch_all(conn).await })
+        }
+
+        fn add_key(
+            args: &mut <$db as sqlx::Database>::Arguments,
+            key: &crate::key::Key,
+        ) -> Result<(), sqlx::error::BoxDynError> {
+            use sqlx::Arguments;
+            match key {
+                crate::key::Key::Int(key) => args.add(*key),
+                crate::key::Key::Text(key) => args.add(key.as_str()),
+                crate::key::Key::Uuid(key) => args.add(*key),
+            }
+        }
+
         fn inspect<'c>(
             conn: &'c mut $conn,
             sql: String,
@@ -295,6 +347,19 @@ macro_rules! connection {
 #[allow(unused_macros)]
 macro_rules! bind_each {
     ($db:ty) => {
+        /// Keys as one argument per key.
+        fn add_each_key(
+            args: &mut <$db as sqlx::Database>::Arguments,
+            keys: &crate::key::KeyList,
+        ) -> Result<(), sqlx::error::BoxDynError> {
+            use sqlx::Arguments;
+            match keys {
+                crate::key::KeyList::Int(keys) => keys.iter().try_for_each(|key| args.add(*key)),
+                crate::key::KeyList::Text(keys) => keys.iter().try_for_each(|key| args.add(key.as_str())),
+                crate::key::KeyList::Uuid(keys) => keys.iter().try_for_each(|key| args.add(*key)),
+            }
+        }
+
         fn bind<'q>(
             mut query: sqlx::query::Query<'q, $db, <$db as sqlx::Database>::Arguments>,
             keys: Option<crate::key::KeyList>,

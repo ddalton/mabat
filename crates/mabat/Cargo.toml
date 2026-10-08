@@ -71,6 +71,10 @@ name = "pooled"
 required-features = ["postgres"]
 
 [[test]]
+name = "save"
+required-features = ["postgres"]
+
+[[test]]
 name = "sums"
 required-features = ["postgres"]
 

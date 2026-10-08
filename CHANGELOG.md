@@ -60,6 +60,8 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **JSON and selections (M7).** `Load::json` loads views as JSON, and `Load::select` with a `Selection`
   (built in code or parsed from GraphQL-like text) loads only the selected fields: only their columns are
   selected and only their child queries run. Recursive and graph views load as trees as deep as the selection.
+- **Saving aggregates (M8).** `mabat::save` upserts a value and makes its owned collections, links and variant
+  tables match it, in one transaction; `mabat::delete` deletes an aggregate with all it owns. On every database.
 - **Arguments of nested collections.** `Load::nested` with a `Nested` filters, orders and pages the elements
   of a to-many collection for each parent, in the collection's one query, also through overrides. Nested GraphQL
   lists take `where`, `orderBy`, `limit` and `offset`.

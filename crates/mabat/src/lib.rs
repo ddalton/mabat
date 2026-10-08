@@ -134,6 +134,12 @@
 //! }
 //! ```
 //!
+//! # Saving aggregates
+//!
+//! [`save`] writes a value with what it owns, and [`delete`] deletes it, in a transaction:
+//! rows are upserted by key, owned collections are made equal to the value's, and
+//! references and many-to-many links write foreign keys only.
+//!
 //! # JSON and selections
 //!
 //! [`Load::json`] loads views as JSON objects, and [`Load::select`] with a [`Selection`]
@@ -218,9 +224,9 @@
 
 pub use mabat_derive::View;
 pub use mabat_sqlx::{
-    Backend, Builder, Conn, Diagnostic, Embedded, EmbeddedDecoder, Error, Graph, Key, Load, Mabat, Nested, Node,
-    OnInvalid, Origin, Pooled, Ref, Reloaded, Report, Selection, SelectionError, Severity, ShadowSummary, View,
-    ViewDecoder, load, plan, scaffold,
+    Backend, Builder, Conn, Diagnostic, Embedded, EmbeddedDecoder, EmbeddedEncoder, Error, Graph, Key, Load, Mabat,
+    Nested, Node, OnInvalid, Origin, Pooled, Ref, Reloaded, Report, RowWrite, Selection, SelectionError, Severity,
+    ShadowSummary, View, ViewDecoder, ViewEncoder, delete, load, plan, save, scaffold,
 };
 pub use mabat_sqlx::{filter, manifest};
 

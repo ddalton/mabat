@@ -15,6 +15,15 @@ connection!(Postgres, PgConnection);
 impl Backend for Postgres {
     const DIALECT: Dialect = Dialect::Postgres;
 
+    fn add_keys(args: &mut PgArguments, keys: &KeyList) -> Result<(), sqlx::error::BoxDynError> {
+        use sqlx::Arguments;
+        match keys {
+            KeyList::Int(keys) => args.add(keys),
+            KeyList::Text(keys) => args.add(keys),
+            KeyList::Uuid(keys) => args.add(keys),
+        }
+    }
+
     common_methods!(Postgres, PgConnection, PgRow);
 
     fn key_kind(ty: &PgTypeInfo) -> Option<KeyKind> {

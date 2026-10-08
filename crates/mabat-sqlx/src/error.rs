@@ -50,6 +50,9 @@ pub enum Error {
     #[error("{view} has references into a graph (`Ref<T>`); load it with `.graph(..)`")]
     GraphRequired { view: &'static str },
 
+    #[error("{view} cannot be written: {message}")]
+    Write { view: &'static str, message: String },
+
     #[error("{view}: the arguments of `{path}` cannot be applied: {reason}")]
     NestedArguments { view: &'static str, path: String, reason: &'static str },
 
