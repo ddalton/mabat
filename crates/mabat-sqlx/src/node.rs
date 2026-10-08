@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use mabat_core::sql::{self, Render, RootOptions};
 use mabat_core::{
-    ChildQuery, FieldKind, INDEX_ALIAS, KEY_ALIAS, Link, MAP_KEY_ALIAS, PARENT_ALIAS, QueryPlan, REF_ALIAS_PREFIX,
-    TAG_ALIAS, ViewShape,
+    ChildPlan, ChildQuery, FieldKind, INDEX_ALIAS, KEY_ALIAS, Link, MAP_KEY_ALIAS, PARENT_ALIAS, QueryPlan,
+    REF_ALIAS_PREFIX, TAG_ALIAS, ViewShape,
 };
 use sqlx::{Decode, Type};
 
@@ -17,6 +17,7 @@ use crate::backend::Backend;
 use crate::filter::Bound;
 use crate::graph::{GraphBuilder, Identity, Ref};
 use crate::key::{Key, KeyColumn, KeyList};
+use crate::pooled::Runner;
 use crate::registry::{ActiveOverride, Overrides};
 use crate::{Error, View, ViewDecoder};
 
@@ -480,15 +481,18 @@ pub fn to_one_required<C: ViewDecoder<B>, B: Backend>(
 
 type NodeFuture<'a, B> = Pin<Box<dyn Future<Output = Result<Node<B>, Error>> + Send + 'a>>;
 
-/// Run the query of the plan, then its child queries, on the connection. Queries with an
-/// override in `overrides` run the override instead of the generated SQL.
+/// Run the query of the plan, then its child queries, on connections of the runner. Queries
+/// with an override in `overrides` run the override instead of the generated SQL.
 ///
 /// `path` is the path of the rows in the root view, and `ancestors` the queries above, to
 /// run them again for the levels of a recursive collection. `entities` says that the rows
 /// are entities of a graph, which are loaded once.
+///
+/// When the runner is concurrent, the child queries run at the same time. A graph loads
+/// them one at a time, in order, so that each entity is fetched by the same query.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn load<'a, B: Backend>(
-    conn: &'a mut B::Connection,
+pub(crate) fn load<'a, 'c: 'a, B: Backend>(
+    runner: &'a Runner<'c, B>,
     plan: &'a QueryPlan,
     options: &'a RootOptions,
     keys: Option<KeyList>,
@@ -507,35 +511,39 @@ where
         let view = plan.shape.name;
         let active = overrides.and_then(|o| o.get(plan.query_name()));
 
-        let rows = match active {
-            Some(active) if active.shadow => {
-                let start = Instant::now();
-                let rows = fetch::<B>(conn, plan, options, keys.clone(), values, Some(active)).await?;
-                let override_time = start.elapsed();
-                let start = Instant::now();
-                let expected = fetch::<B>(conn, plan, options, keys, values, None).await?;
-                let generated_time = start.elapsed();
-                active.stats.record(override_time, generated_time);
-                if let Err(difference) = compare::<B>(plan, &rows, &expected) {
-                    active.stats.mismatch();
-                    tracing::warn!(
-                        view,
-                        query = plan.query_name(),
-                        origin = %active.origin,
-                        "shadowed override returned different rows than the generated query: {difference}"
-                    );
-                } else {
-                    tracing::debug!(
-                        view,
-                        query = plan.query_name(),
-                        ?override_time,
-                        ?generated_time,
-                        "shadowed override returned the same rows as the generated query"
-                    );
+        // The connection is held for this query only, not while the children load
+        let rows = {
+            let mut conn = runner.lease().await?;
+            match active {
+                Some(active) if active.shadow => {
+                    let start = Instant::now();
+                    let rows = fetch::<B>(&mut conn, plan, options, keys.clone(), values, Some(active)).await?;
+                    let override_time = start.elapsed();
+                    let start = Instant::now();
+                    let expected = fetch::<B>(&mut conn, plan, options, keys, values, None).await?;
+                    let generated_time = start.elapsed();
+                    active.stats.record(override_time, generated_time);
+                    if let Err(difference) = compare::<B>(plan, &rows, &expected) {
+                        active.stats.mismatch();
+                        tracing::warn!(
+                            view,
+                            query = plan.query_name(),
+                            origin = %active.origin,
+                            "shadowed override returned different rows than the generated query: {difference}"
+                        );
+                    } else {
+                        tracing::debug!(
+                            view,
+                            query = plan.query_name(),
+                            ?override_time,
+                            ?generated_time,
+                            "shadowed override returned the same rows as the generated query"
+                        );
+                    }
+                    rows
                 }
-                rows
+                _ => fetch::<B>(&mut conn, plan, options, keys, values, active).await?,
             }
-            _ => fetch::<B>(conn, plan, options, keys, values, active).await?,
         };
 
         let mut node = Node::new(path, rows, plan, &identity)?;
@@ -546,110 +554,189 @@ where
         let mut chain = ancestors;
         chain.push(plan);
 
+        let concurrent = runner.concurrent() && !identity.graph;
+        let mut pending = Vec::new();
         for child in &plan.children {
-            let field = plan.shape.fields[child.field_index].name;
-            let path = match child.variant {
-                Some(variant) => format!("{}.{variant}", join(&node.path, field)),
-                None => join(&node.path, field),
-            };
-            let target = match &child.query {
-                ChildQuery::Query(target) => target,
-                ChildQuery::Repeat { up, depth } => {
-                    // The next level of a recursive collection, unless it is the last level
-                    let target = chain[chain.len() - 1 - up];
-                    let level = chain.iter().filter(|p| std::ptr::eq(**p, target)).count();
-                    if level >= *depth as usize {
-                        continue;
-                    }
-                    target
-                }
-                ChildQuery::Same => {
-                    // The next level of a recursive collection is in the rows of this query
-                    node.check_acyclic()?;
-                    let by_key = node.group(PARENT_ALIAS)?;
-                    node.children.push(ChildEntry {
-                        field_index: child.field_index,
-                        variant: None,
-                        node: None,
-                        by_key,
-                    });
-                    continue;
-                }
-            };
-
-            // The keys the child rows are selected by
-            let (parent_alias, tag) = match &target.link {
-                Link::Child { .. } => (KEY_ALIAS, None),
-                Link::ToOne { ref_alias } => (ref_alias.as_str(), None),
-                Link::Variant { tag_alias, tag_value } => (KEY_ALIAS, Some((tag_alias.as_str(), *tag_value))),
-                Link::Root => unreachable!("a child query is never a root query"),
-            };
-            let mut seen = HashSet::new();
-            let mut keys = Vec::new();
-            for (i, row) in node.rows.iter().enumerate() {
-                // Later rows of an entity of a graph are not loaded again
-                if node.fresh.as_ref().is_some_and(|fresh| !fresh[i]) {
-                    continue;
-                }
-                // A variant table is only queried for the rows of the variant
-                if let Some((tag_alias, tag_value)) = tag {
-                    let tag = node.tag_text(row, tag_alias)?;
-                    if tag.as_deref() != Some(tag_value) {
-                        continue;
-                    }
-                }
-                if let Some(key) = node.key(row, parent_alias)?
-                    && seen.insert(key.clone())
-                {
-                    keys.push(key);
-                }
-            }
-
-            // A graph fetches each entity and expands each collection of an entity once
-            let graph_edge = identity.graph && plan.shape.fields[child.field_index].kind.is_graph_edge();
-            if graph_edge {
-                match &target.link {
-                    Link::ToOne { .. } => identity.not_fetched(target.shape, &mut keys),
-                    Link::Child { .. } => identity.expand(plan.shape, child.field_index, &mut keys),
-                    _ => {}
-                }
-            }
-
-            let child_node = if keys.is_empty() {
-                Node::new(path, Vec::new(), target, &identity)?
+            let Some(next) = next_child(&mut node, plan, child, &chain, &identity)? else { continue };
+            if concurrent {
+                pending.push(next);
             } else {
-                let keys = KeyList::new(keys).map_err(|_| Error::MixedKeys { view: target.shape.name })?;
-                let ancestors = chain.clone();
-                let identity = identity.clone();
-                load::<B>(
-                    &mut *conn,
-                    target,
+                let child_node = load_child(
+                    runner,
+                    next.target,
                     options,
-                    Some(keys),
+                    next.keys,
                     overrides,
-                    &[],
-                    path,
-                    ancestors,
-                    identity,
-                    graph_edge,
+                    next.path,
+                    &chain,
+                    &identity,
+                    next.graph_edge,
                 )
-                .await?
-            };
-
-            let by_key = child_node.group(attach_alias(&target.link))?;
-            if graph_edge && matches!(target.link, Link::Child { .. }) {
-                node.record_edges(plan.shape, child.field_index, &by_key, &child_node)?;
+                .await?;
+                attach(&mut node, plan, next.field_index, next.variant, next.target, next.graph_edge, child_node)?;
             }
-            node.children.push(ChildEntry {
-                field_index: child.field_index,
-                variant: child.variant,
-                node: Some(child_node),
-                by_key,
+        }
+        if !pending.is_empty() {
+            let loads = pending.iter_mut().map(|next| {
+                let keys = next.keys.take();
+                let path = std::mem::take(&mut next.path);
+                load_child(runner, next.target, options, keys, overrides, path, &chain, &identity, next.graph_edge)
             });
+            let child_nodes = futures_util::future::try_join_all(loads).await?;
+            for (next, child_node) in pending.into_iter().zip(child_nodes) {
+                attach(&mut node, plan, next.field_index, next.variant, next.target, next.graph_edge, child_node)?;
+            }
         }
 
         Ok(node)
     })
+}
+
+/// A child query to run: its plan, the keys of the rows above, and the path of its rows.
+struct NextChild<'a> {
+    field_index: usize,
+    variant: Option<&'static str>,
+    target: &'a QueryPlan,
+    keys: Option<KeyList>,
+    path: String,
+    graph_edge: bool,
+}
+
+/// The child query of `child` for the rows of `node`, `None` if there is none to run: the
+/// level below the depth limit of a recursive collection, or a level in the rows of this
+/// query, which is attached here.
+fn next_child<'a, B: Backend>(
+    node: &mut Node<B>,
+    plan: &'a QueryPlan,
+    child: &'a ChildPlan,
+    chain: &[&'a QueryPlan],
+    identity: &Identity,
+) -> Result<Option<NextChild<'a>>, Error> {
+    let field = plan.shape.fields[child.field_index].name;
+    let path = match child.variant {
+        Some(variant) => format!("{}.{variant}", join(&node.path, field)),
+        None => join(&node.path, field),
+    };
+    let target: &'a QueryPlan = match &child.query {
+        ChildQuery::Query(target) => target,
+        ChildQuery::Repeat { up, depth } => {
+            // The next level of a recursive collection, unless it is the last level
+            let target = chain[chain.len() - 1 - up];
+            let level = chain.iter().filter(|p| std::ptr::eq(**p, target)).count();
+            if level >= *depth as usize {
+                return Ok(None);
+            }
+            target
+        }
+        ChildQuery::Same => {
+            // The next level of a recursive collection is in the rows of this query
+            node.check_acyclic()?;
+            let by_key = node.group(PARENT_ALIAS)?;
+            node.children.push(ChildEntry { field_index: child.field_index, variant: None, node: None, by_key });
+            return Ok(None);
+        }
+    };
+
+    // The keys the child rows are selected by
+    let (parent_alias, tag) = match &target.link {
+        Link::Child { .. } => (KEY_ALIAS, None),
+        Link::ToOne { ref_alias } => (ref_alias.as_str(), None),
+        Link::Variant { tag_alias, tag_value } => (KEY_ALIAS, Some((tag_alias.as_str(), *tag_value))),
+        Link::Root => unreachable!("a child query is never a root query"),
+    };
+    let mut seen = HashSet::new();
+    let mut keys = Vec::new();
+    for (i, row) in node.rows.iter().enumerate() {
+        // Later rows of an entity of a graph are not loaded again
+        if node.fresh.as_ref().is_some_and(|fresh| !fresh[i]) {
+            continue;
+        }
+        // A variant table is only queried for the rows of the variant
+        if let Some((tag_alias, tag_value)) = tag {
+            let tag = node.tag_text(row, tag_alias)?;
+            if tag.as_deref() != Some(tag_value) {
+                continue;
+            }
+        }
+        if let Some(key) = node.key(row, parent_alias)?
+            && seen.insert(key.clone())
+        {
+            keys.push(key);
+        }
+    }
+
+    // A graph fetches each entity and expands each collection of an entity once
+    let graph_edge = identity.graph && plan.shape.fields[child.field_index].kind.is_graph_edge();
+    if graph_edge {
+        match &target.link {
+            Link::ToOne { .. } => identity.not_fetched(target.shape, &mut keys),
+            Link::Child { .. } => identity.expand(plan.shape, child.field_index, &mut keys),
+            _ => {}
+        }
+    }
+
+    let keys = if keys.is_empty() {
+        None
+    } else {
+        Some(KeyList::new(keys).map_err(|_| Error::MixedKeys { view: target.shape.name })?)
+    };
+    Ok(Some(NextChild { field_index: child.field_index, variant: child.variant, target, keys, path, graph_edge }))
+}
+
+/// Load the rows of a child query, none without keys.
+#[allow(clippy::too_many_arguments)]
+async fn load_child<'a, 'c: 'a, B: Backend>(
+    runner: &'a Runner<'c, B>,
+    target: &'a QueryPlan,
+    options: &'a RootOptions,
+    keys: Option<KeyList>,
+    overrides: Option<&'a Overrides>,
+    path: String,
+    chain: &[&'a QueryPlan],
+    identity: &Arc<Identity>,
+    graph_edge: bool,
+) -> Result<Node<B>, Error>
+where
+    B::Connection: Send,
+    B::Row: Send + Sync,
+{
+    match keys {
+        None => Node::new(path, Vec::new(), target, identity),
+        Some(keys) => {
+            let ancestors = chain.to_vec();
+            load::<B>(
+                runner,
+                target,
+                options,
+                Some(keys),
+                overrides,
+                &[],
+                path,
+                ancestors,
+                identity.clone(),
+                graph_edge,
+            )
+            .await
+        }
+    }
+}
+
+/// Attach the rows of a child query to the rows of `node`.
+fn attach<B: Backend>(
+    node: &mut Node<B>,
+    plan: &QueryPlan,
+    field_index: usize,
+    variant: Option<&'static str>,
+    target: &QueryPlan,
+    graph_edge: bool,
+    child_node: Node<B>,
+) -> Result<(), Error> {
+    let by_key = child_node.group(attach_alias(&target.link))?;
+    if graph_edge && matches!(target.link, Link::Child { .. }) {
+        node.record_edges(plan.shape, field_index, &by_key, &child_node)?;
+    }
+    node.children.push(ChildEntry { field_index, variant, node: Some(child_node), by_key });
+    Ok(())
 }
 
 /// Child rows are attached by their parent key, referenced rows by their own key.

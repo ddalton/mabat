@@ -183,7 +183,8 @@ impl<B: Backend> Builder<B> {
     pub async fn check<C: Conn<Backend = B>>(&self, conn: &mut C) -> Result<Report, Error> {
         let mut report = Report::default();
         let sources = self.read_sources(&mut report);
-        Ok(self.run_checks(conn.connection(), &sources, report).await?.1)
+        let mut conn = conn.source().single().await?;
+        Ok(self.run_checks(&mut conn, &sources, report).await?.1)
     }
 
     /// Check the views and the overrides against the database, as [`Builder::check`] does,
@@ -197,7 +198,8 @@ impl<B: Backend> Builder<B> {
         let mut report = Report::default();
         let sources = self.read_sources(&mut report);
         let fingerprint = fingerprint(&sources, &report);
-        let (checked, report) = self.run_checks(conn.connection(), &sources, report).await?;
+        let mut conn = conn.source().single().await?;
+        let (checked, report) = self.run_checks(&mut conn, &sources, report).await?;
         let fails = match self.on_invalid {
             OnInvalid::Fail => !report.is_ok(),
             OnInvalid::UseGenerated => report.errors().any(|d| d.origin.is_none() || d.code == "M0301"),
@@ -485,7 +487,8 @@ impl<B: Backend> Mabat<B> {
     ///
     /// Shadow statistics are kept for overrides whose SQL did not change.
     pub async fn reload<C: Conn<Backend = B>>(&self, conn: &mut C) -> Result<Reloaded, Error> {
-        let conn = conn.connection();
+        let mut conn = conn.source().single().await?;
+        let conn = &mut *conn;
         let mut report = Report::default();
         let sources = self.builder.read_sources(&mut report);
         let fingerprint = fingerprint(&sources, &report);

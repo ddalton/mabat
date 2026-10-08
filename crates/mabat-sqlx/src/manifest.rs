@@ -174,7 +174,8 @@ impl Manifest {
         }
         let mut report = Report::default();
         let files = registry::read_override_files(overrides, &[], &mut report);
-        check::check::<C::Backend>(conn.connection(), self, files, &mut report).await.map_err(Error::Check)?;
+        let mut conn = conn.source().single().await?;
+        check::check::<C::Backend>(&mut conn, self, files, &mut report).await.map_err(Error::Check)?;
         Ok(report)
     }
 

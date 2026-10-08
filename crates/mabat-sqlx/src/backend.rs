@@ -13,6 +13,7 @@ use sqlx::{Database, Decode, Type};
 
 use crate::filter::Bound;
 use crate::key::{Key, KeyList};
+use crate::pooled::Source;
 
 /// A boxed future, as the async methods of [`Backend`] return.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -88,14 +89,26 @@ pub trait Backend: Database + Sized {
     fn named_types<T: Type<Self>>() -> Vec<String> {
         Vec::new()
     }
+
+    /// Begin a read-only transaction on a connection of the pool that shares a snapshot:
+    /// the snapshot of `import`, or a new one whose id is returned, for
+    /// [`crate::Pooled::snapshot`]. Only PostgreSQL shares snapshots.
+    fn begin_snapshot(
+        pool: &sqlx::Pool<Self>,
+        import: Option<String>,
+    ) -> BoxFuture<'_, Result<(sqlx::Transaction<'static, Self>, String), sqlx::Error>> {
+        let _ = (pool, import);
+        Box::pin(async { Err(sqlx::Error::Configuration(format!("{} cannot share snapshots", Self::NAME).into())) })
+    }
 }
 
-/// A connection, or a transaction or pooled connection that derefs to one, that a load
-/// runs on.
+/// What a load runs on: a connection, a transaction or pooled connection that derefs to one,
+/// or a [`crate::Pooled`] pool.
 pub trait Conn: Send {
     type Backend: Backend;
 
-    fn connection(&mut self) -> &mut <Self::Backend as Database>::Connection;
+    #[doc(hidden)]
+    fn source(&mut self) -> Source<'_, Self::Backend>;
 }
 
 impl<DB: Backend> Conn for sqlx::Transaction<'_, DB>
@@ -104,8 +117,8 @@ where
 {
     type Backend = DB;
 
-    fn connection(&mut self) -> &mut DB::Connection {
-        self
+    fn source(&mut self) -> Source<'_, DB> {
+        Source::Connection(&mut **self)
     }
 }
 
@@ -115,8 +128,8 @@ where
 {
     type Backend = DB;
 
-    fn connection(&mut self) -> &mut DB::Connection {
-        self
+    fn source(&mut self) -> Source<'_, DB> {
+        Source::Connection(&mut **self)
     }
 }
 
@@ -270,8 +283,8 @@ macro_rules! connection {
         impl crate::backend::Conn for $conn {
             type Backend = $db;
 
-            fn connection(&mut self) -> &mut $conn {
-                self
+            fn source(&mut self) -> crate::pooled::Source<'_, $db> {
+                crate::pooled::Source::Connection(self)
             }
         }
     };

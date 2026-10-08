@@ -12,6 +12,7 @@ mod key;
 pub mod manifest;
 mod node;
 mod overrides;
+mod pooled;
 mod registry;
 mod report;
 
@@ -29,6 +30,7 @@ pub use graph::{Graph, Ref};
 pub use key::Key;
 pub use node::Node;
 pub use overrides::Origin;
+pub use pooled::Pooled;
 pub use registry::{Builder, Mabat, OnInvalid, Reloaded, ShadowSummary, scaffold};
 pub use report::{Diagnostic, Report, Severity};
 
@@ -217,7 +219,7 @@ impl<T: View> Load<T> {
         if load.plan.has_graph_edges() {
             return Err(Error::GraphRequired { view: T::shape().name });
         }
-        let node = load.run::<C::Backend>(conn.connection(), graph::Identity::new(false)).await?;
+        let node = load.run::<C::Backend>(conn.source(), graph::Identity::new(false)).await?;
         node.rows().iter().map(|row| T::decode(row, &node)).collect()
     }
 
@@ -235,7 +237,7 @@ impl<T: View> Load<T> {
         let Some(load) = self.prepare::<C::Backend>()? else {
             return graph::GraphBuilder::new(identity).finish(Vec::new());
         };
-        let node = load.run::<C::Backend>(conn.connection(), identity.clone()).await?;
+        let node = load.run::<C::Backend>(conn.source(), identity.clone()).await?;
         let mut builder = graph::GraphBuilder::new(identity);
         T::decode_graph(&node, &mut builder, true)?;
         builder.finish(node.row_keys()?)
@@ -246,7 +248,8 @@ impl<T: View> Load<T> {
     pub async fn count<C: Conn>(self, conn: &mut C) -> Result<i64, Error> {
         let Some(load) = self.prepare::<C::Backend>()? else { return Ok(0) };
         let overrides = load.overrides.as_ref().map(|c| &c.overrides);
-        node::count::<C::Backend>(conn.connection(), &load.plan, &load.options, load.keys, overrides, load.values).await
+        let mut conn = conn.source().single().await?;
+        node::count::<C::Backend>(&mut conn, &load.plan, &load.options, load.keys, overrides, load.values).await
     }
 
     /// Load exactly one value: [`Error::NotFound`] if there is none, [`Error::TooManyRows`]
@@ -284,14 +287,23 @@ struct Prepared {
 }
 
 impl Prepared {
-    async fn run<B: Backend>(self, conn: &mut B::Connection, identity: Arc<graph::Identity>) -> Result<Node<B>, Error> {
+    async fn run<B: Backend>(
+        self,
+        source: pooled::Source<'_, B>,
+        identity: Arc<graph::Identity>,
+    ) -> Result<Node<B>, Error> {
+        let runner = pooled::Runner::new(source, identity.graph).await?;
         let overrides = self.overrides.as_ref().map(|c| &c.overrides);
         let plan = &*self.plan;
         let path = String::new();
         let entities = identity.graph;
         let values = &self.values;
-        node::load::<B>(conn, plan, &self.options, self.keys, overrides, values, path, Vec::new(), identity, entities)
-            .await
+        let options = &self.options;
+        let node =
+            node::load::<B>(&runner, plan, options, self.keys, overrides, values, path, Vec::new(), identity, entities)
+                .await?;
+        runner.finish().await?;
+        Ok(node)
     }
 }
 

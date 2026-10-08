@@ -164,6 +164,68 @@ impl Dataset {
         Some(conn)
     }
 
+    /// A pool of up to `connections` connections to the database of
+    /// `MABAT_TEST_DATABASE_URL`, with the dataset loaded and its schema first on the
+    /// `search_path`. `None` if the variable is not set.
+    pub async fn pg_pool(self, connections: u32) -> Option<sqlx::PgPool> {
+        drop(self.connect().await?);
+        let schema = self.schema();
+        let url = std::env::var("MABAT_TEST_DATABASE_URL").ok()?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(connections)
+            .after_connect(move |conn, _| {
+                let set = format!("SET search_path TO \"{schema}\"");
+                Box::pin(async move { conn.execute(AssertSqlSafe(set)).await.map(drop) })
+            })
+            .connect(&url)
+            .await
+            .expect("connect to the test database");
+        Some(pool)
+    }
+
+    /// A pool of up to `connections` connections to the MySQL database of the dataset, see
+    /// [`Dataset::connect_mysql`]. `None` if `MABAT_TEST_MYSQL_URL` is not set.
+    pub async fn mysql_pool(self, connections: u32) -> Option<sqlx::MySqlPool> {
+        drop(self.connect_mysql().await?);
+        let database = self.schema();
+        let url = std::env::var("MABAT_TEST_MYSQL_URL").ok()?;
+        let pool = sqlx::mysql::MySqlPoolOptions::new()
+            .max_connections(connections)
+            .after_connect(move |conn, _| {
+                let use_database = format!("USE `{database}`");
+                Box::pin(async move { conn.execute(AssertSqlSafe(use_database)).await.map(drop) })
+            })
+            .connect(&url)
+            .await
+            .expect("connect to the MySQL test server");
+        Some(pool)
+    }
+
+    /// A pool of up to `connections` connections to a new SQLite database file with the
+    /// dataset loaded, which is removed when the returned guard is dropped. In-memory
+    /// databases are one per connection, so a pool needs a file.
+    pub async fn sqlite_pool(self, connections: u32) -> (sqlx::SqlitePool, TempFile) {
+        let file = TempFile(std::env::temp_dir().join(format!(
+            "mabat-e2e-{}-{}-{}.db",
+            self.name(),
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        )));
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&file.0)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(connections)
+            .connect_with(options)
+            .await
+            .expect("create an SQLite database file");
+        let mut tx = pool.begin().await.unwrap();
+        tx.execute(AssertSqlSafe(self.sqlite_sql())).await.unwrap_or_else(|e| panic!("load {}: {e}", self.name()));
+        tx.commit().await.unwrap();
+        (pool, file)
+    }
+
     /// A new in-memory SQLite database with the dataset loaded.
     pub async fn connect_sqlite(self) -> SqliteConnection {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await.expect("open an in-memory SQLite database");
@@ -171,6 +233,19 @@ impl Dataset {
         tx.execute(AssertSqlSafe(self.sqlite_sql())).await.unwrap_or_else(|e| panic!("load {}: {e}", self.name()));
         tx.commit().await.unwrap();
         conn
+    }
+}
+
+/// A file removed when dropped, with the files SQLite keeps next to it.
+pub struct TempFile(pub std::path::PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        for suffix in ["", "-wal", "-shm"] {
+            let mut path = self.0.clone().into_os_string();
+            path.push(suffix);
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 

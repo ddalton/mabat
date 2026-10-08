@@ -15,6 +15,7 @@ readme = "README.md"
 [dependencies]
 arc-swap.workspace = true
 chrono.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 mabat-core.workspace = true
 sqlx.workspace = true
 sqlx-postgres = { workspace = true, optional = true }
@@ -23,6 +24,7 @@ sqlx-sqlite = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { version = "1", default-features = false, features = ["sync"] }
 toml.workspace = true
 tracing.workspace = true
 uuid.workspace = true

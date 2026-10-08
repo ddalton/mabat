@@ -70,6 +70,11 @@ pub enum Error {
     #[error("checking the views failed: {0}")]
     Check(#[source] sqlx::Error),
 
+    /// A connection of a [`crate::Pooled`] load could not be opened, or could not join the
+    /// snapshot of the load.
+    #[error("could not open a pooled connection: {0}")]
+    Connection(#[source] sqlx::Error),
+
     #[error("the manifest describes views for {manifest}, but the connection is to {connection}")]
     ManifestBackend { manifest: String, connection: &'static str },
 

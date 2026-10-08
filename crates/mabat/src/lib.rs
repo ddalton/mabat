@@ -134,6 +134,13 @@
 //! }
 //! ```
 //!
+//! # Concurrent loads
+//!
+//! With a [`Pooled`] pool in place of the connection, the queries of each level of a load
+//! run at the same time on connections of the pool: in one shared snapshot with
+//! [`Pooled::snapshot`] on PostgreSQL, or each seeing what is committed with
+//! [`Pooled::read_committed`] on any database.
+//!
 //! # Shared values and graphs
 //!
 //! `Arc<T>` fields are decoded once per entity and shared. `Ref<T>` fields make a view a
@@ -206,7 +213,7 @@
 pub use mabat_derive::View;
 pub use mabat_sqlx::{
     Backend, Builder, Conn, Diagnostic, Embedded, EmbeddedDecoder, Error, Graph, Key, Load, Mabat, Node, OnInvalid,
-    Origin, Ref, Reloaded, Report, Severity, ShadowSummary, View, ViewDecoder, load, plan, scaffold,
+    Origin, Pooled, Ref, Reloaded, Report, Severity, ShadowSummary, View, ViewDecoder, load, plan, scaffold,
 };
 pub use mabat_sqlx::{filter, manifest};
 
