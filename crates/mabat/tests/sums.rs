@@ -370,3 +370,53 @@ async fn overrides_of_enums() {
 
     db.drop().await;
 }
+
+#[tokio::test]
+async fn enums_as_json() {
+    let Some(mut db) = setup("sums_json").await else { return };
+
+    let issues = mabat::load::<IssueView>().order_by("id").json(&mut db.conn).await.unwrap();
+    assert_eq!(
+        issues[2],
+        serde_json::json!({
+            "id": 3,
+            "title": "Slow",
+            "state": {
+                "__typename": "Blocked",
+                "reason": { "__typename": "Waiting", "on": "vendor" },
+                "since": "2026-03-04T05:06:07Z",
+            },
+            "metadata": null,
+            "payment": {
+                "__typename": "Bank",
+                "iban": "DE89 3704",
+                "notes": [{ "body": "first" }, { "body": "second" }],
+            },
+        })
+    );
+    // A unit variant, a tuple variant, a JSON column and a variant table with a reference
+    assert_eq!(issues[0]["state"], serde_json::json!({ "__typename": "Open" }));
+    assert_eq!(issues[4]["state"], serde_json::json!({ "__typename": "Closed", "_0": "fixed" }));
+    assert_eq!(issues[1]["metadata"], serde_json::json!({ "labels": ["docs"] }));
+    assert_eq!(
+        issues[1]["payment"],
+        serde_json::json!({ "__typename": "Card", "last4": "4242", "holder": { "name": "Grace Hopper" } })
+    );
+
+    // Selected: an enum is loaded whole
+    let selected = mabat::load::<IssueView>()
+        .by_key(4_i64)
+        .select(mabat::Selection::parse("state payment").unwrap())
+        .json(&mut db.conn)
+        .await
+        .unwrap();
+    assert_eq!(
+        selected,
+        [serde_json::json!({
+            "state": { "__typename": "Blocked", "reason": { "__typename": "Other" }, "since": null },
+            "payment": { "__typename": "Card", "last4": "1881", "holder": null },
+        })]
+    );
+
+    db.drop().await;
+}

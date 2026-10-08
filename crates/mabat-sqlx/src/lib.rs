@@ -8,6 +8,7 @@ mod describe;
 mod error;
 pub mod filter;
 mod graph;
+mod json;
 mod key;
 pub mod manifest;
 mod node;
@@ -21,6 +22,7 @@ use std::sync::Arc;
 
 use mabat_core::sql::RootOptions;
 use mabat_core::{EmbeddedShape, OrderBy, QueryPlan, ViewShape};
+pub use mabat_core::{Selection, SelectionError};
 
 pub use backend::{Backend, Conn};
 use check::Checked;
@@ -56,6 +58,9 @@ pub trait ViewDecoder<B: Backend>: View {
     /// Visit the rows of a query for a graph: store them in the graph as entities of this
     /// view if `entity`, and visit the rows of the child fields.
     fn decode_graph(node: &Node<B>, graph: &mut graph::GraphBuilder, entity: bool) -> Result<(), Error>;
+
+    /// Decode the loaded fields of a value as a JSON object, see [`Load::json`].
+    fn decode_json(row: &B::Row, node: &Node<B>) -> Result<serde_json::Value, Error>;
 }
 
 /// A value stored in the row of the view that contains it: a struct whose fields are
@@ -76,6 +81,14 @@ pub trait EmbeddedDecoder<B: Backend>: Embedded {
 
     /// Describe the Rust types of the columns, whose aliases start with `prefix`.
     fn describe_embedded(description: &mut Description<B>, prefix: &str, field_index: usize);
+
+    /// Decode a value as JSON, from the columns whose aliases start with `prefix`.
+    fn decode_embedded_json(
+        row: &B::Row,
+        node: &Node<B>,
+        prefix: &str,
+        field_index: usize,
+    ) -> Result<serde_json::Value, Error>;
 }
 
 /// The query plan of a view.
@@ -106,6 +119,7 @@ pub struct Load<T> {
     keys: Option<Vec<Key>>,
     options: RootOptions,
     condition: Option<filter::Condition>,
+    selection: Option<Selection>,
     _view: PhantomData<fn() -> T>,
 }
 
@@ -120,7 +134,14 @@ enum Source {
 
 impl<T: View> Load<T> {
     fn new(source: Source) -> Self {
-        Load { source, keys: None, options: RootOptions::default(), condition: None, _view: PhantomData }
+        Load {
+            source,
+            keys: None,
+            options: RootOptions::default(),
+            condition: None,
+            selection: None,
+            _view: PhantomData,
+        }
     }
 
     pub(crate) fn registered(checked: Option<Arc<Checked>>) -> Self {
@@ -180,16 +201,37 @@ impl<T: View> Load<T> {
         self
     }
 
+    /// Load only the selected fields of the view, as JSON with [`Load::json`]: only their
+    /// columns are selected and only their child queries run. Overrides of the view's
+    /// queries still apply.
+    ///
+    /// ```ignore
+    /// use mabat::Selection;
+    /// let selection = Selection::parse("name assignee { name } children { name }")?;
+    /// let tasks = mabat::load::<TaskView>().select(selection).json(&mut conn).await?;
+    /// ```
+    pub fn select(mut self, selection: Selection) -> Self {
+        self.selection = Some(selection);
+        self
+    }
+
     /// The plan and overrides to run, the keys, the root options and the filter values.
     fn prepare<B: Backend>(self) -> Result<Option<Prepared>, Error> {
         let view = T::shape().name;
-        let (plan, overrides) = match self.source {
-            Source::Generated => (Arc::new(plan::<T>()?), None),
+        let (mut plan, overrides) = match self.source {
+            Source::Generated => (None, None),
             Source::Registered(checked) if checked.backend != B::NAME => {
                 return Err(Error::WrongBackend { view, registry: checked.backend, connection: B::NAME });
             }
-            Source::Registered(checked) => (checked.plan.clone(), Some(checked)),
+            Source::Registered(checked) => (Some(checked.plan.clone()), Some(checked)),
             Source::NotRegistered => return Err(Error::NotRegistered { view }),
+        };
+        if let Some(selection) = &self.selection {
+            plan = Some(Arc::new(QueryPlan::build_selected(T::shape(), selection)?));
+        }
+        let plan = match plan {
+            Some(plan) => plan,
+            None => Arc::new(crate::plan::<T>()?),
         };
         let keys = match self.keys {
             Some(keys) if keys.is_empty() => return Ok(None),
@@ -215,6 +257,7 @@ impl<T: View> Load<T> {
     where
         T: ViewDecoder<C::Backend>,
     {
+        self.typed()?;
         let Some(load) = self.prepare::<C::Backend>()? else { return Ok(Vec::new()) };
         if load.plan.has_graph_edges() {
             return Err(Error::GraphRequired { view: T::shape().name });
@@ -233,6 +276,7 @@ impl<T: View> Load<T> {
     where
         T: ViewDecoder<C::Backend>,
     {
+        self.typed()?;
         let identity = graph::Identity::new(true);
         let Some(load) = self.prepare::<C::Backend>()? else {
             return graph::GraphBuilder::new(identity).finish(Vec::new());
@@ -241,6 +285,38 @@ impl<T: View> Load<T> {
         let mut builder = graph::GraphBuilder::new(identity);
         T::decode_graph(&node, &mut builder, true)?;
         builder.finish(node.row_keys()?)
+    }
+
+    /// Load the matching values as JSON objects, with the fields of [`Load::select`], or all
+    /// fields without a selection.
+    ///
+    /// Columns are written with the `Serialize` implementation of their Rust type: loading a
+    /// column whose type has none is an error. `#[view(json)]` columns are written as the
+    /// JSON they hold, collections as arrays, maps as objects, references as objects or
+    /// `null`, and enums as objects whose `__typename` field names the variant. Tuple
+    /// fields are named `_0`, `_1`, …
+    ///
+    /// A view with references into a graph (`Ref<T>` fields) needs a selection, which says
+    /// how deep to follow them.
+    pub async fn json<C: Conn>(self, conn: &mut C) -> Result<Vec<serde_json::Value>, Error>
+    where
+        T: ViewDecoder<C::Backend>,
+    {
+        let selected = self.selection.is_some();
+        let Some(load) = self.prepare::<C::Backend>()? else { return Ok(Vec::new()) };
+        if !selected && load.plan.has_graph_edges() {
+            return Err(Error::GraphRequired { view: T::shape().name });
+        }
+        let node = load.run::<C::Backend>(conn.source(), graph::Identity::new(false)).await?;
+        node.rows().iter().map(|row| T::decode_json(row, &node)).collect()
+    }
+
+    /// A selection is only loaded as JSON.
+    fn typed(&self) -> Result<(), Error> {
+        match self.selection {
+            Some(_) => Err(Error::SelectionWithoutJson { view: T::shape().name }),
+            None => Ok(()),
+        }
     }
 
     /// Count the matching values, ignoring `order_by`, `limit` and `offset`. Runs only the
@@ -312,6 +388,10 @@ impl Prepared {
 pub mod __private {
     pub use crate::describe::{DescribeFn, Description};
     pub use crate::graph::GraphBuilder;
+    pub use crate::json::{
+        JsonFallback, JsonProbe, JsonViaSerialize, field_name, json_children, json_map, json_merge, json_object,
+        json_raw, json_to_one,
+    };
     pub use crate::node::{
         MapInsert, children, column, graph_store, graph_visit, map, optional_column, reference, reference_required,
         references, shared_children, shared_to_one, shared_to_one_required, strict, tag, to_one, to_one_required,
@@ -321,6 +401,7 @@ pub mod __private {
         Child, EmbeddedKind, EmbeddedShape, Field, FieldKind, OrderBy, Recursion, SumShape, SumStrategy, Through,
         Variant, VariantData, ViewShape,
     };
+    pub use serde_json::Value as JsonValue;
     pub use sqlx::Database;
     #[cfg(feature = "mysql")]
     pub use sqlx::MySql;

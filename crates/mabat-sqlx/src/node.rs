@@ -42,6 +42,8 @@ pub struct Node<B: Backend> {
     /// the first row of an entity is decoded and has its fields loaded. `None` if all rows
     /// are.
     fresh: Option<Vec<bool>>,
+    /// Whether each field of the view is loaded, see [`QueryPlan::selected`].
+    selected: Vec<bool>,
 }
 
 struct ChildEntry<B: Backend> {
@@ -74,6 +76,9 @@ impl<B: Backend> std::fmt::Debug for Node<B> {
     }
 }
 
+/// A row of a child query with its node.
+pub(crate) type ChildRow<'a, B> = (&'a <B as sqlx::Database>::Row, &'a Node<B>);
+
 /// The rows of a child field and the indexes of those rows by the key of their parent.
 type Children<'a, B> = (&'a Node<B>, &'a HashMap<Key, Vec<usize>>);
 
@@ -97,6 +102,51 @@ impl<B: Backend> Node<B> {
 
     fn variant_child(&self, field_index: usize, variant: &str) -> Children<'_, B> {
         self.entry(field_index, Some(variant)).expect("plan and decoder disagree on the variants of an enum")
+    }
+
+    pub(crate) fn view(&self) -> &'static str {
+        self.view
+    }
+
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Whether the field `field_index` of the view is loaded: all fields are, unless the
+    /// load is of a selection.
+    #[doc(hidden)]
+    pub fn selected(&self, field_index: usize) -> bool {
+        self.selected.get(field_index).copied().unwrap_or(false)
+    }
+
+    /// The rows of the child field `field_index` attached to the row by its `alias` column,
+    /// with their node, in order. None for a field that was not loaded.
+    pub(crate) fn child_rows<'a>(
+        &'a self,
+        row: &B::Row,
+        field_index: usize,
+        alias: &str,
+    ) -> Result<Vec<ChildRow<'a, B>>, Error> {
+        let Some((child, by_key)) = self.child(field_index) else { return Ok(Vec::new()) };
+        let Some(key) = self.key(row, alias)? else { return Ok(Vec::new()) };
+        Ok(by_key
+            .get(&key)
+            .map(|indices| indices.iter().map(|&i| (&child.rows[i], child)).collect())
+            .unwrap_or_default())
+    }
+
+    /// The error for a value that cannot be written as JSON.
+    pub(crate) fn json_error(&self, alias: &str, message: String) -> Error {
+        Error::Json { view: self.view, path: self.path_of(alias), message }
+    }
+
+    /// The error for a to-one reference whose row was not found.
+    pub(crate) fn missing_reference(&self, field_index: usize, ref_alias: &str) -> Error {
+        let path = match self.child(field_index) {
+            Some((child, _)) => child.path.clone(),
+            None => self.path_of(ref_alias),
+        };
+        Error::MissingReference { view: self.view, path }
     }
 
     fn path_of(&self, alias: &str) -> String {
@@ -128,7 +178,8 @@ impl<B: Backend> Node<B> {
             if let Link::Child { .. } = plan.link {
                 aliases.push((PARENT_ALIAS.to_string(), PARENT_ALIAS.to_string()));
             }
-            for field in plan.shape.fields {
+            // The foreign keys of the selected to-one fields
+            for (field, _) in plan.shape.fields.iter().zip(&plan.selected).filter(|(_, selected)| **selected) {
                 if let FieldKind::ToOne { .. } = field.kind {
                     let ref_alias = format!("{REF_ALIAS_PREFIX}{}", field.name);
                     aliases.push((ref_alias.clone(), ref_alias));
@@ -157,10 +208,11 @@ impl<B: Backend> Node<B> {
             sums,
             identity: identity.clone(),
             fresh: None,
+            selected: plan.selected.clone(),
         })
     }
 
-    fn key(&self, row: &B::Row, alias: &str) -> Result<Option<Key>, Error> {
+    pub(crate) fn key(&self, row: &B::Row, alias: &str) -> Result<Option<Key>, Error> {
         let column = match self.key_columns.iter().find(|(a, _)| a == alias) {
             Some((_, column)) => *column,
             None => KeyColumn::resolve::<B>(row, if alias == KEY_ALIAS { &self.key_alias } else { alias })

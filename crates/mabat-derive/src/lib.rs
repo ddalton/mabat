@@ -751,6 +751,78 @@ fn decode_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStrea
     }
 }
 
+/// The expression that decodes a field from `row` and `node` as JSON.
+fn json_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStream2 {
+    let ty = &field.ty;
+    let name = &field.name;
+    let alias = scope.alias(name);
+    // A column through its type's `Serialize`, chosen by `JsonProbe`
+    let probe = |ty: &Type, alias: TokenStream2| {
+        quote! {{
+            #[allow(unused_imports)]
+            use __mabat::__private::{JsonFallback as _, JsonViaSerialize as _};
+            (&__mabat::__private::JsonProbe::<#ty, __Backend>::NEW).json_column(row, node, #alias)
+        }}
+    };
+    match &field.spec {
+        FieldSpec::Column { .. } => {
+            let inner = generic_argument(ty, "Option").unwrap_or(ty);
+            let value = probe(inner, alias);
+            quote! { #value? }
+        }
+        FieldSpec::Json { .. } => quote! { __mabat::__private::json_raw::<__Backend>(row, node, #alias)? },
+        FieldSpec::Embed { ty, .. } => {
+            let prefix = scope.embed_prefix(name);
+            let field_index = scope.field_index(index);
+            quote! {
+                <#ty as __mabat::EmbeddedDecoder<__Backend>>::decode_embedded_json(row, node, #prefix, #field_index)?
+            }
+        }
+        FieldSpec::Child(child) => {
+            let element = &child.element;
+            match &child.map_key_type {
+                Some(key) => {
+                    let key = probe(key, quote! { alias });
+                    quote! {
+                        __mabat::__private::json_map::<#element, _>(row, node, #index, |row, node, alias| #key)?
+                    }
+                }
+                None => quote! { __mabat::__private::json_children::<#element, _>(row, node, #index)? },
+            }
+        }
+        FieldSpec::ToOne { optional, target, .. } => {
+            let ref_alias = format!("$ref.{name}");
+            quote! { __mabat::__private::json_to_one::<#target, _>(row, node, #index, #ref_alias, #optional)? }
+        }
+    }
+}
+
+/// The expression that collects the JSON fields of a struct or variant: those the plan
+/// selected if `selected`, else all of them.
+fn json_fields(fields: &[ViewField], scope: Scope<'_>, selected: bool) -> TokenStream2 {
+    let pushes = fields.iter().enumerate().map(|(index, field)| {
+        let value = json_value(field, index, scope);
+        // The JSON name of a tuple field, which GraphQL cannot name by its position
+        let name = if field.name.starts_with(|c: char| c.is_ascii_digit()) {
+            format!("_{}", field.name)
+        } else {
+            field.name.clone()
+        };
+        let push = quote! { fields.push((::std::string::String::from(#name), #value)); };
+        if selected {
+            quote! { if node.selected(#index) { #push } }
+        } else {
+            push
+        }
+    });
+    quote! {{
+        #[allow(unused_mut)]
+        let mut fields = ::std::vec::Vec::new();
+        #(#pushes)*
+        fields
+    }}
+}
+
 /// The statement that describes the Rust type of a field to `description`.
 fn describe_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStream2 {
     let ty = &field.ty;
@@ -860,6 +932,7 @@ fn expand_view(
 
     let describers: Vec<TokenStream2> = describers.collect();
     let visits: Vec<TokenStream2> = visits.collect();
+    let json = json_fields(fields, Scope::Row, true);
     let decoders = per_backend(databases, |backend| {
         quote! {
             impl __mabat::ViewDecoder<#backend> for #ident {
@@ -890,6 +963,16 @@ fn expand_view(
                     }
                     #(#visits)*
                     ::core::result::Result::Ok(())
+                }
+
+                #[allow(unused_variables)]
+                fn decode_json(
+                    row: &<#backend as __mabat::__private::Database>::Row,
+                    node: &__mabat::Node<#backend>,
+                ) -> ::core::result::Result<__mabat::__private::JsonValue, __mabat::Error> {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    ::core::result::Result::Ok(__mabat::__private::json_object(::core::option::Option::None, #json))
                 }
             }
         }
@@ -979,6 +1062,10 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) ->
     let describers = fields.iter().enumerate().map(|(index, field)| describe_value(field, index, scope));
 
     let describers: Vec<TokenStream2> = describers.collect();
+    let json = json_fields(fields, scope, false);
+    let json_body = quote! {
+        ::core::result::Result::Ok(__mabat::__private::json_object(::core::option::Option::None, #json))
+    };
     let decoders = per_backend(databases, |backend| {
         quote! {
             impl __mabat::EmbeddedDecoder<#backend> for #ident {
@@ -1003,6 +1090,18 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) ->
                     #[allow(dead_code)]
                     type __Backend = #backend;
                     #(#describers)*
+                }
+
+                #[allow(unused_variables)]
+                fn decode_embedded_json(
+                    row: &<#backend as __mabat::__private::Database>::Row,
+                    node: &__mabat::Node<#backend>,
+                    prefix: &str,
+                    field_index: usize,
+                ) -> ::core::result::Result<__mabat::__private::JsonValue, __mabat::Error> {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    #json_body
                 }
             }
         }
@@ -1108,6 +1207,36 @@ fn expand_sum(
     });
     let tag_values = variants.iter().map(|v| &v.tag_value);
 
+    // Decoding as JSON: an object with the variant's name and fields
+    let json_arms: Vec<TokenStream2> = variants
+        .iter()
+        .map(|variant| {
+            let name = variant.ident.unraw().to_string();
+            let tag_value = &variant.tag_value;
+            match &variant.table {
+                None => {
+                    let text = format!("{name}.");
+                    let fields = json_fields(&variant.fields, Scope::Prefixed(&text), false);
+                    quote! {
+                        #tag_value => {
+                            __mabat::__private::strict(row, node, prefix, #name, #tag_value)?;
+                            ::core::result::Result::Ok(__mabat::__private::json_object(::core::option::Option::Some(#name), #fields))
+                        }
+                    }
+                }
+                Some(_) => {
+                    let fields = json_fields(&variant.fields, Scope::Row, true);
+                    quote! {
+                        #tag_value => {
+                            let (row, node) = __mabat::__private::variant(row, node, field_index, #name)?;
+                            ::core::result::Result::Ok(__mabat::__private::json_object(::core::option::Option::Some(#name), #fields))
+                        }
+                    }
+                }
+            }
+        })
+        .collect();
+
     let describers = variants.iter().map(|variant| {
         let name = variant.ident.unraw().to_string();
         match &variant.table {
@@ -1133,6 +1262,15 @@ fn expand_sum(
 
     let arms: Vec<TokenStream2> = arms.collect();
     let tag_values: Vec<&String> = tag_values.collect();
+    let json_body = quote! {
+        let tag = __mabat::__private::tag(row, node, prefix)?;
+        match tag.as_str() {
+            #(#json_arms)*
+            other => ::core::result::Result::Err(
+                __mabat::__private::unknown_tag(node, prefix, other, &[#(#tag_values),*]),
+            ),
+        }
+    };
     let describers: Vec<TokenStream2> = describers.collect();
     let decoders = per_backend(databases, |backend| {
         quote! {
@@ -1165,6 +1303,18 @@ fn expand_sum(
                     type __Backend = #backend;
                     description.column::<::std::string::String>(::std::format!("{}$tag", prefix), false);
                     #(#describers)*
+                }
+
+                #[allow(unused_variables)]
+                fn decode_embedded_json(
+                    row: &<#backend as __mabat::__private::Database>::Row,
+                    node: &__mabat::Node<#backend>,
+                    prefix: &str,
+                    field_index: usize,
+                ) -> ::core::result::Result<__mabat::__private::JsonValue, __mabat::Error> {
+                    #[allow(dead_code)]
+                    type __Backend = #backend;
+                    #json_body
                 }
             }
         }

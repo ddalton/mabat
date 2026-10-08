@@ -50,6 +50,12 @@ pub enum Error {
     #[error("{view} has references into a graph (`Ref<T>`); load it with `.graph(..)`")]
     GraphRequired { view: &'static str },
 
+    #[error("{view}: a load with a selection returns JSON; load it with `.json(..)`")]
+    SelectionWithoutJson { view: &'static str },
+
+    #[error("{view}: `{path}` cannot be written as JSON: {message}")]
+    Json { view: &'static str, path: String, message: String },
+
     #[error("{view}: two elements of the map `{path}` have the same key")]
     DuplicateMapKey { view: &'static str, path: String },
 

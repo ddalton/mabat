@@ -134,6 +134,12 @@
 //! }
 //! ```
 //!
+//! # JSON and selections
+//!
+//! [`Load::json`] loads views as JSON objects, and [`Load::select`] with a [`Selection`]
+//! loads only some of their fields, as a GraphQL query does: only their columns are selected
+//! and only their child queries run.
+//!
 //! # Concurrent loads
 //!
 //! With a [`Pooled`] pool in place of the connection, the queries of each level of a load
@@ -213,7 +219,8 @@
 pub use mabat_derive::View;
 pub use mabat_sqlx::{
     Backend, Builder, Conn, Diagnostic, Embedded, EmbeddedDecoder, Error, Graph, Key, Load, Mabat, Node, OnInvalid,
-    Origin, Pooled, Ref, Reloaded, Report, Severity, ShadowSummary, View, ViewDecoder, load, plan, scaffold,
+    Origin, Pooled, Ref, Reloaded, Report, Selection, SelectionError, Severity, ShadowSummary, View, ViewDecoder, load,
+    plan, scaffold,
 };
 pub use mabat_sqlx::{filter, manifest};
 

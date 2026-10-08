@@ -57,6 +57,9 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
   - Checks, manifests and `mabat check` on both. With `--schema`, MySQL checks in a temporary database that
     is dropped afterwards, and SQLite in an in-memory database.
   - On MySQL: unsigned integer keys, `BINARY(16)` UUID keys and `ENUM` tags.
+- **JSON and selections (M7).** `Load::json` loads views as JSON, and `Load::select` with a `Selection`
+  (built in code or parsed from GraphQL-like text) loads only the selected fields: only their columns are
+  selected and only their child queries run. Recursive and graph views load as trees as deep as the selection.
 - **Concurrent loads (M6).** `Pooled::snapshot` (PostgreSQL) and `Pooled::read_committed` (any database) run
   the queries of each level of a load at the same time on connections of a pool, in a snapshot that the
   connections share or reading what is committed. Loads, counts, checks and registries take a `Pooled` where
