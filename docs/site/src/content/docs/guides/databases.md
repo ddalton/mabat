@@ -13,7 +13,7 @@ database of the connection it is given ([MPA-DB-3](../../spec/mpa/#mpa-db-3)).
 | --- | --- | --- | --- |
 | Keys of a batched query | one array, `= ANY($1)` | `IN (?, …)`, padded to a power of two, at most 1,000 per statement | same as MySQL |
 | `ilike` | `ILIKE` | `LOWER() LIKE LOWER()` | `LOWER() LIKE LOWER()` |
-| Upsert | `ON CONFLICT … DO UPDATE` | `INSERT … AS new ON DUPLICATE KEY UPDATE` | `ON CONFLICT … DO UPDATE` |
+| Insert of a new row by `save` | `ON CONFLICT … DO UPDATE` | `INSERT … AS new ON DUPLICATE KEY UPDATE` | `ON CONFLICT … DO UPDATE` |
 | Shared snapshots for pooled loads | yes | no | no |
 
 See [MPA-DB-4](../../spec/mpa/#mpa-db-4). When a view's field types are not supported by every enabled database —

@@ -78,8 +78,10 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
   what changed: the columns that differ, new and removed elements, and links that differ. `#[view(version)]`
   versions rows; a stale version fails with `Error::Conflict`, and new versions are written back into the value.
   `mabat::save` now takes the value by `&mut`.
-- **Saving aggregates (M8).** `mabat::save` upserts a value and makes its owned collections, links and variant
-  tables match it, in one transaction; `mabat::delete` deletes an aggregate with all it owns. On every database.
+- **Saving aggregates (M8).** `mabat::save` creates or replaces a value and makes its owned collections, links and
+  variant tables match it, in one transaction; `mabat::delete` deletes an aggregate with all it owns. On every
+  database. A row is updated first and inserted only when no row has its key, so a view of some of a table's
+  columns saves them in an existing row.
 - **Arguments of nested collections.** `Load::nested` with a `Nested` filters, orders and pages the elements
   of a to-many collection for each parent, in the collection's one query, also through overrides. Nested GraphQL
   lists take `where`, `orderBy`, `limit` and `offset`.

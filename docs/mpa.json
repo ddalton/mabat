@@ -270,7 +270,7 @@
     },
     {
       "id": "save-aggregates",
-      "summary": "Save a value and everything it owns, upserting by key",
+      "summary": "Save a value and everything it owns, creating or replacing rows by key",
       "api": [
         "mabat::save"
       ],
@@ -1355,7 +1355,7 @@
     {
       "id": "MPA-WRITE-3",
       "section": "10. Writing",
-      "text": "`save` upserts the row by key: `INSERT … ON CONFLICT (key) DO UPDATE` on PostgreSQL and SQLite, `INSERT … AS new ON DUPLICATE KEY UPDATE` on MySQL. Columns, embedded values and `json` fields are written."
+      "text": "`save` creates or replaces the row by key. It updates the row (`UPDATE … WHERE key = ?`), and only if no row has the key, inserts it with an upsert, `INSERT … ON CONFLICT (key) DO UPDATE` on PostgreSQL and SQLite and `INSERT … AS new ON DUPLICATE KEY UPDATE` on MySQL, which updates a row inserted meanwhile. Columns, embedded values and `json` fields are written."
     },
     {
       "id": "MPA-WRITE-4",
@@ -1400,7 +1400,7 @@
     {
       "id": "MPA-WRITE-12",
       "section": "10. Writing",
-      "text": "A view of some of a table's columns cannot be saved whole when the others are `NOT NULL` without a default, since the upsert must be able to insert; `save_changes` updates it."
+      "text": "A view of some of a table's columns is saved like any view when its row exists (MPA-WRITE-3). Saving a new row fails with `Error::Query` when the table's other columns are `NOT NULL` without a default."
     },
     {
       "id": "MPA-WRITE-13",

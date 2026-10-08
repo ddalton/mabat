@@ -137,7 +137,7 @@
 //! # Saving aggregates
 //!
 //! [`save`] writes a value with what it owns, and [`delete`] deletes it, in a transaction:
-//! rows are upserted by key, owned collections are made equal to the value's, and
+//! rows are created or replaced by key, owned collections are made equal to the value's, and
 //! references and many-to-many links write foreign keys only. [`save_changes`] writes only
 //! what changed between two values, and a `#[view(version)]` field locks rows
 //! optimistically.

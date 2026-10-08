@@ -230,7 +230,7 @@ def fig_glance(doc):
                "a tree of rows: the view's row, its owned collections, "
                "links and variant rows", GEN_F, GEN_L)
     stm = rect(p, xs[2], y3, cw, hw, "write statements",
-               "upserts by key, updates of what changed, deletes deepest "
+               "rows created or replaced by key, updates of what changed, deletes deepest "
                "first", PLAN_F, PLAN_L)
     tx = rect(p, xs[3], y3, cw, hw, "one transaction",
               "or a savepoint of yours; statements run when called, with no "
@@ -908,14 +908,14 @@ def fig_writes(doc):
     for i, (t, b) in enumerate([
             ("SAVEPOINT, or BEGIN", "your transaction, or one of its own "
              "(MPA-WRITE-1)"),
-            ("INSERT INTO board … ON CONFLICT (id) DO UPDATE",
-             "the upsert by key; on MySQL, INSERT … AS new ON DUPLICATE "
-             "KEY UPDATE (MPA-WRITE-3)"),
+            ("UPDATE board SET … WHERE id = $n",
+             "and only if no row has the key, the upsert: ON CONFLICT (id) "
+             "DO UPDATE, or ON DUPLICATE KEY UPDATE on MySQL (MPA-WRITE-3)"),
             ("SELECT id FROM list WHERE board_id = ANY($1)",
              "the rows the collection has in the database"),
             ("DELETE the lists that are gone",
              "with their cards first: deepest first (MPA-WRITE-4)"),
-            ("upsert the other lists, then their cards",
+            ("save the other lists, then their cards",
              "with board_id and position"),
             ("replace the board_label links",
              "delete and insert the link rows (MPA-WRITE-5)"),

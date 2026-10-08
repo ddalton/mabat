@@ -391,10 +391,17 @@ where
     board.settings.clear();
     mabat::save(&mut board, conn).await.unwrap();
     let before = mabat::load::<Board>().by_key(5_i64).one(conn).await.unwrap();
-    // A view of some columns updates them with save_changes; a whole save would also need to
-    // be able to insert the row, with the columns the view does not have
+    // A view of some columns saves them, whole or changed, in a row that exists; it cannot insert
+    // a new row, whose other columns are NOT NULL
     let color_before = mabat::load::<BoardColor>().by_key(5_i64).one(conn).await.unwrap();
     let mut color = color_before.clone();
+    color.color = Color { red: Some(9), green: None, blue: None };
+    mabat::save(&mut color, conn).await.unwrap();
+    assert_eq!(mabat::load::<Board>().by_key(5_i64).one(conn).await.unwrap().color, color.color);
+    let mut new_color = BoardColor { id: 77, color: color.color.clone() };
+    let error = mabat::save(&mut new_color, conn).await.unwrap_err();
+    assert!(matches!(error, Error::Query { .. }), "{error}");
+    let color_before = color.clone();
     color.color = Color { red: Some(1), green: Some(2), blue: Some(3) };
     mabat::save_changes(&color_before, &mut color, conn).await.unwrap();
     let mut after = before.clone();
@@ -405,6 +412,9 @@ where
     // A whole save writes every column: the color goes back
     mabat::save(&mut after, conn).await.unwrap();
     assert_eq!(mabat::load::<Board>().by_key(5_i64).one(conn).await.unwrap().color, before.color);
+    // Saving it again changes nothing, which is still a row found: MySQL reports matched rows
+    mabat::save(&mut after, conn).await.unwrap();
+    assert_eq!(mabat::load::<Board>().by_key(5_i64).one(conn).await.unwrap(), after);
 }
 
 #[tokio::test]
