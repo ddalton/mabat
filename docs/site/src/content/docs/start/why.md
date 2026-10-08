@@ -29,4 +29,5 @@ Mabat is not an ORM in the Hibernate sense, and not a query builder. It sits bet
 - Ad-hoc analytical queries: write them with SQLx directly; Mabat composes with it on the same connection.
 - Schema management: Mabat reads existing tables and does not generate or migrate schemas
   ([MPA-NOT-9](../../spec/mpa/#mpa-not-9)).
-- Workloads that need to save `Ref<T>` graphs: not supported yet ([MPA-NOT-2](../../spec/mpa/#mpa-not-2)).
+- Workloads that save large graphs often: `save_graph` writes every entity, not only the changed ones
+  ([MPA-NOT-10](../../spec/mpa/#mpa-not-10)).

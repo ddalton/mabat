@@ -126,6 +126,12 @@ pub fn insert_generated(dialect: Dialect, table: &str, key: &str, columns: &[(St
     }
 }
 
+/// Set `column` to NULL in the rows whose `key` is one of `keys` keys.
+pub fn set_null_by(dialect: Dialect, table: &str, column: &str, key: &str, keys: usize) -> String {
+    let q = |ident: &str| dialect.quote(ident);
+    format!("UPDATE {} SET {} = NULL WHERE {}", q(table), q(column), dialect.keys_condition(&q(key), keys))
+}
+
 /// Insert a row.
 pub fn insert(dialect: Dialect, table: &str, columns: &[(String, ColumnValue)]) -> String {
     let names: Vec<String> = columns.iter().map(|(name, _)| dialect.quote(name)).collect();

@@ -908,16 +908,10 @@ fn json_fields(fields: &[ViewField], scope: Scope<'_>, selected: bool) -> TokenS
 
 /// The statement that writes a field, whose value is the reference `value`, to `row`. In a
 /// prefixed scope, column names start with the runtime `prefix`.
-fn write_value(field: &ViewField, index: usize, value: TokenStream2, scope: Scope<'_>, view: &str) -> TokenStream2 {
+fn write_value(field: &ViewField, index: usize, value: TokenStream2, scope: Scope<'_>) -> TokenStream2 {
     let column = |name: &str| match scope {
         Scope::Row => quote! { ::std::string::String::from(#name) },
         Scope::Prefixed(_) => quote! { ::std::format!("{}{}", prefix, #name) },
-    };
-    let graph = quote! {
-        return ::core::result::Result::Err(__mabat::Error::Write {
-            view: #view,
-            message: ::std::string::String::from("references into a graph (`Ref<T>`) cannot be saved yet"),
-        });
     };
     let probes = quote! {
         #[allow(unused_imports)]
@@ -944,10 +938,11 @@ fn write_value(field: &ViewField, index: usize, value: TokenStream2, scope: Scop
             quote! { <#ty as __mabat::EmbeddedEncoder<__Backend>>::write_embedded(#value, row, #prefix, #field_index)?; }
         }
         FieldSpec::Child(child) => {
-            if child.form == Form::Graph {
-                return graph;
-            }
             let element = &child.element;
+            if child.form == Form::Graph {
+                // Written by `save_graph`, which knows the keys of the elements
+                return quote! { row.graph_collection::<#element>(#index, &(#value)[..]); };
+            }
             let element_value = borrow(element, quote! { element });
             let target_key = quote! { __mabat::__private::target_key::<#element, __Backend>(#element_value)? };
             let map_key = |row: TokenStream2| match (&child.map_key, &child.map_key_type) {
@@ -991,9 +986,15 @@ fn write_value(field: &ViewField, index: usize, value: TokenStream2, scope: Scop
                 }}
             }
         }
-        FieldSpec::ToOne { fk, form, .. } => {
+        FieldSpec::ToOne { fk, form, optional, target } => {
             if *form == Form::Graph {
-                return graph;
+                // Written by `save_graph`, which knows the key of the entity
+                let reference = if *optional {
+                    quote! { *(#value) }
+                } else {
+                    quote! { ::core::option::Option::Some(*(#value)) }
+                };
+                return quote! { row.graph_reference::<#target>(#fk, #reference, #optional); };
             }
             let referenced = reference_key(field, value);
             quote! { row.reference(#fk, #referenced)?; }
@@ -1024,7 +1025,7 @@ fn reference_key(field: &ViewField, value: TokenStream2) -> TokenStream2 {
 
 /// The statement that writes a field of a view if it changed from `before`, for
 /// `ViewEncoder::write_changes`.
-fn change_value(field: &ViewField, index: usize, view: &str) -> TokenStream2 {
+fn change_value(field: &ViewField, index: usize) -> TokenStream2 {
     let member = match &field.member {
         Member::Named(member) => quote! { #member },
         Member::Unnamed => quote! { #index },
@@ -1037,7 +1038,7 @@ fn change_value(field: &ViewField, index: usize, view: &str) -> TokenStream2 {
             (&__mabat::__private::ChangeProbe::<#ty>::NEW).changed(#after, #before)
         }}
     };
-    let write = write_value(field, index, after.clone(), Scope::Row, view);
+    let write = write_value(field, index, after.clone(), Scope::Row);
     match &field.spec {
         FieldSpec::Column { .. } | FieldSpec::Json { .. } => {
             let changed = changed(&field.ty);
@@ -1304,10 +1305,10 @@ fn expand_view(
                 (FieldSpec::Column { column }, true) => quote! { row.version(#column, *#value)?; },
                 // A generated key is written once the database has generated it
                 _ if field.generated => {
-                    let write = write_value(field, index, value.clone(), Scope::Row, &ident.to_string());
+                    let write = write_value(field, index, value.clone(), Scope::Row);
                     quote! { if (#value).is_some() { #write } }
                 }
-                _ => write_value(field, index, value, Scope::Row, &ident.to_string()),
+                _ => write_value(field, index, value, Scope::Row),
             }
         })
         .collect();
@@ -1319,7 +1320,7 @@ fn expand_view(
             (FieldSpec::Column { column }, true, Member::Named(member)) => {
                 quote! { row.version(#column, self.#member)?; }
             }
-            _ => change_value(field, index, &view_name_str),
+            _ => change_value(field, index),
         })
         .collect();
     let written_back: Vec<TokenStream2> =
@@ -1349,6 +1350,23 @@ fn expand_view(
     } else {
         quote! {}
     };
+    // The views of the entities of a graph that the references lead to, directly or through
+    // owned values
+    let graph_types: Vec<TokenStream2> = fields
+        .iter()
+        .filter_map(|field| match &field.spec {
+            FieldSpec::ToOne { target, form: Form::Graph, .. } => Some(quote! { types.entity::<#target>(); }),
+            FieldSpec::Child(child) if child.form == Form::Graph => {
+                let element = &child.element;
+                Some(quote! { types.entity::<#element>(); })
+            }
+            FieldSpec::Child(child) if child.through.is_none() => {
+                let element = &child.element;
+                Some(quote! { types.owned::<#element>(); })
+            }
+            _ => None,
+        })
+        .collect();
     let key_value = match key_field {
         Some(field) if field.generated => {
             let member = match &field.member {
@@ -1420,6 +1438,11 @@ fn expand_view(
                 }
 
                 #generated_key
+
+                #[allow(unused_variables)]
+                fn graph_types(types: &mut __mabat::__private::GraphTypes<#backend>) {
+                    #(#graph_types)*
+                }
 
                 #[allow(unused_variables, unreachable_code)]
                 fn write(&self) -> ::core::result::Result<__mabat::__private::RowWrite<#backend>, __mabat::Error> {
@@ -1560,7 +1583,6 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) ->
     let json_body = quote! {
         ::core::result::Result::Ok(__mabat::__private::json_object(::core::option::Option::None, #json))
     };
-    let view_name_str = ident.to_string();
     let writes: Vec<TokenStream2> = fields
         .iter()
         .enumerate()
@@ -1569,7 +1591,7 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) ->
                 Member::Named(member) => quote! { &self.#member },
                 Member::Unnamed => quote! { &self.#index },
             };
-            write_value(field, index, value, scope, &view_name_str)
+            write_value(field, index, value, scope)
         })
         .collect();
     let write_body = quote! {
@@ -1757,9 +1779,10 @@ fn expand_sum(
             let write_tag = quote! { row.literal(::std::format!("{}{}", prefix, #tag), #tag_value); };
             match (&variant.table, variant.style) {
                 (None, _) => {
-                    let writes = variant.fields.iter().enumerate().zip(&bindings).map(|((i, field), binding)| {
-                        write_value(field, i, quote! { #binding }, Scope::Prefixed(""), &enum_name)
-                    });
+                    let writes =
+                        variant.fields.iter().enumerate().zip(&bindings).map(|((i, field), binding)| {
+                            write_value(field, i, quote! { #binding }, Scope::Prefixed(""))
+                        });
                     quote! {
                         #pattern => {
                             #write_tag
@@ -1775,9 +1798,12 @@ fn expand_sum(
                     }
                 },
                 (Some(_), _) => {
-                    let writes = variant.fields.iter().enumerate().zip(&bindings).map(|((i, field), binding)| {
-                        write_value(field, i, quote! { #binding }, Scope::Row, &enum_name)
-                    });
+                    let writes = variant
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .zip(&bindings)
+                        .map(|((i, field), binding)| write_value(field, i, quote! { #binding }, Scope::Row));
                     quote! {
                         #pattern => {
                             #write_tag

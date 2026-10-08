@@ -45,4 +45,33 @@ for colleague in me.manager(&graph).unwrap().reports(&graph) {
 - `Graph` is `Send + Sync`.
 - A view with `Ref` fields is loaded with `graph`, or as [JSON with a selection](../json/), which unrolls it into a
   tree as deep as the selection asks.
-- Graphs cannot be saved yet ([MPA-NOT-2](../../spec/mpa/#mpa-not-2)).
+
+## Saving a graph
+
+`mabat::save_graph` saves every entity of a graph in one transaction, each as `save` saves a value, with its `Ref`
+fields written as the keys of the entities they point to ([MPA-WRITE-14](../../spec/mpa/#mpa-write-14)). Build
+new entities in a graph with `Graph::insert`, which returns a `Ref` to use in other entities:
+
+```rust
+let mut graph = Graph::<Employee>::new();
+let team = graph.insert(Team { id: None, name: "Core".into(), members: vec![] });
+let ada = graph.insert(Employee { id: None, name: "Ada".into(), team, manager: None, reports: vec![] });
+let grace = graph.insert(Employee { id: None, name: "Grace".into(), team, manager: Some(ada), reports: vec![] });
+graph.get_mut(ada).reports = vec![grace];
+graph.get_mut(team).members = vec![ada, grace];
+graph.add_root(ada);
+mabat::save_graph(&mut graph, &mut tx).await?;   // the generated keys are written back
+```
+
+- **Order.** An entity is saved after the entities it references, so their keys exist, generated or not, and
+  foreign keys hold as rows are inserted. In a cycle, the optional references are written NULL first and set once
+  the cycle is saved; required references in a cycle fail with `Error::Write`
+  ([MPA-WRITE-15](../../spec/mpa/#mpa-write-15)).
+- **Collections by a foreign key.** `reports` above is the inverse of `manager`: the same `manager_id` column.
+  The reference is what is written, and the collection must agree with it. A collection whose elements have no
+  such reference writes their foreign key itself, and sets it to NULL for rows it no longer holds
+  ([MPA-WRITE-16](../../spec/mpa/#mpa-write-16)).
+- **Link tables.** A collection through a link table replaces the entity's links
+  ([MPA-WRITE-17](../../spec/mpa/#mpa-write-17)).
+- **Everything is written.** `save_graph` writes every entity of the graph, changed or not
+  ([MPA-NOT-10](../../spec/mpa/#mpa-not-10)). `save` and `save_changes` refuse a value with `Ref` fields.
