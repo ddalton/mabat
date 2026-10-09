@@ -1,0 +1,5 @@
+error: `recursive = "cte"` on a reference loads the whole chain, as chains can share rows; use `depth = n` alone to limit it
+ --> tests/ui/recursive_reference_with_cte_depth.rs:5:12
+  |
+5 |     #[view(to_one(fk = "parent_id", recursive = "cte", depth = 3))]
+  |            ^^^^^^

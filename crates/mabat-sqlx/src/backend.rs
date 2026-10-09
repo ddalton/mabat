@@ -40,15 +40,13 @@ pub trait Backend: Database + Sized {
         values: Vec<Bound>,
     ) -> BoxFuture<'c, Result<i64, sqlx::Error>>;
 
-    /// Decode the column with the given alias.
-    fn get<T>(row: &Self::Row, alias: &str) -> Result<T, sqlx::Error>
-    where
-        T: for<'r> Decode<'r, Self> + Type<Self>;
-
     /// Decode the column at a position.
     fn get_at<T>(row: &Self::Row, ordinal: usize) -> Result<T, sqlx::Error>
     where
         T: for<'r> Decode<'r, Self> + Type<Self>;
+
+    /// The names of the columns of a row, in order.
+    fn column_names(row: &Self::Row) -> Vec<Box<str>>;
 
     /// The position of the column with the given alias, `None` if the row has none.
     fn find_column(row: &Self::Row, alias: &str) -> Option<usize>;
@@ -146,6 +144,35 @@ pub trait Backend: Database + Sized {
     ) -> BoxFuture<'_, Result<(sqlx::Transaction<'static, Self>, String), sqlx::Error>> {
         let _ = (pool, import);
         Box::pin(async { Err(sqlx::Error::Configuration(format!("{} cannot share snapshots", Self::NAME).into())) })
+    }
+
+    /// Open the cursor a stream reads the keys of its roots from, bound as [`Backend::fetch`]
+    /// binds: `Ok(false)` on databases without one, whose streams read every key at once.
+    /// A connection has one such cursor; one left open by a stream that was dropped is closed
+    /// first. Only PostgreSQL has one.
+    fn open_cursor<'c>(
+        conn: &'c mut Self::Connection,
+        sql: Arc<str>,
+        keys: Option<KeyList>,
+        values: Vec<Bound>,
+    ) -> BoxFuture<'c, Result<bool, sqlx::Error>> {
+        let _ = (conn, sql, keys, values);
+        Box::pin(async { Ok(false) })
+    }
+
+    /// The next rows, at most `n`, of the cursor of [`Backend::open_cursor`].
+    fn fetch_cursor<'c>(
+        conn: &'c mut Self::Connection,
+        n: usize,
+    ) -> BoxFuture<'c, Result<Vec<Self::Row>, sqlx::Error>> {
+        let _ = (conn, n);
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Close the cursor of [`Backend::open_cursor`].
+    fn close_cursor<'c>(conn: &'c mut Self::Connection) -> BoxFuture<'c, Result<(), sqlx::Error>> {
+        let _ = conn;
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -257,18 +284,15 @@ pub enum InspectedParams {
 #[allow(unused_macros)] // when no database is enabled
 macro_rules! common_methods {
     ($db:ty, $conn:ty, $row:ty) => {
-        fn get<T>(row: &$row, alias: &str) -> Result<T, sqlx::Error>
-        where
-            T: for<'r> sqlx::Decode<'r, $db> + sqlx::Type<$db>,
-        {
-            sqlx::Row::try_get::<T, _>(row, alias)
-        }
-
         fn get_at<T>(row: &$row, ordinal: usize) -> Result<T, sqlx::Error>
         where
             T: for<'r> sqlx::Decode<'r, $db> + sqlx::Type<$db>,
         {
             sqlx::Row::try_get::<T, _>(row, ordinal)
+        }
+
+        fn column_names(row: &$row) -> Vec<Box<str>> {
+            sqlx::Row::columns(row).iter().map(|column| sqlx::Column::name(column).into()).collect()
         }
 
         fn find_column(row: &$row, alias: &str) -> Option<usize> {

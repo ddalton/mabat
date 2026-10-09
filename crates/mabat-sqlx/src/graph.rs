@@ -85,15 +85,21 @@ fn next_graph_id() -> u32 {
 /// The arenas of a graph: `Vec<T>` by the shape of `T`.
 pub(crate) type Arenas = HashMap<usize, Box<dyn Any + Send + Sync>>;
 
+/// Entities of a graph, by the shape of their view and their index in its arena.
+pub(crate) type Entities = HashSet<(usize, usize)>;
+
 /// Entities of several types in arenas, with the root entities of a load of `R`.
 ///
 /// `Graph` is `Send + Sync`; share it with `Arc<Graph<R>>`. Change entities with
 /// [`Graph::get_mut`], add them with [`Graph::insert`], and save them all with
-/// [`save_graph`](crate::save_graph).
+/// [`save_graph`](crate::save_graph), or only those with
+/// [`save_graph_changes`](crate::save_graph_changes).
 pub struct Graph<R> {
     id: u32,
     arenas: Arenas,
     roots: Vec<Ref<R>>,
+    /// The entities inserted or handed out by `get_mut` since the graph was loaded or saved.
+    changed: Entities,
 }
 
 impl<R> Default for Graph<R> {
@@ -123,7 +129,7 @@ impl<R> Graph<R> {
     /// An empty graph, to build new entities in and save them with
     /// [`save_graph`](crate::save_graph).
     pub fn new() -> Graph<R> {
-        Graph { id: next_graph_id(), arenas: HashMap::new(), roots: Vec::new() }
+        Graph { id: next_graph_id(), arenas: HashMap::new(), roots: Vec::new(), changed: HashSet::new() }
     }
 
     /// Add an entity to the graph, and get a reference to it, to refer to it from other
@@ -136,11 +142,9 @@ impl<R> Graph<R> {
             .downcast_mut::<Vec<T>>()
             .expect("arenas are stored by their type");
         arena.push(value);
-        Ref {
-            index: u32::try_from(arena.len() - 1).expect("fewer than 2^32 entities"),
-            graph: self.id,
-            _type: PhantomData,
-        }
+        let index = arena.len() - 1;
+        self.changed.insert((shape_id(T::shape()), index));
+        Ref { index: u32::try_from(index).expect("fewer than 2^32 entities"), graph: self.id, _type: PhantomData }
     }
 
     /// Make an entity of the graph one of its roots.
@@ -149,9 +153,9 @@ impl<R> Graph<R> {
         self.roots.push(root);
     }
 
-    /// The arenas, for saving.
-    pub(crate) fn arenas_mut(&mut self) -> &mut Arenas {
-        &mut self.arenas
+    /// The arenas and the changed entities, for saving.
+    pub(crate) fn parts_mut(&mut self) -> (&mut Arenas, &mut Entities) {
+        (&mut self.arenas, &mut self.changed)
     }
 
     /// The entity a reference points to.
@@ -160,9 +164,11 @@ impl<R> Graph<R> {
         &self.arena::<T>().expect("a reference points to an arena of the graph")[r.index as usize]
     }
 
-    /// The entity a reference points to, to change it.
+    /// The entity a reference points to, to change it. The entity is then changed for
+    /// [`save_graph_changes`](crate::save_graph_changes), until the graph is saved.
     pub fn get_mut<T: View>(&mut self, r: Ref<T>) -> &mut T {
         self.check(r);
+        self.changed.insert((shape_id(T::shape()), r.index as usize));
         let arena = self.arenas.get_mut(&shape_id(T::shape())).and_then(|a| a.downcast_mut::<Vec<T>>());
         &mut arena.expect("a reference points to an arena of the graph")[r.index as usize]
     }
@@ -173,6 +179,14 @@ impl<R> Graph<R> {
         self.arena::<T>().into_iter().flatten().enumerate().map(move |(i, value)| {
             (Ref { index: u32::try_from(i).expect("fewer than 2^32 entities"), graph: id, _type: PhantomData }, value)
         })
+    }
+
+    /// Whether the entity was inserted, or handed out by [`Graph::get_mut`], since the graph
+    /// was loaded or last saved: whether [`save_graph_changes`](crate::save_graph_changes)
+    /// writes it.
+    pub fn is_changed<T: View>(&self, r: Ref<T>) -> bool {
+        self.check(r);
+        self.changed.contains(&(shape_id(T::shape()), r.index as usize))
     }
 
     /// The number of entities of a type.
@@ -374,6 +388,6 @@ impl GraphBuilder {
                 (building.finish)(building.values, count as usize).map_err(|view| Error::UnloadedReference { view })?;
             arenas.insert(id, arena);
         }
-        Ok(Graph { id: self.identity.graph_id, arenas, roots })
+        Ok(Graph { id: self.identity.graph_id, arenas, roots, changed: HashSet::new() })
     }
 }

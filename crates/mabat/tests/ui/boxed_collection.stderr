@@ -1,0 +1,5 @@
+error: a collection holds its elements by value; `Box` is for to-one references
+ --> tests/ui/boxed_collection.rs:6:19
+  |
+6 |     children: Vec<Box<Category>>,
+  |                   ^^^

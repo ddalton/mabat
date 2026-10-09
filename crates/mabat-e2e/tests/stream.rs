@@ -1,6 +1,7 @@
 //! Streaming loads on every database: the same values as `all`, a batch at a time, with
 //! filters, order and pages, overrides, JSON and selections; roots deleted between batches,
-//! one snapshot in a repeatable-read transaction, and errors and early drops.
+//! one snapshot in a repeatable-read transaction, errors and early drops, and PostgreSQL's
+//! cursor of keys.
 
 use futures_util::{StreamExt, TryStreamExt};
 use mabat::filter::col;
@@ -239,6 +240,12 @@ async fn sqlite() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// The cursors of keys open on a PostgreSQL connection.
+async fn open_cursors(conn: &mut sqlx::PgConnection) -> i64 {
+    let sql = "SELECT count(*) FROM pg_cursors WHERE name = 'mabat_stream_keys'";
+    sqlx::query_scalar(sql).fetch_one(conn).await.unwrap()
+}
+
 #[tokio::test]
 async fn postgres() {
     let Ok(url) = std::env::var("MABAT_TEST_DATABASE_URL") else {
@@ -259,6 +266,29 @@ async fn postgres() {
     setup(&mut conn).await;
     same_as_all(&mut conn).await;
     overrides(&mut conn, '"', "= ANY(:keys)").await;
+
+    // On one connection the keys are read from a cursor, a batch at a time, closed when the
+    // stream ends; one left by a stream dropped early is closed by the next stream
+    assert_eq!(open_cursors(&mut conn).await, 0);
+    let mut first = Box::pin(mabat::load::<TaskView>().order_by("id").batch_size(100).stream(&mut conn));
+    assert_eq!(first.next().await.unwrap().unwrap().id, 1);
+    drop(first);
+    assert_eq!(open_cursors(&mut conn).await, 1);
+    let n = mabat::load::<TaskView>().batch_size(1000).stream(&mut conn).try_fold(0, |n, _| async move { Ok(n + 1) });
+    assert_eq!(n.await.unwrap(), TASKS);
+    assert_eq!(open_cursors(&mut conn).await, 0);
+    // A batch size that divides the keys: the last batch is full, and an empty one ends the stream
+    let n = mabat::load::<TaskView>().batch_size(500).stream(&mut conn).try_fold(0, |n, _| async move { Ok(n + 1) });
+    assert_eq!(n.await.unwrap(), TASKS);
+    assert_eq!(open_cursors(&mut conn).await, 0);
+    // In a transaction too
+    conn.execute("BEGIN").await.unwrap();
+    let mut stream = Box::pin(mabat::load::<TaskView>().order_by("id").batch_size(1000).stream(&mut conn));
+    assert_eq!(stream.next().await.unwrap().unwrap().id, 1);
+    let rest: Vec<TaskView> = stream.try_collect().await.unwrap();
+    assert_eq!(rest.len(), TASKS as usize - 1);
+    conn.execute("COMMIT").await.unwrap();
+    assert_eq!(open_cursors(&mut conn).await, 0);
 
     // Concurrently on pooled connections, in one snapshot, and on a task of its own
     let options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();

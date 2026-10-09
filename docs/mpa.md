@@ -111,8 +111,10 @@ issues and AI assistants can cite.
   the view's columns with the optional prefix. Embedded values nest; prefixes concatenate.
 - **MPA-VIEW-8** A `to_one` field references another view: `fk` is the column of this view's table holding the
   referenced key. `Option<T>` makes it optional (a NULL foreign key is `None`); a non-`Option` reference whose row
-  is missing fails with `Error::MissingReference`. The field MAY be `T`, `Arc<T>` (MPA-LOAD-13) or `Ref<T>`
-  (MPA-LOAD-14).
+  is missing fails with `Error::MissingReference`. The field MAY be `T`, `Box<T>`, `Arc<T>` (MPA-LOAD-13) or
+  `Ref<T>` (MPA-LOAD-14). A reference back to its own view, such as a parent, takes `depth = n` (n ≥ 1) or
+  `recursive = "cte"` (MPA-PLAN-4), and MUST be an `Option` of a `Box<T>` or `Arc<T>`; `recursive = "cte"` with
+  a `depth`, recursion on a `Ref<T>`, and a `Box` of anything but an owned view are compile errors.
 - **MPA-VIEW-9** A `child` field is a collection of another view, loaded by a child query whose rows have `fk`
   equal to this row's key. Its arguments:
   - `order_by = "a, b desc"`: the order of the elements; the key is always the last tie-breaker.
@@ -125,7 +127,7 @@ issues and AI assistants can cite.
     the same key fail with `Error::DuplicateMapKey`.
   - `depth = n` (n ≥ 1) or `recursive = "cte"`: a recursive collection (MPA-PLAN-4).
 - **MPA-VIEW-10** A collection field MUST be a `Vec<T>`, `Vec<Arc<T>>`, `Vec<Ref<T>>`, `BTreeMap<K, T>` or
-  `HashMap<K, T>` of a view.
+  `HashMap<K, T>` of a view; `Vec<Box<T>>` is a compile error.
 - **MPA-VIEW-11** Invalid attributes are compile errors with a message naming the attribute, such as a `child`
   without `fk`, `index` on a map, or `version` on a collection.
 
@@ -192,21 +194,28 @@ let tasks = mabat::load::<TaskView>()
   (PostgreSQL only; other databases do not compile) shares one `REPEATABLE READ READ ONLY` snapshot between the
   connections, imported when the load starts; `Pooled::read_committed` (any database) lets each query see what is
   committed when it runs. Graph loads run their queries one at a time.
-- **MPA-LOAD-12** Recursive collections load as many levels as their `depth`, or all levels with
-  `recursive = "cte"` (MPA-PLAN-4). A cycle in the data of a `cte` collection fails with `Error::Cycle`.
+- **MPA-LOAD-12** Recursive collections and references load as many levels as their `depth`, or all levels with
+  `recursive = "cte"` (MPA-PLAN-4). A cycle in the data of a `cte` collection or chain of references fails with
+  `Error::Cycle`; with `depth`, a cycle repeats its rows until the last level.
 - **MPA-LOAD-13** An `Arc<T>` reference or element is decoded once per entity of a load and shared by everything
-  that references it.
+  that references it. With a recursive `depth`, an entity reached at several levels holds the references of the
+  level it was first decoded at.
 - **MPA-LOAD-14** A view with `Ref<T>` fields is a graph and MUST be loaded with `graph`, else
   `Error::GraphRequired`. `graph` returns a `Graph<T>` holding each entity once, with typed references and
   generated navigation methods (`task.manager(&graph)`); cycles end by themselves and need no `depth`. A graph is
   also built in code: `Graph::new()` makes an empty one, `insert` adds an entity and returns its `Ref`,
-  `add_root` makes an entity a root, and `get_mut` changes one; `save_graph` saves it (MPA-WRITE-14).
+  `add_root` makes an entity a root, and `get_mut` changes one; `save_graph` saves it (MPA-WRITE-14), and
+  `save_graph_changes` saves the entities that changed (MPA-WRITE-20).
 - **MPA-LOAD-15** `stream(conn)` loads the matching values a batch at a time, as a `futures::Stream` of
   `Result<T, Error>`. One query first reads the keys of every matching root, with the keys, filter, order, limit
   and offset of the load, selecting only the key. Then each batch of `batch_size(n)` keys (1,000 by default, at
   least 1) is loaded as `by_keys` loads keys: the root query, with the filter, and every child query, for that
   batch. The values of a batch are yielded in the order of the keys, so the stream yields what `all` returns, in
-  the same order, and holds at most one batch of values in memory; the list of keys is held throughout.
+  the same order, and holds at most one batch of values in memory. On a PostgreSQL connection (not a `Pooled`
+  pool), the keys query is declared as a cursor `WITH HOLD`, `mabat_stream_keys`, and each batch's keys are
+  fetched from it, so the server holds the keys and the stream holds one batch of them; the keys are the same as
+  if read at once, as of when the cursor is declared. Otherwise the list of keys is read at once and held
+  throughout.
 - **MPA-LOAD-16** Each batch's queries see what the connection sees when they run. Outside a snapshot, a later
   batch sees changes committed after the keys were read: a root deleted in between is skipped, a root that no
   longer matches the filter is skipped, and a root committed after the keys were read is not loaded. In a
@@ -221,8 +230,10 @@ let tasks = mabat::load::<TaskView>()
   to each batch's keys, or binds them itself if it takes them (MPA-OVR-3); nested arguments apply per parent, as in
   `all` (MPA-LOAD-9).
 - **MPA-LOAD-18** The stream holds the connection until it ends or is dropped, and dropping it stops the load (the
-  connections of a `Pooled` stream are given back, and its snapshot rolled back). Nothing runs until the stream is
-  first polled. An error, from preparing the load or from a query, is yielded once and ends the stream.
+  connections of a `Pooled` stream are given back, and its snapshot rolled back). The cursor of a PostgreSQL
+  stream is closed when the stream ends; one left open by a dropped stream stays open on the connection until the
+  next stream on it closes it, its transaction rolls back, or the connection closes. Nothing runs until the stream
+  is first polled. An error, from preparing the load or from a query, is yielded once and ends the stream.
 
 ## 6. Query planning
 
@@ -236,7 +247,12 @@ let tasks = mabat::load::<TaskView>()
   extra columns are ignored.
 - **MPA-PLAN-4** A collection with `depth = n` runs its query again for each level, at most `n` levels. With
   `recursive = "cte"`, all levels come from one `WITH RECURSIVE` query whose path guard stops at cycles; it needs a
-  collection that contains its own view directly and no `through`.
+  collection that contains its own view directly and no `through`. A recursive to-one reference is planned the
+  same way: with `depth = n` its query runs again for each level, at most `n` levels below the first row, and the
+  references of the last level are `None`; with `recursive = "cte"`, one `WITH RECURSIVE` query follows the
+  references from the keys of the level above to the end of every chain. As chains share rows (two employees
+  with one manager), a depth in that query would not be each chain's own, so `recursive = "cte"` on a reference
+  takes no `depth` (`Error::Plan` for a shape built by hand).
 - **MPA-PLAN-5** `mabat::plan::<T>()` returns the plan, and `Mabat::explain::<T>()` its queries with their SQL,
   generated or overridden.
 
@@ -382,6 +398,14 @@ mabat::delete::<Board, _>(board.id, &mut tx).await?;        // the board and wha
   30,000 parameters. A version conflict names the keys of the rows of its statement; on MySQL it cannot tell
   which of them changed. A view with a column type that does not implement `Clone` is saved value by value, in
   the same transaction. Values with references into a graph fail with `Error::Write`.
+- **MPA-WRITE-20** A graph records its changed entities: those added with `insert` and those handed out by
+  `get_mut`, whether or not they were then changed, since it was loaded or last saved; `is_changed(r)` tells.
+  `save_graph_changes(&mut graph, conn)` saves as `save_graph` does (MPA-WRITE-14 to MPA-WRITE-18), but writes
+  only the rows of the changed entities, and of the elements whose foreign key a changed entity's collection
+  writes (MPA-WRITE-16); the other entities' keys are used as loaded. Link rows are replaced (MPA-WRITE-17), and
+  rows no longer in a collection set to NULL, only for the collections of changed entities. Collections and the
+  references they are the inverse of MUST still agree across the whole graph. A successful `save_graph` or
+  `save_graph_changes` leaves no entity changed; a failed one is rolled back and keeps them changed.
 
 ## 11. Errors and diagnostics
 
@@ -447,7 +471,7 @@ Mabat 0.1 does not do the following; tools SHOULD NOT generate code that relies 
 - **MPA-NOT-7** Arguments on map collections in GraphQL, and GraphQL mutations.
 - **MPA-NOT-8** Pipelining queries on one connection.
 - **MPA-NOT-9** Schema generation or migrations: views describe existing tables.
-- **MPA-NOT-10** Saving only what changed in a graph: `save_graph` writes every entity (MPA-WRITE-14).
+- **MPA-NOT-10** Removed: `save_graph_changes` saves only the changed entities of a graph (MPA-WRITE-20).
 
 ## 13. Schema snapshots
 
