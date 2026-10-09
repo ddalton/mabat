@@ -1000,51 +1000,58 @@ pub(crate) async fn count<B: Backend>(
     B::fetch_count(conn, sql.clone(), keys, values).await.map_err(error)
 }
 
-/// The keys of the rows of the root query, in its order, see [`sql::keys`]: what a stream
-/// loads, a batch at a time.
-pub(crate) async fn root_keys_of<B: Backend>(
-    runner: &Runner<'_, B>,
-    plan: &QueryPlan,
-    options: &RootOptions,
-    keys: Option<KeyList>,
-    overrides: Option<&Overrides>,
-    values: Vec<Bound>,
-) -> Result<Vec<Key>, Error>
-where
-    B::Connection: Send,
-{
-    let view = plan.shape.name;
-    let has_keys = keys.is_some();
-    let (keys, render) = root_keys::<B>(keys);
-    let options = RootOptions {
-        by_keys: has_keys,
-        filter_lists: values.iter().map(Bound::list_len).collect(),
-        ..options.clone()
-    };
-    let override_sql = match overrides.and_then(|o| o.get(plan.query_name())) {
-        Some(active) if active.keys_param && !has_keys => {
-            return Err(Error::KeysRequired { view, origin: active.origin.to_string() });
-        }
-        Some(active) => Some((sql::expand_keys(&active.sql, B::DIALECT, render.keys), has_keys && !active.keys_param)),
-        None => None,
-    };
-    let sql: Arc<str> = sql::keys(plan, &options, override_sql.as_ref().map(|(s, f)| (s.as_str(), *f)), &render)
-        .map_err(|column| Error::ColumnNotSelected { view, column: column.to_string() })?
-        .into();
-    let rows = {
-        let mut conn = runner.lease().await?;
-        B::fetch(&mut conn, sql.clone(), keys, values).await.map_err(|source| Error::Query {
-            view,
-            path: plan.path.clone(),
-            sql: sql.to_string(),
-            source,
-        })?
-    };
+/// The query of the keys of the root query's rows, in its order, see [`sql::keys`]: what a
+/// stream loads, a batch at a time.
+pub(crate) struct KeysQuery {
+    pub(crate) sql: Arc<str>,
+    pub(crate) keys: Option<KeyList>,
+    pub(crate) values: Vec<Bound>,
+}
+
+impl KeysQuery {
+    pub(crate) fn new<B: Backend>(
+        plan: &QueryPlan,
+        options: &RootOptions,
+        keys: Option<KeyList>,
+        overrides: Option<&Overrides>,
+        values: Vec<Bound>,
+    ) -> Result<KeysQuery, Error> {
+        let view = plan.shape.name;
+        let has_keys = keys.is_some();
+        let (keys, render) = root_keys::<B>(keys);
+        let options = RootOptions {
+            by_keys: has_keys,
+            filter_lists: values.iter().map(Bound::list_len).collect(),
+            ..options.clone()
+        };
+        let override_sql = match overrides.and_then(|o| o.get(plan.query_name())) {
+            Some(active) if active.keys_param && !has_keys => {
+                return Err(Error::KeysRequired { view, origin: active.origin.to_string() });
+            }
+            Some(active) => {
+                Some((sql::expand_keys(&active.sql, B::DIALECT, render.keys), has_keys && !active.keys_param))
+            }
+            None => None,
+        };
+        let sql = sql::keys(plan, &options, override_sql.as_ref().map(|(s, f)| (s.as_str(), *f)), &render)
+            .map_err(|column| Error::ColumnNotSelected { view, column: column.to_string() })?
+            .into();
+        Ok(KeysQuery { sql, keys, values })
+    }
+
+    /// The error of running the query.
+    pub(crate) fn error(&self, plan: &QueryPlan, source: sqlx::Error) -> Error {
+        Error::Query { view: plan.shape.name, path: plan.path.clone(), sql: self.sql.to_string(), source }
+    }
+}
+
+/// The keys of rows of a [`KeysQuery`], without NULL ones.
+pub(crate) fn read_keys<B: Backend>(plan: &QueryPlan, rows: &[B::Row]) -> Result<Vec<Key>, Error> {
     let Some(first) = rows.first() else { return Ok(Vec::new()) };
-    let decode = |source| Error::Decode { view, path: plan.key_alias.clone(), source };
+    let decode = |source| Error::Decode { view: plan.shape.name, path: plan.key_alias.clone(), source };
     let column = KeyColumn::resolve::<B>(first, &plan.key_alias).map_err(decode)?;
     let mut found = Vec::with_capacity(rows.len());
-    for row in &rows {
+    for row in rows {
         if let Some(key) = column.read::<B>(row).map_err(decode)? {
             found.push(key);
         }

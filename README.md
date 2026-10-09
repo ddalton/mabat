@@ -372,8 +372,9 @@ the Chinook music store with GraphiQL.
 ## Streaming many values
 
 `stream` loads values a batch at a time, so exporting a million rows holds one batch in memory, not a million.
-It reads the keys of every match first, with the filter, order and page, then loads each batch of keys with
-its collections and references, and yields the values in order:
+It reads the keys of every match, with the filter, order and page, then loads each batch of keys with its
+collections and references, and yields the values in order. On PostgreSQL the keys stay on the server, in a
+cursor, and are fetched a batch at a time:
 
 ```rust
 use futures_util::TryStreamExt;

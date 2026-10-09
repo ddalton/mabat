@@ -786,6 +786,16 @@ have finished. Roots are processed in batches of a configurable size.
 > snapshot spans every batch, and on one connection a `REPEATABLE READ` transaction does. Holding the key list
 > rather than a server-side cursor works the same way on every database; a PostgreSQL cursor over the root query
 > could avoid the key list later.
+>
+> **Cursor of keys (as built):** on one PostgreSQL connection the keys query is declared as
+> `DECLARE mabat_stream_keys NO SCROLL CURSOR WITH HOLD FOR …`, with the same parameters, and each batch runs
+> `FETCH FORWARD n` before its by-keys queries; a batch shorter than `n` closes it. `WITH HOLD` lets the cursor be
+> declared outside a transaction, where the server materializes the keys at once, as well as inside one, without
+> the stream having to begin, commit or roll back anything: SQLx cannot run a rollback when a stream is dropped.
+> A dropped stream leaves the cursor open, so the cursor has a fixed name, and a stream first closes one left on
+> its connection (looked up in `pg_cursors`, as closing a cursor that does not exist would abort the caller's
+> transaction). A `Pooled` stream keeps the key list: a cursor would need one of the pool's connections for the
+> whole stream. MySQL has cursors only in stored procedures, and SQLite has none.
 
 ## 12. Errors
 

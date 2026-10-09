@@ -206,7 +206,11 @@ let tasks = mabat::load::<TaskView>()
   and offset of the load, selecting only the key. Then each batch of `batch_size(n)` keys (1,000 by default, at
   least 1) is loaded as `by_keys` loads keys: the root query, with the filter, and every child query, for that
   batch. The values of a batch are yielded in the order of the keys, so the stream yields what `all` returns, in
-  the same order, and holds at most one batch of values in memory; the list of keys is held throughout.
+  the same order, and holds at most one batch of values in memory. On a PostgreSQL connection (not a `Pooled`
+  pool), the keys query is declared as a cursor `WITH HOLD`, `mabat_stream_keys`, and each batch's keys are
+  fetched from it, so the server holds the keys and the stream holds one batch of them; the keys are the same as
+  if read at once, as of when the cursor is declared. Otherwise the list of keys is read at once and held
+  throughout.
 - **MPA-LOAD-16** Each batch's queries see what the connection sees when they run. Outside a snapshot, a later
   batch sees changes committed after the keys were read: a root deleted in between is skipped, a root that no
   longer matches the filter is skipped, and a root committed after the keys were read is not loaded. In a
@@ -221,8 +225,10 @@ let tasks = mabat::load::<TaskView>()
   to each batch's keys, or binds them itself if it takes them (MPA-OVR-3); nested arguments apply per parent, as in
   `all` (MPA-LOAD-9).
 - **MPA-LOAD-18** The stream holds the connection until it ends or is dropped, and dropping it stops the load (the
-  connections of a `Pooled` stream are given back, and its snapshot rolled back). Nothing runs until the stream is
-  first polled. An error, from preparing the load or from a query, is yielded once and ends the stream.
+  connections of a `Pooled` stream are given back, and its snapshot rolled back). The cursor of a PostgreSQL
+  stream is closed when the stream ends; one left open by a dropped stream stays open on the connection until the
+  next stream on it closes it, its transaction rolls back, or the connection closes. Nothing runs until the stream
+  is first polled. An error, from preparing the load or from a query, is yielded once and ends the stream.
 
 ## 6. Query planning
 

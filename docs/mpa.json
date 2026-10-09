@@ -1364,7 +1364,7 @@
     {
       "id": "MPA-LOAD-15",
       "section": "5. Loading",
-      "text": "`stream(conn)` loads the matching values a batch at a time, as a `futures::Stream` of `Result<T, Error>`. One query first reads the keys of every matching root, with the keys, filter, order, limit and offset of the load, selecting only the key. Then each batch of `batch_size(n)` keys (1,000 by default, at least 1) is loaded as `by_keys` loads keys: the root query, with the filter, and every child query, for that batch. The values of a batch are yielded in the order of the keys, so the stream yields what `all` returns, in the same order, and holds at most one batch of values in memory; the list of keys is held throughout."
+      "text": "`stream(conn)` loads the matching values a batch at a time, as a `futures::Stream` of `Result<T, Error>`. One query first reads the keys of every matching root, with the keys, filter, order, limit and offset of the load, selecting only the key. Then each batch of `batch_size(n)` keys (1,000 by default, at least 1) is loaded as `by_keys` loads keys: the root query, with the filter, and every child query, for that batch. The values of a batch are yielded in the order of the keys, so the stream yields what `all` returns, in the same order, and holds at most one batch of values in memory. On a PostgreSQL connection (not a `Pooled` pool), the keys query is declared as a cursor `WITH HOLD`, `mabat_stream_keys`, and each batch's keys are fetched from it, so the server holds the keys and the stream holds one batch of them; the keys are the same as if read at once, as of when the cursor is declared. Otherwise the list of keys is read at once and held throughout."
     },
     {
       "id": "MPA-LOAD-16",
@@ -1379,7 +1379,7 @@
     {
       "id": "MPA-LOAD-18",
       "section": "5. Loading",
-      "text": "The stream holds the connection until it ends or is dropped, and dropping it stops the load (the connections of a `Pooled` stream are given back, and its snapshot rolled back). Nothing runs until the stream is first polled. An error, from preparing the load or from a query, is yielded once and ends the stream."
+      "text": "The stream holds the connection until it ends or is dropped, and dropping it stops the load (the connections of a `Pooled` stream are given back, and its snapshot rolled back). The cursor of a PostgreSQL stream is closed when the stream ends; one left open by a dropped stream stays open on the connection until the next stream on it closes it, its transaction rolls back, or the connection closes. Nothing runs until the stream is first polled. An error, from preparing the load or from a query, is yielded once and ends the stream."
     },
     {
       "id": "MPA-PLAN-1",
