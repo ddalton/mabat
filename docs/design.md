@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | Draft, for discussion. M1 implemented; see the notes marked **M1** |
+| Status | Implemented: milestones M1–M8 and the work after them. The notes marked **As built** (or with a milestone) record what was built where it differs from the design |
 | Author | Dilip Dalton |
 | Created | 2026-10-07 |
 | Lineage | Rust successor to the ideas in [XOR](https://github.com/ddalton/xor) (Java) |
@@ -70,7 +70,7 @@ Building XOR also showed where that design goes wrong. The most important lesson
 
 | Lesson from XOR | Consequence for Mabat |
 | --- | --- |
-| Native query columns were mapped by position, so swapping two same-typed columns silently corrupted data | Columns are mapped **by name**. Mapping by position is an explicit opt-in |
+| Native query columns were mapped by position, so swapping two same-typed columns silently corrupted data | Columns are mapped **by name**, each name found once per result and then read by position. There is no mapping by position |
 | Configuration errors appeared only when a query ran | Every override is checked **at startup** and in CI |
 | List order depended on the row order the SQL returned | Elements are placed by an index column, whatever order the rows arrive in |
 | Global mutable state: a cached model one operation could corrupt for the next, and a static parallel switch | An **immutable registry** built once. Options are passed per call |
@@ -107,13 +107,14 @@ it can pick representations Rust handles well (section 7) instead of forcing poi
 - **G3.** Load an aggregate with a few batched queries and no N+1 problem.
 - **G4.** Let each view's query be replaced from configuration, and check every replacement at startup and in CI.
 - **G5.** Represent shared and cyclic data safely without `Rc`/`Weak`/`RefCell`.
-- **G6.** Async, built on SQLx. PostgreSQL first.
+- **G6.** Async, built on SQLx. PostgreSQL first, then MySQL and SQLite (all three are supported).
 - **G7.** Match hand-written SQLx performance for the same SQL (decoding overhead within about 10%).
 - **G8.** Return the same view as typed values or as JSON, so it can back a GraphQL or REST API.
 
 ### Non-goals
 
-- **Replacing an ORM for writes.** Writes are optional and limited (section 14).
+- **Replacing an ORM for writes.** Writes save whole aggregates and graphs (section 14); set-based updates and
+  bulk SQL stay in SQL.
 - **Schema migrations.** Use existing tools such as sqlx-cli, refinery or atlas.
 - **Compile-time checking of override SQL.** Overrides change at runtime by design; they're checked at
   startup and in CI.
@@ -141,7 +142,7 @@ flowchart LR
     P --> V
     V --> R["Registry<br/>(immutable, Arc)"]
     R --> E["Executor<br/>(SQLx)"]
-    E --> D[("PostgreSQL")]
+    E --> D[("PostgreSQL, MySQL, SQLite")]
     E --> X["Reconstitution"]
     X --> Out["Typed value / Graph / JSON"]
 ```
@@ -482,7 +483,8 @@ Properties:
 - Mutation goes through `&mut Graph` (`g.get_mut(r)`), which also records changed entities for writes
   (section 14).
 - `Graph` is `Send + Sync` and can be shared with `Arc<Graph>` across tasks.
-- JSON serialization writes `$id`/`$ref`, or unrolls the graph to a chosen depth (section 13).
+- JSON serialization writes `$id`/`$ref`, or unrolls the graph to a chosen depth (section 13). (As built: a
+  graph view is written as JSON by unrolling it with a selection; `$id`/`$ref` was not built.)
 
 Loading a graph uses the same planner. Each entity type is loaded with batched queries, and every `Ref` is
 resolved through the identity map, so cycles cost nothing extra.
@@ -762,7 +764,7 @@ aliases. Per row, decoding is plain indexed access with no hashing of names.
 > **M1:** field columns are decoded by alias through SQLx (`Row::try_get(&str)`), the same lookup hand-written
 > SQLx code uses. Key columns are resolved once per query result. With this, loading 1,000 tasks with 10
 > subtasks each takes about 8% longer than hand-written SQLx running the same queries
-> (`crates/mabat/examples/parity.rs`). Positional decoding is the next optimization.
+> (`crates/mabat/examples/parity.rs`). Positional decoding was the next optimization, below.
 >
 > **Positional decoding (as built):** a node keeps the column names of its rows, read from the first row, and a
 > decoder's alias is looked up there, starting at the column after the one read last. Decoders read the columns
@@ -807,7 +809,7 @@ have finished. Roots are processed in batches of a configurable size.
 > are put back in the order of the keys. The stream keeps one `Runner` for its whole life, so a `Pooled::snapshot`
 > snapshot spans every batch, and on one connection a `REPEATABLE READ` transaction does. Holding the key list
 > rather than a server-side cursor works the same way on every database; a PostgreSQL cursor over the root query
-> could avoid the key list later.
+> could avoid the key list later (built, below).
 >
 > **Cursor of keys (as built):** on one PostgreSQL connection the keys query is declared as
 > `DECLARE mabat_stream_keys NO SCROLL CURSOR WITH HOLD FOR …`, with the same parameters, and each batch runs
@@ -890,7 +892,7 @@ flowchart LR
 
 ## 14. Writes
 
-Writes are a later, optional milestone. The scope is deliberately small:
+Writes are a later, optional milestone. The scope is deliberately small (it grew: see the as-built notes below):
 
 - Insert and update **one aggregate by view**, using the same shape: product columns, `tag`-strategy sums
   (write the tag and the variant's columns, null the others), `table_per_variant` (upsert the variant row,
@@ -916,7 +918,7 @@ Writes never go through override SQL. Overrides are for reads.
 >   reference writes its foreign key only. An enum in columns writes its tag as a literal, so any tag column
 >   type accepts it, its variant's columns, and NULL to the other variants'.
 > - **Not yet:** saving graphs in the order of their foreign keys. (Keys generated by the database came in the
->   third part, and graphs in the fourth.)
+>   third part, and graphs in the fourth: done.)
 >
 > **As built (second part):**
 >
@@ -1028,7 +1030,10 @@ database.
 >   PostgreSQL service, not `testcontainers`.
 > - **End-to-end tests** (`mabat-e2e`) run against the Pagila and Chinook sample databases, comparing every load
 >   with SQL.
-> - **The parity benchmark** is the `parity` example.
+> - **The parity benchmark** is the `parity` example: about 3% over hand-written SQLx since positional decoding.
+> - **Mutation-style checks** are in `crates/mabat/tests/overrides.rs`: broken overrides generated from each test
+>   view's plan must fail validation.
+> - **Not built:** property tests (`proptest`) and `criterion` benchmarks at 1, 100 and 10,000 roots.
 >
 > The end-to-end tests found two bugs that the hand-written test schemas had missed:
 >
@@ -1045,10 +1050,16 @@ database.
 | M2 | Sum types (**done**) | `tag`, `table_per_variant`, `json`; nested sums; strict decoding | Every strategy tested with generated SQL |
 | M3 | Overrides (**done**) | Override files, startup validation, `mabat check`, shadow mode | Mutation-style checks pass |
 | M4 | Collections and recursion (**done**) | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
-| M5 | Shared and graph (**done**; `$id`/`$ref` JSON moves to M7) | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
+| M5 | Shared and graph (**done**; `$id`/`$ref` JSON not built, graphs unroll with a selection) | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
 | M6 | More databases, concurrency (**done**; no pipelining) | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |
 | M7 | GraphQL (**done**) | Sub-shapes from look-ahead; field arguments | Example server |
-| M8 | Writes (optional; **save, delete, save_changes and versions done**) | Aggregate insert and update; graph save with SCC ordering | Round-trip property tests |
+| M8 | Writes (**done**) | Aggregate insert and update; graph save with SCC ordering | Round-trip property tests (done as end-to-end round trips; no `proptest`) |
+
+After M8, also done: `save`, `delete`, `save_changes` with versions, generated keys, `save_graph`,
+`save_graph_changes` and batched `save_all`; the manifest and the `mabat` CLI (`check`, `explain`, `scaffold`);
+schema snapshots checked without a database, from the CLI and build scripts (`mabat-check`); streaming loads, with
+a PostgreSQL cursor of keys; recursive references (chains of parents); positional decoding; and the MPA
+specification.
 
 ## 18. Prior art
 
@@ -1066,8 +1077,8 @@ database.
 
 | Risk | Mitigation |
 | --- | --- |
-| Rust users expect compile-time SQL checks | State plainly that overrides are checked at startup and in CI; generated SQL is correct by construction; `mabat check` in CI |
-| Overlap with SeaORM and Diesel | Position Mabat as a read layer for aggregates that works alongside them, not a replacement |
+| Rust users expect compile-time SQL checks | State plainly that overrides are checked at startup and in CI; generated SQL is correct by construction; `mabat check` in CI; views checked against a committed schema snapshot by a build script, so `cargo build` fails on drift (MPA-SCH-7) |
+| Overlap with SeaORM and Diesel | Position Mabat as an aggregate mapper, reads and writes of whole aggregates, that works alongside them for queries that are not aggregates, not a replacement |
 | Complexity of the proc macro | Thin macro, logic in `mabat-core`, `trybuild` tests |
 | Sum-type strategies don't match legacy schemas | `json` strategy and overrides as escape hatches; tag value mapping per variant |
 | Planner picks poor strategies | `explain`, per-field strategy attributes, and overrides; a planner that uses statistics only later |
@@ -1075,10 +1086,20 @@ database.
 ## 20. Open questions
 
 1. ~~Is PostgreSQL alone enough for M1–M5, or does an early user need MySQL or SQLite?~~ Both are supported.
-2. Should override files support per-environment variants (for example `TaskView.prod.toml`)?
+2. Should override files support per-environment variants (for example `TaskView.prod.toml`)? An application
+   can already pass the directory of its environment to `overrides_dir` (`mabat/overrides/prod`); variants would
+   only help when environments share most of their files.
 3. Should `Graph` support incremental loading (load more of the graph into an existing `Graph`)?
-4. Should identity in the shared and graph representations be per load, or optionally per transaction (a
-   session cache)? Per load is simpler and avoids XOR's shared-state problems.
+4. ~~Should identity in the shared and graph representations be per load, or optionally per transaction (a
+   session cache)?~~ Per load, as built: no state outlives a load, and `Pooled::snapshot` or a `REPEATABLE READ`
+   transaction gives several loads one snapshot instead.
 5. ~~Should the GraphQL integration also generate the GraphQL schema from views, or only resolve against an
    existing schema?~~ It generates the schema.
-6. Are writes (M8) in scope for the first release?
+6. ~~Are writes (M8) in scope for the first release?~~ Yes: aggregates, changes, many values and graphs are saved.
+7. Should views be generic? Generic embedded structs and JSON payloads (`Range<T>`, `Event<P>`) would cover most
+   needs; generic views over a table are rare, as a table has fixed column types, and would need shapes built at
+   run time, identity by `TypeId` and a name per instantiation.
+8. Should graphs serialize as JSON with `$id`/`$ref` (section 7.3), keeping identity, rather than only unrolling
+   with a selection?
+9. Should views read from sources other than SQL, such as in-memory data or borrowed (`&'a T`) views? SQLite in
+   memory covers in-memory data today; borrowed views would need lifetimes on views, which the derive refuses.
