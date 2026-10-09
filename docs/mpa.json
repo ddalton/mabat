@@ -228,6 +228,19 @@
       ]
     },
     {
+      "id": "schema-snapshots",
+      "summary": "A snapshot of the database's schema to check views against, and its drift",
+      "api": [
+        "mabat schema",
+        "mabat::schema::snapshot"
+      ],
+      "rules": [
+        "MPA-SCH-1",
+        "MPA-SCH-2",
+        "MPA-SCH-3"
+      ]
+    },
+    {
       "id": "dba-tooling",
       "summary": "A manifest of the views and the mabat command line tool: check, explain, scaffold",
       "api": [
@@ -670,6 +683,13 @@
       "summary": "Save many values, batched by table and level",
       "rules": [
         "MPA-WRITE-19"
+      ]
+    },
+    {
+      "api": "mabat::schema::snapshot",
+      "summary": "A snapshot of the database's schema",
+      "rules": [
+        "MPA-SCH-1"
       ]
     },
     {
@@ -1503,6 +1523,21 @@
       "id": "MPA-NOT-10",
       "section": "12. Not supported",
       "text": "Saving only what changed in a graph: `save_graph` writes every entity (MPA-WRITE-14)."
+    },
+    {
+      "id": "MPA-SCH-1",
+      "section": "13. Schema snapshots",
+      "text": "`mabat schema --database-url <url> --out mabat/schema.json`, or `mabat::schema::snapshot(conn)`, writes a snapshot of the current schema of a database as JSON: its tables and views; their columns, with the type as SQLx names it and as the database declares it, nullability, and whether the database generates their values (an identity, serial or `AUTO_INCREMENT` column, or SQLite's `INTEGER PRIMARY KEY`); and their primary and foreign keys. Tables are sorted by name and columns are in the order of their table, so the same schema always gives the same file. Without `--out`, the snapshot is printed."
+    },
+    {
+      "id": "MPA-SCH-2",
+      "section": "13. Schema snapshots",
+      "text": "`mabat schema --check mabat/schema.json --database-url <url>` compares a database with a snapshot and lists the tables, columns, types, nullability, generated values and keys that differ. It exits with status 1 when they differ, so that CI can tell when the snapshot is out of date."
+    },
+    {
+      "id": "MPA-SCH-3",
+      "section": "13. Schema snapshots",
+      "text": "The manifest of the views (MPA-OVR-8) records, for each query, its table and key column, the column behind each alias, and the foreign key and link table of each collection, so that views can be checked against a snapshot. It is format 2; manifests of format 1, without them, are still read."
     }
   ]
 }

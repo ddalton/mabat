@@ -115,6 +115,11 @@ pub trait Backend: Database + Sized {
         Box::pin(async { Ok(std::collections::HashMap::new()) })
     }
 
+    /// The tables and views of the database's current schema, with their columns as the
+    /// catalog declares them, primary keys and foreign keys. Column types as SQLx names them
+    /// are left empty, for [`crate::schema::snapshot`] to fill in.
+    fn read_catalog<'c>(conn: &'c mut Self::Connection) -> BoxFuture<'c, Result<Vec<mabat_check::Table>, sqlx::Error>>;
+
     /// Run a query with arguments and fetch its rows.
     fn fetch_args<'c>(
         conn: &'c mut Self::Connection,
@@ -445,6 +450,67 @@ macro_rules! bind_each {
 
 #[allow(unused_imports)]
 pub(crate) use {bind_each, common_methods, connection};
+
+/// The rows a catalog reader found: tables and whether each is a view, their columns, the
+/// columns of their primary keys in order, and the columns of their foreign keys in order, by
+/// constraint name.
+#[derive(Default)]
+pub(crate) struct Catalog {
+    pub(crate) tables: Vec<(String, bool)>,
+    pub(crate) columns: Vec<(String, mabat_check::Column)>,
+    pub(crate) primary_keys: Vec<(String, String)>,
+    /// (table, constraint, column, referenced table, referenced column)
+    pub(crate) foreign_keys: Vec<(String, String, String, String, String)>,
+}
+
+impl Catalog {
+    pub(crate) fn tables(self) -> Vec<mabat_check::Table> {
+        let mut tables: Vec<mabat_check::Table> = self
+            .tables
+            .into_iter()
+            .map(|(name, view)| mabat_check::Table {
+                name,
+                view,
+                columns: Vec::new(),
+                primary_key: Vec::new(),
+                foreign_keys: Vec::new(),
+            })
+            .collect();
+        fn table<'t>(tables: &'t mut [mabat_check::Table], name: &str) -> Option<&'t mut mabat_check::Table> {
+            tables.iter_mut().find(|t| t.name == name)
+        }
+        for (name, column) in self.columns {
+            if let Some(t) = table(&mut tables, &name) {
+                t.columns.push(column);
+            }
+        }
+        for (name, column) in self.primary_keys {
+            if let Some(t) = table(&mut tables, &name) {
+                t.primary_key.push(column);
+            }
+        }
+        let mut constraints: Vec<(String, String, mabat_check::ForeignKey)> = Vec::new();
+        for (name, constraint, column, referenced, reference) in self.foreign_keys {
+            match constraints.iter_mut().find(|(t, c, _)| *t == name && *c == constraint) {
+                Some((_, _, fk)) => {
+                    fk.columns.push(column);
+                    fk.references.push(reference);
+                }
+                None => constraints.push((
+                    name,
+                    constraint,
+                    mabat_check::ForeignKey { columns: vec![column], table: referenced, references: vec![reference] },
+                )),
+            }
+        }
+        for (name, _, fk) in constraints {
+            if let Some(t) = table(&mut tables, &name) {
+                t.foreign_keys.push(fk);
+            }
+        }
+        tables
+    }
+}
 
 /// The key in the first column of a row an insert returned.
 #[cfg(any(feature = "postgres", feature = "sqlite"))]

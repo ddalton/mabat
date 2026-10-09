@@ -13,6 +13,7 @@ homepage = "https://github.com/ddalton/mabat"
 
 [workspace.dependencies]
 mabat-core = { path = "crates/mabat-core", version = "0.1.0" }
+mabat-check = { path = "crates/mabat-check", version = "0.1.0" }
 mabat-derive = { path = "crates/mabat-derive", version = "0.1.0" }
 mabat-sqlx = { path = "crates/mabat-sqlx", version = "0.1.0", default-features = false }
 mabat = { path = "crates/mabat", version = "0.1.0", default-features = false }

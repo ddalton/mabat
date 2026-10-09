@@ -65,6 +65,11 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **The MPA specification.** `docs/mpa.md`, the Mabat Persistence Architecture, states Mabat's contract as
   numbered rules; `docs/mpa.json` indexes its capabilities, attributes, functions, errors and diagnostics, and
   `llms.txt` points AI tools to both. A test keeps the index in step with the derive and the errors.
+- **Schema snapshots.** `mabat schema` writes a snapshot of a database's schema as JSON (`mabat/schema.json`):
+  tables and views, columns with their types, nullability and generated values, and primary and foreign keys,
+  sorted so that diffs are readable. `mabat schema --check` lists how a database differs from a snapshot and exits
+  with status 1, for CI. The manifest of the views (format 2) records the tables and columns behind each query.
+  The new `mabat-check` crate holds the snapshot, with no database driver, for build scripts.
 - **Saving many values (M8).** `mabat::save_all(&mut values, conn)` saves many aggregates in one transaction
   with statements per table and level rather than per row: one multi-row `UPDATE` (from a table of values, cast to
   the column types on PostgreSQL) and one multi-row insert for the rows of each table, then their collections,

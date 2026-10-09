@@ -36,7 +36,7 @@ use crate::registry::{self, Overrides};
 use crate::report::Report;
 
 /// The version of the manifest format.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 
 /// The views of an application and the queries that fill them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +66,11 @@ pub struct QueryManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<usize>,
     pub link: LinkManifest,
+    /// The table the rows come from, and its key column (format 2).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub table: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key_column: String,
     /// The alias of the key column.
     pub key_alias: String,
     /// The generated SQL.
@@ -78,9 +83,29 @@ pub struct QueryManifest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LinkManifest {
     Root,
-    Child,
-    ToOne { ref_alias: String },
-    Variant { tag_alias: String, tag_value: String },
+    /// Rows whose `fk` column is one of the parent keys, or with `through`, rows linked to
+    /// the parent rows by a link table whose `fk` column is one of them (format 2).
+    Child {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        fk: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<ThroughManifest>,
+    },
+    ToOne {
+        ref_alias: String,
+    },
+    Variant {
+        tag_alias: String,
+        tag_value: String,
+    },
+}
+
+/// The link table of a many-to-many collection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThroughManifest {
+    pub table: String,
+    /// The column of the link table that references the element's key.
+    pub target: String,
 }
 
 /// A column a query selects.
@@ -88,6 +113,12 @@ pub enum LinkManifest {
 pub struct ColumnManifest {
     pub alias: String,
     pub role: Role,
+    /// The column it is selected from: of the query's table, or of the link table with
+    /// `link_table` (format 2).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub column: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub link_table: bool,
     /// `true` for an `Option` field, which an override may leave out.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
@@ -313,6 +344,8 @@ fn add_query<B: Backend>(
             ColumnManifest {
                 alias,
                 role,
+                column: c.column.clone(),
+                link_table: c.from_link,
                 optional: column.is_some_and(|c| c.optional),
                 r#type: column.map(TypeManifest::from),
             }
@@ -320,7 +353,10 @@ fn add_query<B: Backend>(
         .collect();
     let link = match &plan.link {
         Link::Root => LinkManifest::Root,
-        Link::Child { .. } => LinkManifest::Child,
+        Link::Child { fk, through } => LinkManifest::Child {
+            fk: fk.to_string(),
+            through: through.map(|t| ThroughManifest { table: t.table.to_string(), target: t.target.to_string() }),
+        },
         Link::ToOne { ref_alias } => LinkManifest::ToOne { ref_alias: ref_alias.clone() },
         Link::Variant { tag_alias, tag_value } => {
             LinkManifest::Variant { tag_alias: tag_alias.clone(), tag_value: tag_value.to_string() }
@@ -331,6 +367,8 @@ fn add_query<B: Backend>(
         view: plan.shape.name.to_string(),
         parent,
         link,
+        table: plan.shape.table.to_string(),
+        key_column: plan.shape.key_column.to_string(),
         key_alias: plan.key_alias.clone(),
         sql: sql::render(
             plan,
@@ -358,7 +396,7 @@ impl LinkManifest {
     fn describe(&self) -> String {
         match self {
             LinkManifest::Root => String::new(),
-            LinkManifest::Child => " (to-many)".to_string(),
+            LinkManifest::Child { .. } => " (to-many)".to_string(),
             LinkManifest::ToOne { ref_alias } => format!(" (to-one by {ref_alias})"),
             LinkManifest::Variant { tag_alias, tag_value } => format!(" (variant where {tag_alias} = '{tag_value}')"),
         }

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use mabat_sqlx::manifest::{Manifest, ScaffoldFormat};
+use mabat_sqlx::schema::Snapshot;
 use sqlx::{AssertSqlSafe, Connection, Executor};
 
 const USAGE: &str = "\
@@ -16,6 +17,8 @@ Usage:
   mabat check    --manifest <file> [--overrides <dir>]... [--database-url <url>] [--schema <file>]
   mabat explain  --manifest <file> [--overrides <dir>]... [--view <name>]
   mabat scaffold --manifest <file> --view <name> [--query <name>]... [--format toml|sql] [--out <dir>]
+  mabat schema   [--database-url <url>] [--out <file>]
+  mabat schema   --check <file> [--database-url <url>]
 
 check     Prepare every query, generated and overridden, on the database without running it,
           and compare its columns and parameters with the views. The database URL defaults to
@@ -30,6 +33,10 @@ scaffold  Print an override file with the generated SQL of a view's queries, to 
           generated one, so name only the queries being tuned; `mabat explain` lists them.
           With --out, write it to the view's file in that directory instead, or add the queries
           to the end of the file if it exists; a query the file already overrides is refused.
+schema    Write a snapshot of the database's schema as JSON, to commit as mabat/schema.json and check
+          views against without a database: its tables and views, their columns with their types,
+          nullability and generated values, and their primary and foreign keys. With --check,
+          compare the database with a snapshot instead, and list how they differ.
 
 Exit status: 0 if there are no errors, 1 if the checks found errors, 2 for any other problem.
 ";
@@ -46,6 +53,7 @@ struct Args {
     queries: Vec<String>,
     format: Option<String>,
     out: Option<PathBuf>,
+    snapshot: Option<PathBuf>,
 }
 
 fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
@@ -62,6 +70,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
             "--query" => parsed.queries.push(value()?),
             "--format" => parsed.format = Some(value()?),
             "--out" => parsed.out = Some(value()?.into()),
+            "--check" => parsed.snapshot = Some(value()?.into()),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -85,6 +94,10 @@ fn main() -> ExitCode {
 
 fn run(args: Vec<String>) -> Result<ExitCode, String> {
     let args = parse(args)?;
+    if args.command == "schema" {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+        return runtime.block_on(schema(&args));
+    }
     let path = args.manifest.as_ref().ok_or("--manifest is required")?;
     let json = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let manifest = Manifest::from_json(&json).map_err(|e| format!("{} is not a manifest: {e}", path.display()))?;
@@ -146,6 +159,72 @@ async fn check(args: &Args, manifest: &Manifest) -> Result<ExitCode, String> {
 }
 
 const URL_REQUIRED: &str = "--database-url or $DATABASE_URL is required";
+
+/// Write a snapshot of the database's schema, or compare the database with one.
+async fn schema(args: &Args) -> Result<ExitCode, String> {
+    let url = match &args.database_url {
+        Some(url) => url.clone(),
+        None => std::env::var("DATABASE_URL").map_err(|_| URL_REQUIRED.to_string())?,
+    };
+    let actual = snapshot(&url).await?;
+    match &args.snapshot {
+        None => {
+            let json = actual.to_json();
+            match &args.out {
+                None => print!("{json}"),
+                Some(path) => {
+                    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+                        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+                    }
+                    std::fs::write(path, json).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                    eprintln!("wrote {}", path.display());
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Some(path) => {
+            let json = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let expected =
+                Snapshot::from_json(&json).map_err(|e| format!("{} is not a snapshot: {e}", path.display()))?;
+            let differences = expected.differences(&actual);
+            if differences.is_empty() {
+                println!("the database matches {}", path.display());
+                return Ok(ExitCode::SUCCESS);
+            }
+            println!("the database differs from {}:", path.display());
+            for difference in &differences {
+                println!("  {difference}");
+            }
+            println!("write a new snapshot with `mabat schema --out {}`", path.display());
+            Ok(ExitCode::from(1))
+        }
+    }
+}
+
+/// A snapshot of the schema of the database at `url`, by its scheme.
+async fn snapshot(url: &str) -> Result<Snapshot, String> {
+    let connect = |e: sqlx::Error| format!("cannot connect: {e}");
+    let read = |e: mabat_sqlx::Error| format!("cannot read the schema: {e}");
+    let scheme = url.split(':').next().unwrap_or_default();
+    match scheme {
+        #[cfg(feature = "postgres")]
+        "postgres" | "postgresql" => {
+            let mut conn = sqlx::PgConnection::connect(url).await.map_err(connect)?;
+            mabat_sqlx::schema::snapshot(&mut conn).await.map_err(read)
+        }
+        #[cfg(feature = "mysql")]
+        "mysql" | "mariadb" => {
+            let mut conn = sqlx::MySqlConnection::connect(url).await.map_err(connect)?;
+            mabat_sqlx::schema::snapshot(&mut conn).await.map_err(read)
+        }
+        #[cfg(feature = "sqlite")]
+        "sqlite" => {
+            let mut conn = sqlx::SqliteConnection::connect(url).await.map_err(connect)?;
+            mabat_sqlx::schema::snapshot(&mut conn).await.map_err(read)
+        }
+        other => Err(format!("unknown database `{other}:`, or not supported by this build of mabat")),
+    }
+}
 
 fn read_schema(schema: &std::path::Path) -> Result<String, String> {
     std::fs::read_to_string(schema).map_err(|e| format!("cannot read {}: {e}", schema.display()))

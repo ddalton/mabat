@@ -16,6 +16,7 @@ readme = "README.md"
 arc-swap.workspace = true
 chrono.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+mabat-check.workspace = true
 mabat-core.workspace = true
 sqlx.workspace = true
 sqlx-postgres = { workspace = true, optional = true }

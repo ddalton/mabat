@@ -89,7 +89,7 @@ pub(crate) async fn check<B: Backend>(
             let link_class = query.parent.and_then(|p| {
                 let parent = classes[p].as_ref()?;
                 match &query.link {
-                    LinkManifest::Child | LinkManifest::Variant { .. } => {
+                    LinkManifest::Child { .. } | LinkManifest::Variant { .. } => {
                         parent.get(&view.queries[p].key_alias).copied()
                     }
                     LinkManifest::ToOne { ref_alias } => parent.get(ref_alias).copied(),
@@ -337,7 +337,7 @@ impl Query<'_> {
         if let Some(parent) = self.link_class {
             let key_alias = self.query.key_alias.as_str();
             let (alias, what) = match &self.query.link {
-                LinkManifest::Child => (PARENT_ALIAS, "the key of the parent query".to_string()),
+                LinkManifest::Child { .. } => (PARENT_ALIAS, "the key of the parent query".to_string()),
                 LinkManifest::ToOne { ref_alias } => (key_alias, format!("the parent's \"{ref_alias}\"")),
                 LinkManifest::Variant { .. } => (key_alias, "the key of the parent query".to_string()),
                 LinkManifest::Root => unreachable!("the root query has no parent"),
@@ -413,7 +413,7 @@ impl Query<'_> {
         let root = matches!(self.query.link, LinkManifest::Root);
         let (keys, of) = match &self.query.link {
             LinkManifest::Root => (classes.get(&self.query.key_alias).copied(), "root keys"),
-            LinkManifest::Child | LinkManifest::Variant { .. } => (self.link_class, "parent keys"),
+            LinkManifest::Child { .. } | LinkManifest::Variant { .. } => (self.link_class, "parent keys"),
             LinkManifest::ToOne { .. } => (self.link_class, "referenced keys"),
         };
         match &statement.params {

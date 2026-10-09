@@ -1103,7 +1103,7 @@ def fig_changes(doc):
 # 10 · the contract, from docs/mpa.json
 # =====================================================================
 AREAS = ["CORE", "DB", "VIEW", "SUM", "LOAD", "PLAN", "OVR", "JSON", "GQL",
-         "WRITE"]
+         "WRITE", "SCH"]
 
 
 def load_index():

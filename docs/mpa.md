@@ -22,6 +22,7 @@ issues and AI assistants can cite.
 10. [Writing](#10-writing)
 11. [Errors and diagnostics](#11-errors-and-diagnostics)
 12. [Not supported](#12-not-supported)
+13. [Schema snapshots](#13-schema-snapshots)
 
 ## 0. Conventions
 
@@ -418,3 +419,21 @@ Mabat 0.1 does not do the following; tools SHOULD NOT generate code that relies 
 - **MPA-NOT-8** Pipelining queries on one connection.
 - **MPA-NOT-9** Schema generation or migrations: views describe existing tables.
 - **MPA-NOT-10** Saving only what changed in a graph: `save_graph` writes every entity (MPA-WRITE-14).
+
+## 13. Schema snapshots
+
+A snapshot of a database's schema, committed next to the manifest of the views, lets views be checked against
+the schema without a database.
+
+- **MPA-SCH-1** `mabat schema --database-url <url> --out mabat/schema.json`, or `mabat::schema::snapshot(conn)`,
+  writes a snapshot of the current schema of a database as JSON: its tables and views; their columns, with the
+  type as SQLx names it and as the database declares it, nullability, and whether the database generates their
+  values (an identity, serial or `AUTO_INCREMENT` column, or SQLite's `INTEGER PRIMARY KEY`); and their primary and
+  foreign keys. Tables are sorted by name and columns are in the order of their table, so the same schema always
+  gives the same file. Without `--out`, the snapshot is printed.
+- **MPA-SCH-2** `mabat schema --check mabat/schema.json --database-url <url>` compares a database with a snapshot
+  and lists the tables, columns, types, nullability, generated values and keys that differ. It exits with status 1
+  when they differ, so that CI can tell when the snapshot is out of date.
+- **MPA-SCH-3** The manifest of the views (MPA-OVR-8) records, for each query, its table and key column, the
+  column behind each alias, and the foreign key and link table of each collection, so that views can be checked
+  against a snapshot. It is format 2; manifests of format 1, without them, are still read.

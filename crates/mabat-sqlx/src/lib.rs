@@ -17,6 +17,7 @@ mod overrides;
 mod pooled;
 mod registry;
 mod report;
+pub mod schema;
 mod write;
 mod write_batch;
 
