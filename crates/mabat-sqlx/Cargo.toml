@@ -35,3 +35,7 @@ default = ["postgres"]
 postgres = ["sqlx/postgres", "dep:sqlx-postgres"]
 mysql = ["sqlx/mysql", "dep:sqlx-mysql"]
 sqlite = ["sqlx/sqlite", "dep:sqlx-sqlite"]
+
+[package.metadata.docs.rs]
+# Document every database's API, not only the default PostgreSQL one
+all-features = true
