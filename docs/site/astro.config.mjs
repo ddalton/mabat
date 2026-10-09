@@ -17,7 +17,7 @@ export default defineConfig({
       description:
         'Typed aggregate reads and writes for Rust on PostgreSQL, MySQL and SQLite, with SQL you can tune without changing code.',
       logo: { light: './src/assets/logo-light.svg', dark: './src/assets/logo-dark.svg', replacesTitle: false },
-      favicon: '/favicon.svg',
+      favicon: '/mabat-icon.svg',
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/ddalton/mabat' }],
       editLink: { baseUrl: 'https://github.com/ddalton/mabat/edit/main/docs/site/' },
       lastUpdated: true,
