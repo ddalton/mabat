@@ -148,6 +148,12 @@
 //! loads only some of their fields, as a GraphQL query does: only their columns are selected
 //! and only their child queries run.
 //!
+//! # Streaming
+//!
+//! [`Load::stream`] loads many values a batch at a time, as a stream, holding one batch in
+//! memory: the keys of every match are read first, then each batch is loaded with its
+//! collections and references. [`Load::json_stream`] streams JSON objects.
+//!
 //! # Concurrent loads
 //!
 //! With a [`Pooled`] pool in place of the connection, the queries of each level of a load

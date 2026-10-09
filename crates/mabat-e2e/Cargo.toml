@@ -17,6 +17,7 @@ rust_decimal = "1"
 sqlx = { workspace = true, features = ["mysql", "rust_decimal", "sqlite"] }
 
 [dev-dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 mabat-graphql = { workspace = true, features = ["mysql", "postgres", "sqlite"] }
 serde_json.workspace = true
 tokio.workspace = true

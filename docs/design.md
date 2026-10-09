@@ -779,6 +779,13 @@ have finished. Roots are processed in batches of a configurable size.
 > - **Graphs** run their queries one at a time on one connection: which query fetches an entity first decides
 >   where its row is, and that stays the same from run to run.
 > - **Pipelining** on one connection is not done: SQLx 0.9 has no pipelining API.
+>
+> **Streaming (`Load::stream`):** one query reads the keys of every matching root, with the filter, order and
+> page (`sql::keys`), then each batch of keys runs the by-keys path, root and child queries, and the batch's values
+> are put back in the order of the keys. The stream keeps one `Runner` for its whole life, so a `Pooled::snapshot`
+> snapshot spans every batch, and on one connection a `REPEATABLE READ` transaction does. Holding the key list
+> rather than a server-side cursor works the same way on every database; a PostgreSQL cursor over the root query
+> could avoid the key list later.
 
 ## 12. Errors
 
@@ -792,6 +799,10 @@ All errors are `mabat::Error`, using `thiserror`, and carry the view, path and S
 | `M04xx` | Execution (SQLx errors, wrapped with context) |
 
 Nothing is swallowed. Lenient behaviors (such as `#[view(lenient)]`) are opt-in and logged.
+
+> **As built:** decoding, planning and execution errors are variants of `mabat::Error` (`Decode`, `Plan`,
+> `Query`, …), not codes. Codes are used by the diagnostics of checks: `M01xx` for overrides, `M02xx` for checks
+> against a schema snapshot (`M0201`–`M0207`), and `M0301` for a view that cannot be planned.
 
 ## 13. GraphQL and dynamic shapes
 
