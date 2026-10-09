@@ -70,9 +70,10 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **Streaming.** `Load::stream` loads values a batch at a time as a `futures::Stream`, holding one batch
   in memory: one query reads the keys of every match, with the filter, order and page, then each batch of
   `batch_size` keys (1,000 by default) is loaded with its collections and references, yielding the values in the
-  order of `all`. A value deleted between batches is skipped outside a snapshot; in a `REPEATABLE READ`
-  transaction or with `Pooled::snapshot`, every batch sees one snapshot. `Load::json_stream` streams JSON, of a
-  selection or of every field. Graph views cannot be streamed.
+  order of `all`. On a PostgreSQL connection the keys are fetched a batch at a time from a `WITH HOLD` cursor,
+  so the server holds them rather than the stream. A value deleted between batches is skipped outside a
+  snapshot; in a `REPEATABLE READ` transaction or with `Pooled::snapshot`, every batch sees one snapshot.
+  `Load::json_stream` streams JSON, of a selection or of every field. Graph views cannot be streamed.
 - **Schema snapshots.** `mabat schema` writes a snapshot of a database's schema as JSON (`mabat/schema.json`):
   tables and views, columns with their types, nullability and generated values, and primary and foreign keys,
   sorted so that diffs are readable. `mabat schema --check` lists how a database differs from a snapshot and exits

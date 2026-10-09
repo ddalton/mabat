@@ -151,8 +151,9 @@
 //! # Streaming
 //!
 //! [`Load::stream`] loads many values a batch at a time, as a stream, holding one batch in
-//! memory: the keys of every match are read first, then each batch is loaded with its
-//! collections and references. [`Load::json_stream`] streams JSON objects.
+//! memory: the keys of every match are read, a batch at a time from a cursor on PostgreSQL, and
+//! each batch is loaded with its collections and references. [`Load::json_stream`] streams JSON
+//! objects.
 //!
 //! # Concurrent loads
 //!

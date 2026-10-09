@@ -12,6 +12,10 @@ use crate::key::{Key, KeyList};
 
 connection!(Postgres, PgConnection);
 
+/// The name of the cursor a stream reads its keys from: one per connection, as a stream holds
+/// its connection.
+const CURSOR: &str = "mabat_stream_keys";
+
 impl Backend for Postgres {
     const DIALECT: Dialect = Dialect::Postgres;
 
@@ -186,6 +190,41 @@ impl Backend for Postgres {
                 None => sqlx::query_scalar::<_, String>("SELECT pg_export_snapshot()").fetch_one(&mut *tx).await?,
             };
             Ok((tx, id))
+        })
+    }
+
+    fn open_cursor<'c>(
+        conn: &'c mut PgConnection,
+        sql: std::sync::Arc<str>,
+        keys: Option<KeyList>,
+        values: Vec<Bound>,
+    ) -> super::BoxFuture<'c, Result<bool, sqlx::Error>> {
+        Box::pin(async move {
+            // `WITH HOLD`, so that it outlives the transaction it is declared in, or the
+            // statement outside one: the keys are then kept by the server until it is closed
+            let left: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_cursors WHERE name = $1)")
+                .bind(CURSOR)
+                .fetch_one(&mut *conn)
+                .await?;
+            if left {
+                sqlx::query(sqlx::AssertSqlSafe(format!("CLOSE {CURSOR}"))).execute(&mut *conn).await?;
+            }
+            let declare = format!("DECLARE {CURSOR} NO SCROLL CURSOR WITH HOLD FOR {sql}");
+            bind(sqlx::query(sqlx::AssertSqlSafe(declare)), keys, values).execute(&mut *conn).await?;
+            Ok(true)
+        })
+    }
+
+    fn fetch_cursor<'c>(conn: &'c mut PgConnection, n: usize) -> super::BoxFuture<'c, Result<Vec<PgRow>, sqlx::Error>> {
+        Box::pin(async move {
+            sqlx::query(sqlx::AssertSqlSafe(format!("FETCH FORWARD {n} FROM {CURSOR}"))).fetch_all(conn).await
+        })
+    }
+
+    fn close_cursor<'c>(conn: &'c mut PgConnection) -> super::BoxFuture<'c, Result<(), sqlx::Error>> {
+        Box::pin(async move {
+            sqlx::query(sqlx::AssertSqlSafe(format!("CLOSE {CURSOR}"))).execute(conn).await?;
+            Ok(())
         })
     }
 

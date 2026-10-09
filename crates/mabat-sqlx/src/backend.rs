@@ -145,6 +145,35 @@ pub trait Backend: Database + Sized {
         let _ = (pool, import);
         Box::pin(async { Err(sqlx::Error::Configuration(format!("{} cannot share snapshots", Self::NAME).into())) })
     }
+
+    /// Open the cursor a stream reads the keys of its roots from, bound as [`Backend::fetch`]
+    /// binds: `Ok(false)` on databases without one, whose streams read every key at once.
+    /// A connection has one such cursor; one left open by a stream that was dropped is closed
+    /// first. Only PostgreSQL has one.
+    fn open_cursor<'c>(
+        conn: &'c mut Self::Connection,
+        sql: Arc<str>,
+        keys: Option<KeyList>,
+        values: Vec<Bound>,
+    ) -> BoxFuture<'c, Result<bool, sqlx::Error>> {
+        let _ = (conn, sql, keys, values);
+        Box::pin(async { Ok(false) })
+    }
+
+    /// The next rows, at most `n`, of the cursor of [`Backend::open_cursor`].
+    fn fetch_cursor<'c>(
+        conn: &'c mut Self::Connection,
+        n: usize,
+    ) -> BoxFuture<'c, Result<Vec<Self::Row>, sqlx::Error>> {
+        let _ = (conn, n);
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Close the cursor of [`Backend::open_cursor`].
+    fn close_cursor<'c>(conn: &'c mut Self::Connection) -> BoxFuture<'c, Result<(), sqlx::Error>> {
+        let _ = conn;
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// What a load runs on: a connection, a transaction or pooled connection that derefs to one,
