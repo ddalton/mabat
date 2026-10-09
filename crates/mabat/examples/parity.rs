@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 const ROOTS: usize = 1_000;
 const CHILDREN: usize = 10;
-const RUNS: usize = 20;
+const RUNS: usize = 200;
 
 #[derive(View, Debug, PartialEq)]
 #[view(table = "task")]

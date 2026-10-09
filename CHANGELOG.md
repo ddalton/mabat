@@ -14,7 +14,9 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
   - `#[derive(View)]` on structs: columns, `Option` columns, embedded structs with column prefixes,
     to-many collections and to-one references.
   - Loading with one root query plus one batched `WHERE fk = ANY($1)` query per relationship.
-  - Results decoded by column alias.
+  - Results decoded by column alias, each alias found once per query result and then read by position.
+    Child rows are grouped by parent key in one list, with a fast hasher. Loading 1,000 tasks of 10 subtasks
+    takes about 3% longer than hand-written SQLx running the same queries.
   - Errors that name the view and the field path.
 - **Enums with data (M2).**
   - The `tag` strategy: variant columns in the row.

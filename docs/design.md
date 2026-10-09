@@ -749,6 +749,14 @@ aliases. Per row, decoding is plain indexed access with no hashing of names.
 > SQLx code uses. Key columns are resolved once per query result. With this, loading 1,000 tasks with 10
 > subtasks each takes about 8% longer than hand-written SQLx running the same queries
 > (`crates/mabat/examples/parity.rs`). Positional decoding is the next optimization.
+>
+> **Positional decoding (as built):** a node keeps the column names of its rows, read from the first row, and a
+> decoder's alias is looked up there, starting at the column after the one read last. Decoders read the columns
+> in about the order the query selects them, so a lookup is usually one string comparison, not hashing the name
+> as `try_get(&str)` does, and the value is read with `try_get(ordinal)`. An override's columns may be in any
+> order: a lookup that misses searches the names. Child rows are grouped by the parent key into one list of row
+> indices with a range per key, hashed with `foldhash`, rather than a `Vec` per key hashed with SipHash. The
+> parity example went from about 9% over hand-written SQLx to about 3% (PostgreSQL, 200 runs, median).
 
 Large results can be streamed: `.stream()` yields root values once the child queries for each batch of roots
 have finished. Roots are processed in batches of a configurable size.
