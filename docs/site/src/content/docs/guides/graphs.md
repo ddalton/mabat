@@ -73,5 +73,28 @@ mabat::save_graph(&mut graph, &mut tx).await?;   // the generated keys are writt
   ([MPA-WRITE-16](../../spec/mpa/#mpa-write-16)).
 - **Link tables.** A collection through a link table replaces the entity's links
   ([MPA-WRITE-17](../../spec/mpa/#mpa-write-17)).
-- **Everything is written.** `save_graph` writes every entity of the graph, changed or not
-  ([MPA-NOT-10](../../spec/mpa/#mpa-not-10)). `save` and `save_changes` refuse a value with `Ref` fields.
+- **Everything is written.** `save_graph` writes every entity of the graph, changed or not. `save` and
+  `save_changes` refuse a value with `Ref` fields.
+
+## Saving what changed
+
+A graph records the entities added with `insert` and those handed out by `get_mut`, whether or not they were then
+changed. `mabat::save_graph_changes` writes only those, in the same order and with the same checks as `save_graph`
+([MPA-WRITE-20](../../spec/mpa/#mpa-write-20)):
+
+```rust
+let mut graph = mabat::load::<Employee>().by_key(id).graph(&mut tx).await?;
+let ada = graph.root_refs()[0];
+graph.get_mut(ada).name = "Ada L.".into();
+assert!(graph.is_changed(ada));
+mabat::save_graph_changes(&mut graph, &mut tx).await?;   // writes Ada's row only
+assert!(!graph.is_changed(ada));
+```
+
+- **Other entities' rows are kept.** Their keys are used as loaded. The exception is a changed entity's
+  collection by a foreign key, which writes that key to its elements' rows.
+- **Collections of changed entities only.** Link rows are replaced, and rows no longer in a collection unlinked,
+  for the changed entities' collections.
+- **The graph must still agree.** A collection that is the inverse of a reference is checked against it across
+  the whole graph, so changing one side means changing the other too, as with `save_graph`.
+- A successful save leaves no entity changed; a failed one rolls back and keeps them changed, to save again.
