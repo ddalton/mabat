@@ -36,3 +36,7 @@ async-graphql = { version = "7.2.1", default-features = false, features = ["dyna
 async-graphql-axum = "7.2.1"
 axum = "0.8"
 mabat-e2e.workspace = true
+
+[package.metadata.docs.rs]
+# Document every database's API, not only the default PostgreSQL one
+all-features = true

@@ -10,6 +10,7 @@ rust-version.workspace = true
 homepage.workspace = true
 keywords = ["sql", "schema", "views", "build"]
 categories = ["database", "development-tools::build-utils"]
+readme = "README.md"
 
 [dependencies]
 serde.workspace = true

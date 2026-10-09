@@ -1,6 +1,6 @@
 [package]
 name = "mabat"
-description = "Typed aggregate reads for Rust, with SQL you can tune without changing code"
+description = "An aggregate mapper for Rust: declare the shape of a domain aggregate, and load and save it with batched, checkable SQL"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,9 +8,11 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 homepage.workspace = true
-keywords = ["sql", "postgres", "sqlx", "orm", "views"]
+keywords = ["orm", "sqlx", "postgres", "aggregate", "ddd"]
 categories = ["database", "asynchronous"]
 readme = "../../README.md"
+# The spec consistency test reads docs/ at the repository root
+exclude = ["tests/mpa.rs"]
 
 [features]
 default = ["postgres"]
@@ -85,3 +87,7 @@ required-features = ["postgres"]
 [[example]]
 name = "save_all"
 required-features = ["postgres"]
+
+[package.metadata.docs.rs]
+# Document every database's API, not only the default PostgreSQL one
+all-features = true
