@@ -70,6 +70,10 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
   sorted so that diffs are readable. `mabat schema --check` lists how a database differs from a snapshot and exits
   with status 1, for CI. The manifest of the views (format 2) records the tables and columns behind each query.
   The new `mabat-check` crate holds the snapshot, with no database driver, for build scripts.
+  `mabat check --snapshot mabat/schema.json` (or `Manifest::check_snapshot`) checks the views against a snapshot
+  with no database: missing tables and columns, column types the fields cannot be decoded from, nullable columns
+  under fields that are not `Option`, mismatched link keys, keys that are not primary keys, and generated keys the
+  database does not generate (M0201–M0207). The manifest records which views have generated keys.
 - **Saving many values (M8).** `mabat::save_all(&mut values, conn)` saves many aggregates in one transaction
   with statements per table and level rather than per row: one multi-row `UPDATE` (from a table of values, cast to
   the column types on PostgreSQL) and one multi-row insert for the rows of each table, then their collections,

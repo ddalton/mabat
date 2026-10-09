@@ -71,6 +71,9 @@ pub struct QueryManifest {
     pub table: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub key_column: String,
+    /// The database generates the key: `#[view(generated)]`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub generated: bool,
     /// The alias of the key column.
     pub key_alias: String,
     /// The generated SQL.
@@ -369,6 +372,7 @@ fn add_query<B: Backend>(
         link,
         table: plan.shape.table.to_string(),
         key_column: plan.shape.key_column.to_string(),
+        generated: description.generated_key,
         key_alias: plan.key_alias.clone(),
         sql: sql::render(
             plan,

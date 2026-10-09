@@ -19,11 +19,13 @@ pub struct Description<B: Backend> {
     /// Describe functions of the variants of enums stored in a table per variant, by field
     /// index and variant.
     pub(crate) variants: Vec<(usize, &'static str, DescribeFn<B>)>,
+    /// The database generates the key: `#[view(generated)]`.
+    pub(crate) generated_key: bool,
 }
 
 impl<B: Backend> Default for Description<B> {
     fn default() -> Self {
-        Description { columns: Vec::new(), children: Vec::new(), variants: Vec::new() }
+        Description { columns: Vec::new(), children: Vec::new(), variants: Vec::new(), generated_key: false }
     }
 }
 
@@ -79,6 +81,11 @@ impl<B: Backend> Description<B> {
     /// `field_index`, whose columns are described by `describe`.
     pub fn variant_table(&mut self, field_index: usize, variant: &'static str, describe: DescribeFn<B>) {
         self.variants.push((field_index, variant, describe));
+    }
+
+    /// The database generates the key of the view: `#[view(generated)]`.
+    pub fn generated_key(&mut self) {
+        self.generated_key = true;
     }
 
     pub(crate) fn variant(&self, field_index: usize, variant: &str) -> Option<DescribeFn<B>> {

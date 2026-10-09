@@ -476,12 +476,26 @@ mabat scaffold --manifest mabat/views.json --view TaskView --format sql \
 
 An existing file is added to, never overwritten: scaffolding a query the file already overrides is an error.
 
-A snapshot of the database's schema, committed next to the manifest, will let views be checked against the schema
-without a database. `mabat schema` writes it, and `mabat schema --check` tells CI when the database has moved on:
+A snapshot of the database's schema, committed next to the manifest, lets views be checked against the schema
+without a database. `mabat schema` writes it, `mabat schema --check` tells CI when the database has moved
+on, and `mabat check --snapshot` checks the views against it:
 
 ```sh
 mabat schema --database-url postgres://... --out mabat/schema.json          # tables, columns, keys, as JSON
 mabat schema --check mabat/schema.json --database-url postgres://...        # exit status 1 if they differ
+mabat check --manifest mabat/views.json --snapshot mabat/schema.json        # no database needed
+```
+
+Against a snapshot, `check` finds the tables and columns the views read that are missing (M0201, M0202), columns
+of types the fields cannot be decoded from (M0203), nullable columns under fields that are not `Option` (M0204, a
+warning), foreign keys and link tables holding another kind of key than the key they match (M0205), keys that are
+not their table's primary key (M0206, a warning), and `#[view(generated)]` keys the database does not generate
+(M0207). Override files are checked for their names only: their SQL needs a database to prepare it.
+
+```text
+error[M0202]: TaskView.$root: column `task.due` is not in the schema
+  --> mabat/schema.json
+   | did you mean `due_on`?
 ```
 
 `check` prints the same report as the application's startup check. Its exit status is 0 when there are no
