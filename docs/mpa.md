@@ -351,6 +351,14 @@ mabat::delete::<Board, _>(board.id, &mut tx).await?;        // the board and wha
   for an `index` list (MPA-WRITE-5).
 - **MPA-WRITE-18** Values owned by an entity MAY have `Ref<T>` fields, written as keys; collections of references
   are saved only on entities, and one in an owned value fails with `Error::Write`.
+- **MPA-WRITE-19** `save_all(&mut values, conn)` saves many values in one transaction, each as `save` saves one
+  (MPA-WRITE-3 to MPA-WRITE-13), with statements for each table and level of the aggregate rather than for each
+  row: the rows are updated by one statement from a table of their values, the ones not updated are inserted by
+  another, then the rows of their variant tables, owned collections and links are written the same way. Rows whose
+  generated keys are `None` are inserted one by one, to read their keys. Statements are split to hold at most
+  30,000 parameters. A version conflict names the keys of the rows of its statement; on MySQL it cannot tell
+  which of them changed. A view with a column type that does not implement `Clone` is saved value by value, in
+  the same transaction. Values with references into a graph fail with `Error::Write`.
 
 ## 11. Errors and diagnostics
 

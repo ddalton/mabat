@@ -24,6 +24,22 @@ impl Backend for Postgres {
         }
     }
 
+    fn column_types<'c>(
+        conn: &'c mut PgConnection,
+        table: String,
+    ) -> super::BoxFuture<'c, Result<std::collections::HashMap<String, String>, sqlx::Error>> {
+        Box::pin(async move {
+            let rows = sqlx::query(
+                "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod) FROM pg_attribute a \
+                 WHERE a.attrelid = to_regclass($1) AND a.attnum > 0 AND NOT a.attisdropped",
+            )
+            .bind(table)
+            .fetch_all(conn)
+            .await?;
+            rows.iter().map(|row| Ok((row.try_get::<String, _>(0)?, row.try_get::<String, _>(1)?))).collect()
+        })
+    }
+
     fn insert_generated<'c>(
         conn: &'c mut PgConnection,
         sql: String,

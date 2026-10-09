@@ -22,6 +22,166 @@ fn values(dialect: Dialect, columns: &[(String, ColumnValue)]) -> String {
     value_list(dialect, columns).join(", ")
 }
 
+/// A value of a row of a multi-row statement: a placeholder numbered after `n` on
+/// PostgreSQL, NULL or a literal; cast to `cast` when given.
+fn row_value(dialect: Dialect, value: &ColumnValue, n: &mut usize, cast: Option<&str>) -> String {
+    let value = match value {
+        ColumnValue::Bound => {
+            *n += 1;
+            dialect.placeholder(*n)
+        }
+        ColumnValue::Null => "NULL".to_string(),
+        ColumnValue::Literal(text) => format!("'{}'", text.replace('\'', "''")),
+    };
+    match cast {
+        Some(ty) => format!("CAST({value} AS {ty})"),
+        None => value,
+    }
+}
+
+/// The `VALUES` tuples of rows, with placeholders numbered across the rows.
+fn tuples(dialect: Dialect, rows: &[Vec<ColumnValue>], casts: Option<&[Option<String>]>) -> String {
+    let mut n = 0;
+    let tuples: Vec<String> = rows
+        .iter()
+        .map(|row| {
+            let values: Vec<String> = row
+                .iter()
+                .enumerate()
+                .map(|(i, value)| row_value(dialect, value, &mut n, casts.and_then(|c| c[i].as_deref())))
+                .collect();
+            format!("({})", values.join(", "))
+        })
+        .collect();
+    tuples.join(", ")
+}
+
+/// Insert rows, whose values follow `names`.
+pub fn insert_rows(dialect: Dialect, table: &str, names: &[String], rows: &[Vec<ColumnValue>]) -> String {
+    let q = |ident: &str| dialect.quote(ident);
+    let quoted: Vec<String> = names.iter().map(|name| q(name)).collect();
+    let tuples = tuples(dialect, rows, None);
+    format!("INSERT INTO {} ({}) VALUES {tuples}", q(table), quoted.join(", "))
+}
+
+/// Insert rows, or update the rows with the same keys, as [`upsert`] does one.
+pub fn upsert_rows(dialect: Dialect, table: &str, key: &str, names: &[String], rows: &[Vec<ColumnValue>]) -> String {
+    let q = |ident: &str| dialect.quote(ident);
+    let mut sql = insert_rows(dialect, table, names, rows);
+    let others: Vec<&String> = names.iter().filter(|name| *name != key).collect();
+    match dialect {
+        Dialect::Postgres | Dialect::Sqlite => {
+            let excluded = if dialect == Dialect::Postgres { "EXCLUDED" } else { "excluded" };
+            if others.is_empty() {
+                let _ = write!(sql, " ON CONFLICT ({}) DO NOTHING", q(key));
+            } else {
+                let set: Vec<String> = others.iter().map(|name| format!("{0} = {excluded}.{0}", q(name))).collect();
+                let _ = write!(sql, " ON CONFLICT ({}) DO UPDATE SET {}", q(key), set.join(", "));
+            }
+        }
+        Dialect::MySql => {
+            let set: Vec<String> = if others.is_empty() {
+                vec![format!("{0} = {0}", q(key))]
+            } else {
+                others.iter().map(|name| format!("{0} = {1}.{0}", q(name), q("new"))).collect()
+            };
+            let _ = write!(sql, " AS {} ON DUPLICATE KEY UPDATE {}", q("new"), set.join(", "));
+        }
+    }
+    sql
+}
+
+/// The alias of the key of each row in [`update_rows`].
+pub const KEY_VALUE: &str = "$key";
+/// The alias of the version of each row in [`update_rows`].
+pub const VERSION_VALUE: &str = "$version";
+
+/// Update rows by key from a table of their values: each row has the values of `names`, then
+/// its key, then with `version` its version, which the row must have and which is
+/// incremented. On PostgreSQL, `casts` gives the type of each value, so that NULLs, literals
+/// and parameters of other types take the types of their columns. On PostgreSQL and SQLite,
+/// the statement returns the keys of the rows it updated. On PostgreSQL and SQLite,
+/// the statement returns the keys of the rows it updated.
+pub fn update_rows(
+    dialect: Dialect,
+    table: &str,
+    key: &str,
+    names: &[String],
+    rows: &[Vec<ColumnValue>],
+    version: Option<&str>,
+    casts: Option<&[Option<String>]>,
+) -> String {
+    let q = |ident: &str| dialect.quote(ident);
+    let mut aliases: Vec<String> = names.iter().map(|name| q(name)).collect();
+    aliases.push(q(KEY_VALUE));
+    if version.is_some() {
+        aliases.push(q(VERSION_VALUE));
+    }
+    // The name of the i-th value in the table of values
+    let value = |i: usize| match dialect {
+        Dialect::Sqlite => format!("v.column{}", i + 1),
+        _ => format!("v.{}", aliases[i]),
+    };
+    let mut set: Vec<String> =
+        names.iter().enumerate().map(|(i, name)| format!("{} = {}", q(name), value(i))).collect();
+    let mut on = format!("{}.{} = {}", q(table), q(key), value(names.len()));
+    if let Some(version) = version {
+        set.push(format!("{0} = {1}.{0} + 1", q(version), q(table)));
+        let _ = write!(on, " AND {}.{} = {}", q(table), q(version), value(names.len() + 1));
+    }
+    match dialect {
+        Dialect::Postgres => format!(
+            "UPDATE {} SET {} FROM (VALUES {}) AS v ({}) WHERE {on} RETURNING {}.{}",
+            q(table),
+            set.join(", "),
+            tuples(dialect, rows, casts),
+            aliases.join(", "),
+            q(table),
+            q(key)
+        ),
+        Dialect::Sqlite => format!(
+            "UPDATE {} SET {} FROM (VALUES {}) AS v WHERE {on} RETURNING {}.{}",
+            q(table),
+            set.join(", "),
+            tuples(dialect, rows, None),
+            q(table),
+            q(key)
+        ),
+        Dialect::MySql => {
+            // A derived table of SELECTs, whose column types MySQL takes from all the rows
+            let mut n = 0;
+            let selects: Vec<String> = rows
+                .iter()
+                .enumerate()
+                .map(|(r, row)| {
+                    let values: Vec<String> = row
+                        .iter()
+                        .enumerate()
+                        .map(|(i, value)| {
+                            let value = row_value(dialect, value, &mut n, None);
+                            if r == 0 { format!("{value} AS {}", aliases[i]) } else { value }
+                        })
+                        .collect();
+                    format!("SELECT {}", values.join(", "))
+                })
+                .collect();
+            let set: Vec<String> = set.iter().map(|s| format!("{}.{s}", q(table))).collect();
+            format!("UPDATE {} JOIN ({}) AS v ON {on} SET {}", q(table), selects.join(" UNION ALL "), set.join(", "))
+        }
+    }
+}
+
+/// Lock the rows of `table` whose `key` is one of `keys` keys, and select their keys; on
+/// SQLite, which locks the whole database for a write, only select them.
+pub fn lock_keys(dialect: Dialect, table: &str, key: &str, keys: usize) -> String {
+    let q = |ident: &str| dialect.quote(ident);
+    let select = format!("SELECT {} FROM {} WHERE {}", q(key), q(table), dialect.keys_condition(&q(key), keys));
+    match dialect {
+        Dialect::Postgres | Dialect::MySql => format!("{select} FOR UPDATE"),
+        Dialect::Sqlite => select,
+    }
+}
+
 fn value_list(dialect: Dialect, columns: &[(String, ColumnValue)]) -> Vec<String> {
     let mut n = 0;
     columns
@@ -231,6 +391,49 @@ mod tests {
         assert_eq!(
             insert(Dialect::MySql, "film_actor", &link),
             "INSERT INTO `film_actor` (`film_id`, `actor_id`) VALUES (?, ?)"
+        );
+    }
+
+    #[test]
+    fn rows_of_a_batch() {
+        let names = vec!["id".to_string(), "name".to_string(), "state".to_string()];
+        let row = |state: &str| vec![ColumnValue::Bound, ColumnValue::Bound, ColumnValue::Literal(state.into())];
+        let rows = vec![row("open"), vec![ColumnValue::Bound, ColumnValue::Null, ColumnValue::Literal("it's".into())]];
+        assert_eq!(
+            insert_rows(Dialect::Postgres, "task", &names, &rows),
+            "INSERT INTO \"task\" (\"id\", \"name\", \"state\") VALUES ($1, $2, 'open'), ($3, NULL, 'it''s')"
+        );
+        assert_eq!(
+            upsert_rows(Dialect::MySql, "task", "id", &names, &rows[..1]),
+            "INSERT INTO `task` (`id`, `name`, `state`) VALUES (?, ?, 'open') AS `new` ON DUPLICATE KEY UPDATE \
+             `name` = `new`.`name`, `state` = `new`.`state`"
+        );
+
+        // The values of `name`, then the key and the version
+        let names = vec!["name".to_string()];
+        let rows = vec![vec![ColumnValue::Bound; 3], vec![ColumnValue::Null, ColumnValue::Bound, ColumnValue::Bound]];
+        let casts = [Some("text".to_string()), Some("bigint".to_string()), Some("integer".to_string())];
+        assert_eq!(
+            update_rows(Dialect::Postgres, "task", "id", &names, &rows, Some("version"), Some(&casts)),
+            "UPDATE \"task\" SET \"name\" = v.\"name\", \"version\" = \"task\".\"version\" + 1 FROM (VALUES \
+             (CAST($1 AS text), CAST($2 AS bigint), CAST($3 AS integer)), \
+             (CAST(NULL AS text), CAST($4 AS bigint), CAST($5 AS integer))) AS v (\"name\", \"$key\", \"$version\") \
+             WHERE \"task\".\"id\" = v.\"$key\" AND \"task\".\"version\" = v.\"$version\" RETURNING \"task\".\"id\""
+        );
+        assert_eq!(
+            update_rows(Dialect::Sqlite, "task", "id", &names, &rows, None, None),
+            "UPDATE \"task\" SET \"name\" = v.column1 FROM (VALUES (?, ?, ?), (NULL, ?, ?)) AS v \
+             WHERE \"task\".\"id\" = v.column2 RETURNING \"task\".\"id\""
+        );
+        let rows = vec![vec![ColumnValue::Bound; 2], vec![ColumnValue::Null, ColumnValue::Bound]];
+        assert_eq!(
+            update_rows(Dialect::MySql, "task", "id", &names, &rows, None, None),
+            "UPDATE `task` JOIN (SELECT ? AS `name`, ? AS `$key` UNION ALL SELECT NULL, ?) AS v \
+             ON `task`.`id` = v.`$key` SET `task`.`name` = v.`name`"
+        );
+        assert_eq!(
+            lock_keys(Dialect::Postgres, "task", "id", 1),
+            "SELECT \"id\" FROM \"task\" WHERE \"id\" = ANY($1) FOR UPDATE"
         );
     }
 }

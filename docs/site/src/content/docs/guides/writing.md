@@ -62,6 +62,28 @@ otherwise the write fails with `Error::Conflict` and rolls back ([MPA-WRITE-9](.
 versions are written back into the value and its owned elements, so it can be saved again without reloading
 ([MPA-WRITE-10](../../spec/mpa/#mpa-write-10)).
 
+## Many values at once
+
+`mabat::save_all` saves many values in one transaction, each as `save` saves one, but with statements for each
+table and level of the aggregate instead of for each row ([MPA-WRITE-19](../../spec/mpa/#mpa-write-19)):
+
+```rust
+mabat::save_all(&mut tasks, &mut tx).await?;
+```
+
+For the rows of each table, one statement updates those that exist from a table of their values, and one inserts
+the others; then the rows of their collections, variant tables and links follow the same way. Statements are split
+to stay under the databases' limits on parameters.
+
+| Saving 1,000 tasks of 10 subtasks (local PostgreSQL) | New rows | Rows that exist |
+| --- | --- | --- |
+| `save`, one task at a time | 1.0 s | 1.6 s |
+| `save_all` | 0.12 s | 0.08 s |
+
+Over a network, the gap grows with the round-trip time: one task at a time takes thousands of round trips, and
+`save_all` a few dozen. Run `cargo run --release -p mabat --example save_all` to measure your own. Rows whose keys
+the database generates are inserted one at a time, to read their keys; their collections are still batched.
+
 ## Keys the database generates
 
 Mark the key field `#[view(generated)]` and make it an `Option` of an integer. `save` inserts a value whose key
