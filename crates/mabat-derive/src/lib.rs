@@ -1362,6 +1362,11 @@ fn expand_view(
     } else {
         quote! {}
     };
+    let describe_generated = if generated {
+        quote! { description.generated_key(); }
+    } else {
+        quote! {}
+    };
     // The views of the entities of a graph that the references lead to, directly or through
     // owned values
     let graph_types: Vec<TokenStream2> = fields
@@ -1418,6 +1423,7 @@ fn expand_view(
                     #[allow(dead_code)]
                     type __Backend = #backend;
                     #(#describers)*
+                    #describe_generated
                 }
 
                 #[allow(unused_variables)]

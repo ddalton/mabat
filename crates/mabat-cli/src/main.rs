@@ -15,6 +15,7 @@ mabat: check, explain and scaffold Mabat override SQL
 
 Usage:
   mabat check    --manifest <file> [--overrides <dir>]... [--database-url <url>] [--schema <file>]
+  mabat check    --manifest <file> [--overrides <dir>]... --snapshot <file>
   mabat explain  --manifest <file> [--overrides <dir>]... [--view <name>]
   mabat scaffold --manifest <file> --view <name> [--query <name>]... [--format toml|sql] [--out <dir>]
   mabat schema   [--database-url <url>] [--out <file>]
@@ -27,6 +28,10 @@ check     Prepare every query, generated and overridden, on the database without
           application's data will do, and nothing is left behind. On MySQL, which cannot roll
           back DDL, the schema is created in a temporary database that is dropped afterwards.
           On SQLite, --schema without a database URL checks against a new in-memory database.
+          With --snapshot, check the views against a snapshot written by `mabat schema` instead,
+          with no database: the tables and columns they read, the types and nullability of the
+          columns, the keys and the columns that link queries. The override files are checked
+          for their names only, as their SQL needs a database to prepare it.
 explain   Show the queries of the views and the SQL that runs for each.
 scaffold  Print an override file with the generated SQL of a view's queries, to edit and tune:
           the queries named with --query, or every query. Each query in the file replaces the
@@ -70,7 +75,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
             "--query" => parsed.queries.push(value()?),
             "--format" => parsed.format = Some(value()?),
             "--out" => parsed.out = Some(value()?.into()),
-            "--check" => parsed.snapshot = Some(value()?.into()),
+            "--check" | "--snapshot" => parsed.snapshot = Some(value()?.into()),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -103,6 +108,7 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
     let manifest = Manifest::from_json(&json).map_err(|e| format!("{} is not a manifest: {e}", path.display()))?;
 
     match args.command.as_str() {
+        "check" if args.snapshot.is_some() => check_snapshot(&args, &manifest),
         "check" => {
             let runtime =
                 tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
@@ -155,6 +161,22 @@ async fn check(args: &Args, manifest: &Manifest) -> Result<ExitCode, String> {
         other => return Err(format!("the manifest is for {other}, which this build of mabat does not support")),
     };
     println!("{report}");
+    Ok(if report.is_ok() { ExitCode::SUCCESS } else { ExitCode::from(1) })
+}
+
+/// Check the views against a snapshot of the schema, without a database.
+fn check_snapshot(args: &Args, manifest: &Manifest) -> Result<ExitCode, String> {
+    if args.database_url.is_some() || args.schema.is_some() {
+        return Err("--snapshot checks without a database: leave out --database-url and --schema".to_string());
+    }
+    let path = args.snapshot.as_ref().expect("checked by the caller");
+    let json = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let snapshot = Snapshot::from_json(&json).map_err(|e| format!("{} is not a snapshot: {e}", path.display()))?;
+    let report = manifest.check_snapshot(&snapshot, &path.display().to_string(), &args.overrides)?;
+    println!("{report}");
+    if !args.overrides.is_empty() {
+        eprintln!("note: the SQL of the overrides was not checked; `mabat check --database-url` prepares it");
+    }
     Ok(if report.is_ok() { ExitCode::SUCCESS } else { ExitCode::from(1) })
 }
 

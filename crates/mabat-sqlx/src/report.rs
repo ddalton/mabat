@@ -19,6 +19,15 @@ pub enum Severity {
 /// | `M0103` | A query does not prepare on the database |
 /// | `M0104` | The parameters of a query do not match its link to the parent query |
 /// | `M0105` | An optional path is not selected by an override, and is always `None` (warning) |
+/// | `M0201` | A query reads a table that is not in the schema snapshot |
+/// | `M0202` | A query reads a column that is not in the schema snapshot |
+/// | `M0203` | A column has a type the field cannot be decoded from |
+/// | `M0204` | A column is nullable under a field that is not an `Option` (warning) |
+/// | `M0205` | The columns linking a query to its parent hold different kinds of key |
+/// | `M0206` | A view's key column is not the primary key of its table (warning) |
+/// | `M0207` | A generated key is on a column the database does not generate |
+///
+/// `M0201` to `M0207` come from checking against a schema snapshot, [`Manifest::check_snapshot`](crate::manifest::Manifest::check_snapshot).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub severity: Severity,

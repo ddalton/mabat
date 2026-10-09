@@ -392,7 +392,7 @@ Every failure is a `mabat::Error`; messages name the view and the path.
 | `Write` | a value that cannot be written | MPA-WRITE-2, MPA-WRITE-11, MPA-WRITE-13, MPA-WRITE-14, MPA-WRITE-15, MPA-WRITE-16 |
 | `Conflict` | a version or row changed since the value was loaded | MPA-WRITE-9 |
 
-Diagnostics of `check`, `build`, `reload` and `mabat check`, each with a severity, the view, the query, the file
+Diagnostics of `check`, `build`, `reload` and `mabat check` (M0201–M0207 with `--snapshot` only), each with a severity, the view, the query, the file
 and line, and notes:
 
 | Code | Meaning |
@@ -403,6 +403,13 @@ and line, and notes:
 | M0103 | A query does not prepare on the database |
 | M0104 | A query has the wrong parameters (keys not taken, or other parameters) |
 | M0105 | A query does not select every optional path (warning: the path is always `None`) |
+| M0201 | A query reads a table that is not in the schema snapshot |
+| M0202 | A query reads a column that is not in the schema snapshot |
+| M0203 | A column has a type the field cannot be decoded from |
+| M0204 | A column is nullable under a field that is not an `Option` (warning) |
+| M0205 | The columns linking a query to its parent hold different kinds of key |
+| M0206 | A view's key column is not the primary key of its table (warning) |
+| M0207 | A generated key is on a column the database does not generate |
 | M0301 | A view cannot be planned |
 
 ## 12. Not supported
@@ -437,3 +444,20 @@ the schema without a database.
 - **MPA-SCH-3** The manifest of the views (MPA-OVR-8) records, for each query, its table and key column, the
   column behind each alias, and the foreign key and link table of each collection, so that views can be checked
   against a snapshot. It is format 2; manifests of format 1, without them, are still read.
+- **MPA-SCH-4** `mabat check --manifest mabat/views.json --snapshot mabat/schema.json`, or
+  `Manifest::check_snapshot`, checks the views against a snapshot with no database, and reports what it finds as
+  diagnostics (section 11): a table (M0201) or column (M0202) that a query reads and the schema lacks; a column
+  whose type, as SQLx names it, is not one the field can be decoded from (M0203); a column that the schema
+  allows to be NULL under a field that is not an `Option` (M0204, a warning; not reported for the fields of
+  embedded values and enums, which may be NULL in rows that do not hold them, or for views of the database, whose
+  columns are all reported nullable); and columns that link a query to its parent (a foreign key, the columns of a
+  link table, or a reference) holding a different kind of key (integer, text or uuid) from the key they match
+  (M0205). It exits with status 1 when there are errors. The manifest and the snapshot MUST be of the same
+  database, and the manifest MUST be of format 2.
+- **MPA-SCH-5** The key of each query is checked against its table: a key column that is not the table's primary
+  key is a warning (M0206), as loads assume it is unique and saves update and upsert by it (views of the database
+  have no primary key and are not checked); a view whose key is `#[view(generated)]` on a column the database
+  does not generate is an error (M0207). The manifest records which views have generated keys.
+- **MPA-SCH-6** Against a snapshot, override files are checked for their syntax and names only (M0100, M0101):
+  their SQL needs a database to prepare it, with `mabat check --database-url` or the application's startup check
+  (MPA-OVR-5).

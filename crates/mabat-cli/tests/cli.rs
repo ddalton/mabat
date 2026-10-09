@@ -451,3 +451,79 @@ async fn writes_and_checks_a_schema_snapshot() {
     assert_eq!(out.code, 2);
     assert!(out.stderr.contains("unknown database `oracle:`"), "{}", out.stderr);
 }
+
+#[tokio::test]
+async fn checks_views_against_a_snapshot_without_a_database() {
+    use mabat_e2e::{Dataset, chinook_sqlite};
+
+    let workspace = Workspace::new();
+    let manifest = Mabat::<sqlx::Sqlite>::builder()
+        .register::<chinook_sqlite::InvoiceView>()
+        .register::<chinook_sqlite::EmployeeTree>()
+        .manifest()
+        .unwrap();
+    assert!(manifest.write(workspace.0.join("chinook.json")).unwrap());
+    let url = format!("sqlite://{}?mode=rwc", workspace.path("chinook.db"));
+    let mut conn = sqlx::SqliteConnection::connect(&url).await.unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(Dataset::Chinook.sqlite_sql())).execute(&mut conn).await.unwrap();
+    let snapshot = workspace.path("schema.json");
+    assert_eq!(mabat(&["schema", "--database-url", &url, "--out", &snapshot]).code, 0);
+    drop(conn);
+    std::fs::remove_file(workspace.0.join("chinook.db")).unwrap();
+
+    // The database is gone: the views are checked against the snapshot
+    let check = |workspace: &Workspace| {
+        mabat(&[
+            "check",
+            "--manifest",
+            &workspace.path("chinook.json"),
+            "--overrides",
+            &workspace.path("overrides"),
+            "--snapshot",
+            &workspace.path("schema.json"),
+        ])
+    };
+    let out = check(&workspace);
+    assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
+    assert!(out.stdout.ends_with("0 error(s), 0 warning(s)\n"), "{}", out.stdout);
+    assert!(out.stderr.contains("the SQL of the overrides was not checked"), "{}", out.stderr);
+
+    // The names of overrides are checked
+    workspace.write_override("InvoiceView.sql", "-- mabat: query lnies\nSELECT 1\n");
+    let out = check(&workspace);
+    assert_eq!(out.code, 1, "{}{}", out.stdout, out.stderr);
+    assert!(out.stdout.starts_with("error[M0101]: \"lnies\" is not a query of InvoiceView\n"), "{}", out.stdout);
+    std::fs::remove_file(workspace.0.join("overrides/InvoiceView.sql")).unwrap();
+
+    // A table the views read is not in the schema
+    let json = std::fs::read_to_string(&snapshot).unwrap();
+    std::fs::write(&snapshot, json.replace("\"name\": \"invoice_line\"", "\"name\": \"invoice_lines\"")).unwrap();
+    let out = check(&workspace);
+    assert_eq!(out.code, 1, "{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.starts_with(&format!(
+            "error[M0201]: InvoiceView.lines: table `invoice_line` is not in the schema\n  --> {snapshot}\n   | did you \
+             mean `invoice_lines`?\n"
+        )),
+        "{}",
+        out.stdout
+    );
+
+    // Without a database, and for the database of the manifest
+    let out = mabat(&[
+        "check",
+        "--manifest",
+        &workspace.path("chinook.json"),
+        "--snapshot",
+        &snapshot,
+        "--database-url",
+        &url,
+    ]);
+    assert_eq!(out.code, 2);
+    assert!(out.stderr.contains("leave out --database-url"), "{}", out.stderr);
+    let out = mabat(&["check", "--manifest", &workspace.path("views.json"), "--snapshot", &snapshot]);
+    assert_eq!(
+        (out.code, out.stderr.as_str()),
+        (2, "error: the manifest is for PostgreSQL, the snapshot is of SQLite\n")
+    );
+}

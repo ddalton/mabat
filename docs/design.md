@@ -684,6 +684,12 @@ back to the generated query.
 > | `M0103` | The statement does not prepare |
 > | `M0104` | Wrong parameters |
 > | `M0105` | An optional path is not selected (warning) |
+>
+> Checking against a schema snapshot (`mabat check --snapshot`, no database) adds `M0201`–`M0207`: missing
+> tables and columns, column types the fields cannot be decoded from, nullable columns under fields that are not
+> `Option` (warning), mismatched link keys, keys that are not primary keys (warning), and generated keys the
+> database does not generate. The snapshot's types are named as SQLx names them, as the manifest's accepted types
+> are, so the comparison is the one `check` makes on a prepared statement.
 
 ### 9.4 Shadow mode
 
