@@ -25,6 +25,82 @@ impl Backend for Sqlite {
         add_each_key(args, keys)
     }
 
+    fn read_catalog<'c>(
+        conn: &'c mut SqliteConnection,
+    ) -> super::BoxFuture<'c, Result<Vec<mabat_check::Table>, sqlx::Error>> {
+        Box::pin(async move {
+            let mut catalog = super::Catalog::default();
+            let tables = sqlx::query(
+                "SELECT name, type = 'view' FROM sqlite_master \
+                 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .fetch_all(&mut *conn)
+            .await?;
+            for row in &tables {
+                catalog.tables.push((row.try_get(0)?, row.try_get(1)?));
+            }
+            let names: Vec<String> = catalog.tables.iter().map(|(name, _)| name.clone()).collect();
+            for table in names {
+                let columns = sqlx::query(
+                    "SELECT name, type, \"notnull\", pk, \
+                     (SELECT count(*) FROM pragma_table_info(?1) WHERE pk > 0) FROM pragma_table_info(?1) ORDER BY cid",
+                )
+                .bind(&table)
+                .fetch_all(&mut *conn)
+                .await?;
+                let mut keys: Vec<(i64, String)> = Vec::new();
+                for row in &columns {
+                    let name: String = row.try_get(0)?;
+                    let declared: String = row.try_get(1)?;
+                    let pk: i64 = row.try_get(3)?;
+                    let key_columns: i64 = row.try_get(4)?;
+                    if pk > 0 {
+                        keys.push((pk, name.clone()));
+                    }
+                    // A single-column INTEGER PRIMARY KEY is the rowid, which SQLite generates
+                    let rowid = pk > 0 && key_columns == 1 && declared.eq_ignore_ascii_case("INTEGER");
+                    let column = mabat_check::Column {
+                        name,
+                        r#type: String::new(),
+                        declared,
+                        nullable: row.try_get::<i64, _>(2)? == 0 && pk == 0,
+                        generated: rowid,
+                    };
+                    catalog.columns.push((table.clone(), column));
+                }
+                keys.sort();
+                catalog.primary_keys.extend(keys.into_iter().map(|(_, column)| (table.clone(), column)));
+                let foreign = sqlx::query(
+                    "SELECT id, \"table\", \"from\", \"to\" FROM pragma_foreign_key_list(?) ORDER BY id, seq",
+                )
+                .bind(&table)
+                .fetch_all(&mut *conn)
+                .await?;
+                for row in &foreign {
+                    let id: i64 = row.try_get(0)?;
+                    let to: Option<String> = row.try_get(3)?;
+                    catalog.foreign_keys.push((
+                        table.clone(),
+                        id.to_string(),
+                        row.try_get(2)?,
+                        row.try_get(1)?,
+                        to.unwrap_or_default(),
+                    ));
+                }
+            }
+            // A foreign key without columns references the primary key of its table
+            let primary: Vec<(String, String)> = catalog.primary_keys.clone();
+            for (_, _, _, referenced, reference) in &mut catalog.foreign_keys {
+                if reference.is_empty()
+                    && let Some((_, column)) = primary.iter().find(|(t, _)| t == referenced)
+                {
+                    *reference = column.clone();
+                }
+            }
+            Ok(catalog.tables())
+        })
+    }
+
     fn insert_generated<'c>(
         conn: &'c mut SqliteConnection,
         sql: String,

@@ -1,0 +1,16 @@
+[package]
+name = "mabat-check"
+description = "Check Mabat views against a snapshot of a database schema, without a database: for build scripts and the mabat CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+homepage.workspace = true
+keywords = ["sql", "schema", "views", "build"]
+categories = ["database", "development-tools::build-utils"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

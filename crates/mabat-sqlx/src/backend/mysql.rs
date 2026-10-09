@@ -24,6 +24,67 @@ impl Backend for MySql {
         add_each_key(args, keys)
     }
 
+    fn read_catalog<'c>(
+        conn: &'c mut MySqlConnection,
+    ) -> super::BoxFuture<'c, Result<Vec<mabat_check::Table>, sqlx::Error>> {
+        Box::pin(async move {
+            let mut catalog = super::Catalog::default();
+            let tables = sqlx::query(
+                "SELECT CAST(TABLE_NAME AS CHAR), CAST(TABLE_TYPE = 'VIEW' AS SIGNED) FROM information_schema.TABLES \
+                 WHERE TABLE_SCHEMA = DATABASE() ORDER BY 1",
+            )
+            .fetch_all(&mut *conn)
+            .await?;
+            for row in &tables {
+                catalog.tables.push((row.try_get(0)?, row.try_get::<i64, _>(1)? != 0));
+            }
+            let columns = sqlx::query(
+                "SELECT CAST(TABLE_NAME AS CHAR), CAST(COLUMN_NAME AS CHAR), CAST(COLUMN_TYPE AS CHAR), \
+                 CAST(IS_NULLABLE = 'YES' AS SIGNED), CAST(EXTRA LIKE '%auto_increment%' AS SIGNED) \
+                 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() ORDER BY 1, ORDINAL_POSITION",
+            )
+            .fetch_all(&mut *conn)
+            .await?;
+            for row in &columns {
+                let column = mabat_check::Column {
+                    name: row.try_get(1)?,
+                    r#type: String::new(),
+                    declared: row.try_get(2)?,
+                    nullable: row.try_get::<i64, _>(3)? != 0,
+                    generated: row.try_get::<i64, _>(4)? != 0,
+                };
+                catalog.columns.push((row.try_get(0)?, column));
+            }
+            let keys = sqlx::query(
+                "SELECT CAST(TABLE_NAME AS CHAR), CAST(COLUMN_NAME AS CHAR) FROM information_schema.KEY_COLUMN_USAGE \
+                 WHERE TABLE_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY 1, ORDINAL_POSITION",
+            )
+            .fetch_all(&mut *conn)
+            .await?;
+            for row in &keys {
+                catalog.primary_keys.push((row.try_get(0)?, row.try_get(1)?));
+            }
+            let foreign = sqlx::query(
+                "SELECT CAST(TABLE_NAME AS CHAR), CAST(CONSTRAINT_NAME AS CHAR), CAST(COLUMN_NAME AS CHAR), \
+                 CAST(REFERENCED_TABLE_NAME AS CHAR), CAST(REFERENCED_COLUMN_NAME AS CHAR) \
+                 FROM information_schema.KEY_COLUMN_USAGE \
+                 WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY 1, 2, ORDINAL_POSITION",
+            )
+            .fetch_all(&mut *conn)
+            .await?;
+            for row in &foreign {
+                catalog.foreign_keys.push((
+                    row.try_get(0)?,
+                    row.try_get(1)?,
+                    row.try_get(2)?,
+                    row.try_get(3)?,
+                    row.try_get(4)?,
+                ));
+            }
+            Ok(catalog.tables())
+        })
+    }
+
     fn insert_generated<'c>(
         conn: &'c mut MySqlConnection,
         sql: String,

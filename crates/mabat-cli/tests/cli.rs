@@ -410,3 +410,44 @@ fn checks_a_mysql_manifest_against_a_schema_file() {
     assert_eq!(output.code, 1, "{}{}", output.stdout, output.stderr);
     assert!(output.stdout.contains("InvoiceView.lines"), "{}", output.stdout);
 }
+
+#[tokio::test]
+async fn writes_and_checks_a_schema_snapshot() {
+    let workspace = Workspace::new();
+    let url = format!("sqlite://{}?mode=rwc", workspace.path("app.db"));
+    let mut conn = sqlx::SqliteConnection::connect(&url).await.unwrap();
+    sqlx::raw_sql("CREATE TABLE team (id INTEGER PRIMARY KEY, name VARCHAR(100) NOT NULL)")
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let snapshot = workspace.path("mabat/schema.json");
+
+    // Written to a file, which an unchanged database matches
+    let out = mabat(&["schema", "--database-url", &url, "--out", &snapshot]);
+    assert_eq!((out.code, out.stderr.as_str()), (0, format!("wrote {snapshot}\n").as_str()));
+    let json = std::fs::read_to_string(&snapshot).unwrap();
+    assert!(json.contains("\"backend\": \"SQLite\"") && json.contains("\"declared\": \"VARCHAR(100)\""), "{json}");
+    let printed = mabat(&["schema", "--database-url", &url]);
+    assert_eq!(printed.stdout, json, "without --out, the snapshot is printed");
+    let out = mabat(&["schema", "--check", &snapshot, "--database-url", &url]);
+    assert_eq!((out.code, out.stdout), (0, format!("the database matches {snapshot}\n")));
+
+    // A change of schema is a difference, and a failure
+    sqlx::raw_sql("ALTER TABLE team ADD COLUMN motto TEXT").execute(&mut conn).await.unwrap();
+    let out = mabat(&["schema", "--check", &snapshot, "--database-url", &url]);
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.stdout,
+        format!(
+            "the database differs from {snapshot}:\n  column `team.motto` is in the database but not in the \
+             snapshot\nwrite a new snapshot with `mabat schema --out {snapshot}`\n"
+        )
+    );
+
+    // A URL is required, and must name a database this build supports
+    let out = mabat(&["schema"]);
+    assert_eq!((out.code, out.stderr.as_str()), (2, "error: --database-url or $DATABASE_URL is required\n"));
+    let out = mabat(&["schema", "--database-url", "oracle://db"]);
+    assert_eq!(out.code, 2);
+    assert!(out.stderr.contains("unknown database `oracle:`"), "{}", out.stderr);
+}

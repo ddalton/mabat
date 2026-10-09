@@ -24,6 +24,77 @@ impl Backend for Postgres {
         }
     }
 
+    fn read_catalog<'c>(
+        conn: &'c mut PgConnection,
+    ) -> super::BoxFuture<'c, Result<Vec<mabat_check::Table>, sqlx::Error>> {
+        Box::pin(async move {
+            let mut catalog = super::Catalog::default();
+            const RELATIONS: &str = "n.nspname = current_schema() AND c.relkind IN ('r', 'p', 'v', 'm')";
+            let tables = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "SELECT c.relname::text, c.relkind IN ('v', 'm') FROM pg_class c \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace WHERE {RELATIONS} ORDER BY 1"
+            )))
+            .fetch_all(&mut *conn)
+            .await?;
+            for row in &tables {
+                catalog.tables.push((row.try_get(0)?, row.try_get(1)?));
+            }
+            let columns = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "SELECT c.relname::text, a.attname::text, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
+                 a.attidentity IN ('a', 'd') OR coalesce(pg_get_expr(d.adbin, d.adrelid) LIKE 'nextval(%', false) \
+                 FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+                 WHERE {RELATIONS} AND a.attnum > 0 AND NOT a.attisdropped ORDER BY 1, a.attnum"
+            )))
+            .fetch_all(&mut *conn)
+            .await?;
+            for row in &columns {
+                let column = mabat_check::Column {
+                    name: row.try_get(1)?,
+                    r#type: String::new(),
+                    declared: row.try_get(2)?,
+                    nullable: row.try_get(3)?,
+                    generated: row.try_get(4)?,
+                };
+                catalog.columns.push((row.try_get(0)?, column));
+            }
+            let keys = sqlx::query(
+                "SELECT c.relname::text, a.attname::text FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) \
+                 WHERE i.indisprimary AND n.nspname = current_schema() \
+                 ORDER BY 1, array_position(i.indkey::int2[], a.attnum)",
+            )
+            .fetch_all(&mut *conn)
+            .await?;
+            for row in &keys {
+                catalog.primary_keys.push((row.try_get(0)?, row.try_get(1)?));
+            }
+            let foreign = sqlx::query(
+                "SELECT c.relname::text, con.conname::text, a.attname::text, r.relname::text, ra.attname::text \
+                 FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_class r ON r.oid = con.confrelid \
+                 CROSS JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS k(col, ref, ord) \
+                 JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.col \
+                 JOIN pg_attribute ra ON ra.attrelid = con.confrelid AND ra.attnum = k.ref \
+                 WHERE con.contype = 'f' AND n.nspname = current_schema() ORDER BY 1, 2, k.ord",
+            )
+            .fetch_all(&mut *conn)
+            .await?;
+            for row in &foreign {
+                catalog.foreign_keys.push((
+                    row.try_get(0)?,
+                    row.try_get(1)?,
+                    row.try_get(2)?,
+                    row.try_get(3)?,
+                    row.try_get(4)?,
+                ));
+            }
+            Ok(catalog.tables())
+        })
+    }
+
     fn column_types<'c>(
         conn: &'c mut PgConnection,
         table: String,

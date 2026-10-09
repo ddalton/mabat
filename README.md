@@ -476,6 +476,14 @@ mabat scaffold --manifest mabat/views.json --view TaskView --format sql \
 
 An existing file is added to, never overwritten: scaffolding a query the file already overrides is an error.
 
+A snapshot of the database's schema, committed next to the manifest, will let views be checked against the schema
+without a database. `mabat schema` writes it, and `mabat schema --check` tells CI when the database has moved on:
+
+```sh
+mabat schema --database-url postgres://... --out mabat/schema.json          # tables, columns, keys, as JSON
+mabat schema --check mabat/schema.json --database-url postgres://...        # exit status 1 if they differ
+```
+
 `check` prints the same report as the application's startup check. Its exit status is 0 when there are no
 errors, 1 when there are, and 2 for any other problem, so it can run in a DBA's CI.
 
