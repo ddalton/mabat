@@ -86,9 +86,10 @@
     },
     {
       "id": "to-one-references",
-      "summary": "References to other views by foreign key",
+      "summary": "References to other views by foreign key, owned, boxed, shared or into a graph",
       "api": [
-        "#[view(to_one(fk))]"
+        "#[view(to_one(fk))]",
+        "Box<T>"
       ],
       "rules": [
         "MPA-VIEW-8"
@@ -117,14 +118,17 @@
     },
     {
       "id": "recursive-views",
-      "summary": "Trees by depth-limited levels or one WITH RECURSIVE query",
+      "summary": "Trees and chains of parents by depth-limited levels or one WITH RECURSIVE query",
       "api": [
         "#[view(child(depth))]",
-        "#[view(child(recursive = \"cte\"))]"
+        "#[view(child(recursive = \"cte\"))]",
+        "#[view(to_one(depth))]",
+        "#[view(to_one(recursive = \"cte\"))]"
       ],
       "rules": [
         "MPA-PLAN-4",
-        "MPA-LOAD-12"
+        "MPA-LOAD-12",
+        "MPA-VIEW-8"
       ]
     },
     {
@@ -606,20 +610,22 @@
     },
     {
       "name": "depth",
-      "on": "child",
+      "on": "child, to_one",
       "syntax": "depth = n",
-      "summary": "The most levels of a recursive collection",
+      "summary": "The most levels of a recursive collection or reference",
       "rules": [
+        "MPA-VIEW-8",
         "MPA-VIEW-9",
         "MPA-PLAN-4"
       ]
     },
     {
       "name": "recursive",
-      "on": "child",
+      "on": "child, to_one",
       "syntax": "recursive = \"cte\"",
       "summary": "Load all levels with one WITH RECURSIVE query",
       "rules": [
+        "MPA-VIEW-8",
         "MPA-VIEW-9",
         "MPA-PLAN-4"
       ]
@@ -1269,7 +1275,7 @@
     {
       "id": "MPA-VIEW-8",
       "section": "3.2 Field attributes",
-      "text": "A `to_one` field references another view: `fk` is the column of this view's table holding the referenced key. `Option<T>` makes it optional (a NULL foreign key is `None`); a non-`Option` reference whose row is missing fails with `Error::MissingReference`. The field MAY be `T`, `Arc<T>` (MPA-LOAD-13) or `Ref<T>` (MPA-LOAD-14)."
+      "text": "A `to_one` field references another view: `fk` is the column of this view's table holding the referenced key. `Option<T>` makes it optional (a NULL foreign key is `None`); a non-`Option` reference whose row is missing fails with `Error::MissingReference`. The field MAY be `T`, `Box<T>`, `Arc<T>` (MPA-LOAD-13) or `Ref<T>` (MPA-LOAD-14). A reference back to its own view, such as a parent, takes `depth = n` (n ≥ 1) or `recursive = \"cte\"` (MPA-PLAN-4), and MUST be an `Option` of a `Box<T>` or `Arc<T>`; `recursive = \"cte\"` with a `depth`, recursion on a `Ref<T>`, and a `Box` of anything but an owned view are compile errors."
     },
     {
       "id": "MPA-VIEW-9",
@@ -1279,7 +1285,7 @@
     {
       "id": "MPA-VIEW-10",
       "section": "3.2 Field attributes",
-      "text": "A collection field MUST be a `Vec<T>`, `Vec<Arc<T>>`, `Vec<Ref<T>>`, `BTreeMap<K, T>` or `HashMap<K, T>` of a view."
+      "text": "A collection field MUST be a `Vec<T>`, `Vec<Arc<T>>`, `Vec<Ref<T>>`, `BTreeMap<K, T>` or `HashMap<K, T>` of a view; `Vec<Box<T>>` is a compile error."
     },
     {
       "id": "MPA-VIEW-11",
@@ -1369,12 +1375,12 @@
     {
       "id": "MPA-LOAD-12",
       "section": "5. Loading",
-      "text": "Recursive collections load as many levels as their `depth`, or all levels with `recursive = \"cte\"` (MPA-PLAN-4). A cycle in the data of a `cte` collection fails with `Error::Cycle`."
+      "text": "Recursive collections and references load as many levels as their `depth`, or all levels with `recursive = \"cte\"` (MPA-PLAN-4). A cycle in the data of a `cte` collection or chain of references fails with `Error::Cycle`; with `depth`, a cycle repeats its rows until the last level."
     },
     {
       "id": "MPA-LOAD-13",
       "section": "5. Loading",
-      "text": "An `Arc<T>` reference or element is decoded once per entity of a load and shared by everything that references it."
+      "text": "An `Arc<T>` reference or element is decoded once per entity of a load and shared by everything that references it. With a recursive `depth`, an entity reached at several levels holds the references of the level it was first decoded at."
     },
     {
       "id": "MPA-LOAD-14",
@@ -1419,7 +1425,7 @@
     {
       "id": "MPA-PLAN-4",
       "section": "6. Query planning",
-      "text": "A collection with `depth = n` runs its query again for each level, at most `n` levels. With `recursive = \"cte\"`, all levels come from one `WITH RECURSIVE` query whose path guard stops at cycles; it needs a collection that contains its own view directly and no `through`."
+      "text": "A collection with `depth = n` runs its query again for each level, at most `n` levels. With `recursive = \"cte\"`, all levels come from one `WITH RECURSIVE` query whose path guard stops at cycles; it needs a collection that contains its own view directly and no `through`. A recursive to-one reference is planned the same way: with `depth = n` its query runs again for each level, at most `n` levels below the first row, and the references of the last level are `None`; with `recursive = \"cte\"`, one `WITH RECURSIVE` query follows the references from the keys of the level above to the end of every chain. As chains share rows (two employees with one manager), a depth in that query would not be each chain's own, so `recursive = \"cte\"` on a reference takes no `depth` (`Error::Plan` for a shape built by hand)."
     },
     {
       "id": "MPA-PLAN-5",

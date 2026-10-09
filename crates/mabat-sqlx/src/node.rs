@@ -162,6 +162,26 @@ impl<B: Backend> Node<B> {
             .unwrap_or_default())
     }
 
+    /// The row a to-one field of the row references, with its node: `None` if the foreign key
+    /// is NULL, or if the row is past the depth limit of a recursive reference.
+    pub(crate) fn referenced(
+        &self,
+        row: &B::Row,
+        field_index: usize,
+        ref_alias: &str,
+    ) -> Result<Option<(Key, ChildRow<'_, B>)>, Error> {
+        let Some(key) = self.key(row, ref_alias)? else { return Ok(None) };
+        // The level below the last one of a recursive reference is not loaded
+        let Some(entry) = self.children.iter().find(|c| c.field_index == field_index && c.variant.is_none()) else {
+            return Ok(None);
+        };
+        let child = entry.node.as_ref().unwrap_or(self);
+        match entry.by_key.get(&key).and_then(|indices| indices.first()) {
+            Some(&i) => Ok(Some((key, (&child.rows[i], child)))),
+            None => Err(Error::MissingReference { view: self.view, path: child.path.clone() }),
+        }
+    }
+
     /// The error for a value that cannot be written as JSON.
     pub(crate) fn json_error(&self, alias: &str, message: String) -> Error {
         Error::Json { view: self.view, path: self.path_of(alias), message }
@@ -455,13 +475,9 @@ pub fn to_one<C: ViewDecoder<B>, B: Backend>(
     field_index: usize,
     ref_alias: &str,
 ) -> Result<Option<C>, Error> {
-    let (child, by_key) = node.child(field_index).expect("plan and decoder disagree on the fields of a view");
-    let Some(key) = node.key(row, ref_alias)? else {
-        return Ok(None);
-    };
-    match by_key.get(&key).and_then(|indices| indices.first()) {
-        Some(&i) => C::decode(&child.rows[i], child).map(Some),
-        None => Err(Error::MissingReference { view: node.view, path: child.path.clone() }),
+    match node.referenced(row, field_index, ref_alias)? {
+        Some((_, (row, child))) => C::decode(row, child).map(Some),
+        None => Ok(None),
     }
 }
 
@@ -496,13 +512,9 @@ pub fn shared_to_one<C: ViewDecoder<B>, B: Backend>(
     field_index: usize,
     ref_alias: &str,
 ) -> Result<Option<Arc<C>>, Error> {
-    let (child, by_key) = node.child(field_index).expect("plan and decoder disagree on the fields of a view");
-    let Some(key) = node.key(row, ref_alias)? else {
-        return Ok(None);
-    };
-    match by_key.get(&key).and_then(|indices| indices.first()) {
-        Some(&i) => node.identity.shared(key, || C::decode(&child.rows[i], child)).map(Some),
-        None => Err(Error::MissingReference { view: node.view, path: child.path.clone() }),
+    match node.referenced(row, field_index, ref_alias)? {
+        Some((key, (row, child))) => node.identity.shared(key, || C::decode(row, child)).map(Some),
+        None => Ok(None),
     }
 }
 
@@ -773,9 +785,14 @@ fn next_child<'a, B: Backend>(
             target
         }
         ChildQuery::Same => {
-            // The next level of a recursive collection is in the rows of this query
-            node.check_acyclic()?;
-            let by_key = node.group(PARENT_ALIAS)?;
+            // The next level of a recursive collection or reference is in the rows of this query:
+            // a collection's rows by the key they reference, a reference's rows by their own key
+            let (link, by) = match &plan.shape.fields[child.field_index].kind {
+                FieldKind::ToOne { .. } => (format!("{REF_ALIAS_PREFIX}{field}"), KEY_ALIAS),
+                _ => (PARENT_ALIAS.to_string(), PARENT_ALIAS),
+            };
+            node.check_acyclic(&link)?;
+            let by_key = node.group(by)?;
             node.children.push(ChildEntry { field_index: child.field_index, variant: None, node: None, by_key });
             return Ok(None);
         }
@@ -956,12 +973,12 @@ impl<B: Backend> Node<B> {
         Ok(())
     }
 
-    /// Fail if the parent keys of the rows form a cycle, which a tree cannot hold: decoding
-    /// would not end.
-    fn check_acyclic(&self) -> Result<(), Error> {
+    /// Fail if the keys of the rows and the keys in their `link` column, their parents' or the
+    /// keys they reference, form a cycle, which a tree cannot hold: decoding would not end.
+    fn check_acyclic(&self, link: &str) -> Result<(), Error> {
         let mut parents = HashMap::new();
         for row in &self.rows {
-            if let (Some(key), parent) = (self.key(row, KEY_ALIAS)?, self.key(row, PARENT_ALIAS)?) {
+            if let (Some(key), parent) = (self.key(row, KEY_ALIAS)?, self.key(row, link)?) {
                 parents.insert(key, parent);
             }
         }

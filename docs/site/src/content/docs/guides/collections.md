@@ -65,6 +65,40 @@ Recursive views are owned trees: no `Rc`, no `RefCell` ([MPA-PLAN-4](../../spec/
 - Rows whose parents form a cycle cannot be a tree: loading them is an error, not an endless loop
   ([MPA-LOAD-12](../../spec/mpa/#mpa-load-12)).
 
+## Chains of parents
+
+A `to_one` reference back to its own view walks up the tree: breadcrumbs, a chain of managers, the comments a
+reply answers. It takes the same `depth = n` or `recursive = "cte"`, and holds the parent in an `Option<Box<T>>`,
+or an `Option<Arc<T>>` to share the rows that chains have in common
+([MPA-VIEW-8](../../spec/mpa/#mpa-view-8)):
+
+```rust
+#[derive(View)]
+#[view(table = "category")]
+struct Crumb {
+    name: String,
+    // every category above, for all the rows of the level, in one WITH RECURSIVE query
+    #[view(to_one(fk = "parent_id", recursive = "cte"))]
+    parent: Option<Box<Crumb>>,
+}
+
+#[derive(View)]
+#[view(table = "category")]
+struct Near {
+    name: String,
+    // at most two categories up, a batched query per level; the last one's parent is None
+    #[view(to_one(fk = "parent_id", depth = 2))]
+    parent: Option<Box<Near>>,
+}
+```
+
+- `recursive = "cte"` loads every chain to its end. It takes no `depth`: chains share rows (two categories under
+  one parent), so one query's depth would not be each chain's own. Use `depth = n` to stop early
+  ([MPA-PLAN-4](../../spec/mpa/#mpa-plan-4)).
+- A loop in the data (A's parent is B, B's is A) fails with `Error::Cycle` with `recursive = "cte"`; with
+  `depth`, the loop repeats until the last level.
+- Saving writes the parent's key to the foreign key, as for any reference.
+
 ## Filtering and paging a collection
 
 `Load::nested` filters, orders and pages the elements of each parent, still in the collection's one query — see

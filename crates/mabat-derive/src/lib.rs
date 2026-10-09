@@ -28,7 +28,9 @@ use syn::{Data, DataEnum, DeriveInput, Fields, GenericArgument, Ident, LitStr, P
 /// - `#[view(column = "...")]`: the column, when it differs from the field name
 /// - `#[view(child(fk = "...", order_by = "a, b desc"))]`: a `Vec` loaded by a child query
 /// - `#[view(to_one(fk = "..."))]`: a reference to another view, `Option` if the foreign
-///   key is nullable
+///   key is nullable, held as `T`, `Box<T>`, `Arc<T>` or `Ref<T>`. A reference back to its own
+///   view, such as a parent, is an `Option<Box<T>>` or `Option<Arc<T>>` with `depth = n`, or
+///   `recursive = "cte"` for the whole chain
 /// - `#[view(embed)]` or `#[view(embed(prefix = "..."))]`: an embedded struct or an enum,
 ///   with an optional common column prefix
 /// - `#[view(json)]`: a column decoded from JSON with `serde`
@@ -55,11 +57,26 @@ enum Strategy {
 }
 
 enum FieldSpec {
-    Column { column: String },
-    Json { column: String },
-    Embed { prefix: String, ty: Type },
+    Column {
+        column: String,
+    },
+    Json {
+        column: String,
+    },
+    Embed {
+        prefix: String,
+        ty: Type,
+    },
     Child(Box<ChildSpec>),
-    ToOne { fk: String, optional: bool, target: Type, form: Form },
+    ToOne {
+        fk: String,
+        optional: bool,
+        target: Type,
+        form: Form,
+        /// Held in a `Box`.
+        boxed: bool,
+        recursion: Option<RecursionSpec>,
+    },
 }
 
 struct ChildSpec {
@@ -102,6 +119,61 @@ fn form_of(ty: &Type) -> (Form, Type) {
 enum RecursionSpec {
     Depth(u32),
     Cte(Option<u32>),
+}
+
+/// The `depth` and `recursive` attributes of a `child` or `to_one` field.
+#[derive(Default)]
+struct Recursive {
+    depth: Option<u32>,
+    cte: bool,
+}
+
+impl Recursive {
+    /// Parse `depth = n` or `recursive = "cte"`; `false` for another attribute.
+    fn parse(&mut self, inner: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<bool> {
+        if inner.path.is_ident("depth") {
+            let lit = inner.value()?.parse::<syn::LitInt>()?;
+            let value: u32 = lit.base10_parse()?;
+            if value == 0 {
+                return Err(syn::Error::new(lit.span(), "`depth` needs to be at least 1"));
+            }
+            self.depth = Some(value);
+        } else if inner.path.is_ident("recursive") {
+            let lit = inner.value()?.parse::<LitStr>()?;
+            if lit.value() != "cte" {
+                return Err(syn::Error::new(lit.span(), "expected `recursive = \"cte\"`"));
+            }
+            self.cte = true;
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    fn spec(self) -> Option<RecursionSpec> {
+        match (self.depth, self.cte) {
+            (depth, true) => Some(RecursionSpec::Cte(depth)),
+            (Some(depth), false) => Some(RecursionSpec::Depth(depth)),
+            (None, false) => None,
+        }
+    }
+}
+
+/// The `Option<Recursion>` of a field's shape.
+fn recursion_tokens(recursion: &Option<RecursionSpec>) -> TokenStream2 {
+    match recursion {
+        Some(RecursionSpec::Depth(depth)) => {
+            quote! { ::core::option::Option::Some(__mabat::__private::Recursion::Depth(#depth)) }
+        }
+        Some(RecursionSpec::Cte(depth)) => {
+            let depth = match depth {
+                Some(depth) => quote! { ::core::option::Option::Some(#depth) },
+                None => quote! { ::core::option::Option::None },
+            };
+            quote! { ::core::option::Option::Some(__mabat::__private::Recursion::Cte { depth: #depth }) }
+        }
+        None => quote! { ::core::option::Option::None },
+    }
 }
 
 /// How a field is named: a named field, or the position of a tuple field.
@@ -391,11 +463,12 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
                 set(&mut spec, FieldSpec::Child(Box::new(child)), span)?;
             } else if meta.path.is_ident("to_one") {
                 let mut fk = None;
+                let mut recursion = Recursive::default();
                 meta.parse_nested_meta(|inner| {
                     if inner.path.is_ident("fk") {
                         fk = Some(inner.value()?.parse::<LitStr>()?.value());
-                    } else {
-                        return Err(inner.error("unknown `to_one` attribute, expected `fk`"));
+                    } else if !recursion.parse(&inner)? {
+                        return Err(inner.error("unknown `to_one` attribute, expected `fk`, `depth` or `recursive`"));
                     }
                     Ok(())
                 })?;
@@ -404,8 +477,35 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
                     Some(inner) => (true, inner.clone()),
                     None => (false, ty.clone()),
                 };
+                let (boxed, held) = match generic_argument(&held, "Box") {
+                    Some(inner) => (true, inner.clone()),
+                    None => (false, held),
+                };
                 let (form, target) = form_of(&held);
-                set(&mut spec, FieldSpec::ToOne { fk, optional, target, form }, span)?;
+                if boxed && form != Form::Owned {
+                    return Err(syn::Error::new(ty.span(), "a `Box` holds an owned view, not an `Arc` or a `Ref`"));
+                }
+                let recursion = recursion.spec();
+                if recursion.is_some() && form == Form::Graph {
+                    return Err(syn::Error::new(
+                        span,
+                        "a reference into a graph loads the whole graph by itself; it takes no `depth` or `recursive`",
+                    ));
+                }
+                if let Some(RecursionSpec::Cte(Some(_))) = recursion {
+                    return Err(syn::Error::new(
+                        span,
+                        "`recursive = \"cte\"` on a reference loads the whole chain, as chains can share rows; use \
+                         `depth = n` alone to limit it",
+                    ));
+                }
+                if recursion.is_some() && !optional {
+                    return Err(syn::Error::new(
+                        ty.span(),
+                        "a recursive reference needs to be an `Option`, `None` at the end of the chain",
+                    ));
+                }
+                set(&mut spec, FieldSpec::ToOne { fk, optional, target, form, boxed, recursion }, span)?;
             } else if meta.path.is_ident("embed") {
                 let mut prefix = String::new();
                 if meta.input.peek(syn::token::Paren) {
@@ -476,8 +576,7 @@ fn parse_child(meta: &syn::meta::ParseNestedMeta<'_>, ty: &Type) -> syn::Result<
     let mut target = None;
     let mut index = None;
     let mut map_key = None;
-    let mut depth = None;
-    let mut cte = false;
+    let mut recursive = Recursive::default();
     meta.parse_nested_meta(|inner| {
         let string = || -> syn::Result<String> { Ok(inner.value()?.parse::<LitStr>()?.value()) };
         if inner.path.is_ident("fk") {
@@ -493,19 +592,7 @@ fn parse_child(meta: &syn::meta::ParseNestedMeta<'_>, ty: &Type) -> syn::Result<
             index = Some(string()?);
         } else if inner.path.is_ident("key") {
             map_key = Some(string()?);
-        } else if inner.path.is_ident("depth") {
-            let lit = inner.value()?.parse::<syn::LitInt>()?;
-            let value: u32 = lit.base10_parse()?;
-            if value == 0 {
-                return Err(syn::Error::new(lit.span(), "`depth` needs to be at least 1"));
-            }
-            depth = Some(value);
-        } else if inner.path.is_ident("recursive") {
-            let lit = inner.value()?.parse::<LitStr>()?;
-            if lit.value() != "cte" {
-                return Err(syn::Error::new(lit.span(), "expected `recursive = \"cte\"`"));
-            }
-            cte = true;
+        } else if recursive.parse(&inner)? {
         } else {
             return Err(inner.error(
                 "unknown `child` attribute, expected `fk`, `order_by`, `through`, `target`, `index`, `key`, \
@@ -546,11 +633,13 @@ fn parse_child(meta: &syn::meta::ParseNestedMeta<'_>, ty: &Type) -> syn::Result<
         }
     };
 
-    let recursion = match (depth, cte) {
-        (depth, true) => Some(RecursionSpec::Cte(depth)),
-        (Some(depth), false) => Some(RecursionSpec::Depth(depth)),
-        (None, false) => None,
-    };
+    let recursion = recursive.spec();
+    if generic_argument(&element, "Box").is_some() {
+        return Err(syn::Error::new(
+            element.span(),
+            "a collection holds its elements by value; `Box` is for to-one references",
+        ));
+    }
     let (form, element) = form_of(&element);
     if form != Form::Owned && map_key_type.is_some() {
         return Err(syn::Error::new(ty.span(), "the values of a map collection need to be owned views"));
@@ -698,19 +787,7 @@ fn field_shape(field: &ViewField) -> TokenStream2 {
             };
             let index = option(index);
             let map_key = option(map_key);
-            let recursion = match recursion {
-                Some(RecursionSpec::Depth(depth)) => {
-                    quote! { ::core::option::Option::Some(__mabat::__private::Recursion::Depth(#depth)) }
-                }
-                Some(RecursionSpec::Cte(depth)) => {
-                    let depth = match depth {
-                        Some(depth) => quote! { ::core::option::Option::Some(#depth) },
-                        None => quote! { ::core::option::Option::None },
-                    };
-                    quote! { ::core::option::Option::Some(__mabat::__private::Recursion::Cte { depth: #depth }) }
-                }
-                None => quote! { ::core::option::Option::None },
-            };
+            let recursion = recursion_tokens(recursion);
             quote! {
                 __mabat::__private::FieldKind::Child(__mabat::__private::Child {
                     fk: #fk,
@@ -724,14 +801,16 @@ fn field_shape(field: &ViewField) -> TokenStream2 {
                 })
             }
         }
-        FieldSpec::ToOne { fk, optional, target, form } => {
+        FieldSpec::ToOne { fk, optional, target, form, recursion, .. } => {
             let graph = *form == Form::Graph;
+            let recursion = recursion_tokens(recursion);
             quote! {
                 __mabat::__private::FieldKind::ToOne {
                     fk: #fk,
                     optional: #optional,
                     shape: <#target as __mabat::View>::shape,
                     graph: #graph,
+                    recursion: #recursion,
                 }
             }
         }
@@ -819,7 +898,7 @@ fn decode_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStrea
                 (None, Form::Graph) => quote! { __mabat::__private::references::<#element, _>(row, node, #index)? },
             }
         }
-        FieldSpec::ToOne { optional, target, form, .. } => {
+        FieldSpec::ToOne { optional, target, form, boxed, .. } => {
             let ref_alias = format!("$ref.{name}");
             let helper = match (form, optional) {
                 (Form::Owned, true) => quote! { to_one::<#target, _>(row, node, #index, #ref_alias) },
@@ -829,7 +908,11 @@ fn decode_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStrea
                 (Form::Graph, true) => quote! { reference::<#target, _>(row, node, #ref_alias) },
                 (Form::Graph, false) => quote! { reference_required::<#target, _>(row, node, #ref_alias) },
             };
-            quote! { __mabat::__private::#helper? }
+            match (boxed, optional) {
+                (false, _) => quote! { __mabat::__private::#helper? },
+                (true, true) => quote! { __mabat::__private::#helper?.map(::std::boxed::Box::new) },
+                (true, false) => quote! { ::std::boxed::Box::new(__mabat::__private::#helper?) },
+            }
         }
     }
 }
@@ -998,7 +1081,7 @@ fn write_value(field: &ViewField, index: usize, value: TokenStream2, scope: Scop
                 }}
             }
         }
-        FieldSpec::ToOne { fk, form, optional, target } => {
+        FieldSpec::ToOne { fk, form, optional, target, .. } => {
             if *form == Form::Graph {
                 // Written by `save_graph`, which knows the key of the entity
                 let reference = if *optional {

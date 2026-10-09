@@ -35,10 +35,10 @@ capabilities = [
     ("embedded-values", "Structs stored in columns of the containing view", ["#[view(embedded)]", "#[view(embed(prefix))]"], ["MPA-VIEW-3", "MPA-VIEW-7"]),
     ("enums-with-data", "Rust enums with data, stored in columns or in a table per variant, decoded strictly", ["#[view(tag, strategy, lenient)]", "#[view(tag_value)]"], ["MPA-SUM-1", "MPA-SUM-2", "MPA-SUM-3", "MPA-SUM-4"]),
     ("json-columns", "Columns decoded and written as JSON with serde", ["#[view(json)]"], ["MPA-VIEW-6"]),
-    ("to-one-references", "References to other views by foreign key", ["#[view(to_one(fk))]"], ["MPA-VIEW-8"]),
+    ("to-one-references", "References to other views by foreign key, owned, boxed, shared or into a graph", ["#[view(to_one(fk))]", "Box<T>"], ["MPA-VIEW-8"]),
     ("collections", "To-many collections, ordered, placed by index, or as maps", ["#[view(child(fk, order_by, index, key))]"], ["MPA-VIEW-9", "MPA-VIEW-10"]),
     ("many-to-many", "Collections through a link table", ["#[view(child(through, target))]"], ["MPA-VIEW-9"]),
-    ("recursive-views", "Trees by depth-limited levels or one WITH RECURSIVE query", ["#[view(child(depth))]", "#[view(child(recursive = \"cte\"))]"], ["MPA-PLAN-4", "MPA-LOAD-12"]),
+    ("recursive-views", "Trees and chains of parents by depth-limited levels or one WITH RECURSIVE query", ["#[view(child(depth))]", "#[view(child(recursive = \"cte\"))]", "#[view(to_one(depth))]", "#[view(to_one(recursive = \"cte\"))]"], ["MPA-PLAN-4", "MPA-LOAD-12", "MPA-VIEW-8"]),
     ("shared-values", "Arc<T> values decoded once per entity and shared", ["Arc<T>"], ["MPA-LOAD-13"]),
     ("graphs", "Cyclic data as a Graph of entities with typed references", ["Ref<T>", "Load::graph", "Graph"], ["MPA-LOAD-14"]),
     ("filters-and-paging", "Filters, ordering, paging and counting of the root rows", ["mabat::filter::col", "Load::filter", "Load::order_by", "Load::limit", "Load::offset", "Load::count"], ["MPA-LOAD-4", "MPA-LOAD-5", "MPA-LOAD-6"]),
@@ -85,8 +85,8 @@ attributes = [
     ("target", "child", 'target = "c"', "The link table column referencing the element", ["MPA-VIEW-9"]),
     ("index", "child", 'index = "c"', "The column placing the elements of a Vec", ["MPA-VIEW-9"]),
     ("key", "child", 'key = "c"', "The column keying the elements of a map", ["MPA-VIEW-9"]),
-    ("depth", "child", "depth = n", "The most levels of a recursive collection", ["MPA-VIEW-9", "MPA-PLAN-4"]),
-    ("recursive", "child", 'recursive = "cte"', "Load all levels with one WITH RECURSIVE query", ["MPA-VIEW-9", "MPA-PLAN-4"]),
+    ("depth", "child, to_one", "depth = n", "The most levels of a recursive collection or reference", ["MPA-VIEW-8", "MPA-VIEW-9", "MPA-PLAN-4"]),
+    ("recursive", "child, to_one", 'recursive = "cte"', "Load all levels with one WITH RECURSIVE query", ["MPA-VIEW-8", "MPA-VIEW-9", "MPA-PLAN-4"]),
 ]
 
 functions = [

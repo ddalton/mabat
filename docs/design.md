@@ -406,6 +406,20 @@ single `WITH RECURSIVE` query and builds the tree from `(id, parent_id, depth)` 
 > - **Unannotated cycles:** a cycle without an annotation fails to plan, with a hint.
 > - **Overrides:** every level of a recursive collection has the query name of its first level, so one
 >   override applies to all levels.
+>
+> **Recursive references (as built, later):** a `to_one` field takes the same `depth` and `recursive`, for chains
+> of parents. Rust needs the owned form to be `Option<Box<T>>`, so `Box<T>` became a to-one form, decoded into
+> `Box::new` and written through `Borrow<T>` like `Arc<T>`.
+>
+> - **`depth = n`** reuses `ChildQuery::Repeat`: each level is the to-one query run with the `$ref` keys of the
+>   level above. The level below the last has no query, and its references decode as `None`.
+> - **`recursive = "cte"`** reuses `ChildQuery::Same`, with `Cte::follow` naming the foreign key: the anchor is the
+>   rows with the keys, and the recursive step joins the rows each one references (`t.key = r.n`, where the tree
+>   carries each row's foreign key as `n`). The rows are grouped by their own key and the cycle check follows
+>   `$ref`.
+> - **No `depth` with `cte` on a reference.** Chains merge where collections don't: a row reached at level 1 from
+>   one key and level 3 from another is one row in one query, so a limit there is not a limit per chain (a test
+>   saw a chain of four under a limit of two). `depth = n` alone is exact, as each level is its own query.
 
 ### 7.2 Shared
 

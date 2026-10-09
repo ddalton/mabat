@@ -92,8 +92,15 @@ pub enum FieldKind {
     /// this view by a link table.
     Child(Child),
     /// A to-one reference: the `fk` column of this view references the key of the target view.
-    /// With `graph`, the value is a reference into a graph (`Ref<T>`), not an owned value.
-    ToOne { fk: &'static str, optional: bool, shape: fn() -> &'static ViewShape, graph: bool },
+    /// With `graph`, the value is a reference into a graph (`Ref<T>`), not an owned value. With
+    /// `recursion`, the reference leads back to its own view, as a chain of parents does.
+    ToOne {
+        fk: &'static str,
+        optional: bool,
+        shape: fn() -> &'static ViewShape,
+        graph: bool,
+        recursion: Option<Recursion>,
+    },
 }
 
 impl FieldKind {
@@ -197,12 +204,13 @@ pub struct Through {
     pub target: &'static str,
 }
 
-/// How a recursive collection is loaded.
+/// How a recursive collection or to-one reference is loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Recursion {
     /// One query per level, at most `depth` levels.
     Depth(u32),
-    /// One `WITH RECURSIVE` query for all levels, at most `depth` levels if given.
+    /// One `WITH RECURSIVE` query for all levels, at most `depth` levels if given. Only for a
+    /// field that leads to its own view directly.
     Cte { depth: Option<u32> },
 }
 

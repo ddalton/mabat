@@ -128,6 +128,21 @@ Recursive views are owned trees, so they need no `Rc` or `RefCell`.
 - **Cycles:** rows whose parents form a cycle can't be a tree, and loading them is an error rather than an
   endless loop.
 
+A reference back to its own view walks up instead: breadcrumbs, a chain of managers, the comments a reply
+answers. It is an `Option<Box<T>>` (or `Option<Arc<T>>`, to share the rows chains have in common):
+
+```rust
+#[derive(View)]
+#[view(table = "category")]
+struct Crumb {
+    name: String,
+    // every category above, for all the rows of the level, in one WITH RECURSIVE query
+    #[view(to_one(fk = "parent_id", recursive = "cte"))]
+    parent: Option<Box<Crumb>>,
+}
+// Android › Phones › Electronics › Home; `depth = 2` instead stops two levels up
+```
+
 ## Shared values and graphs, without `Rc` or `RefCell`
 
 A field of type `Arc<T>` is decoded once per entity and shared: every task with the same assignee holds the

@@ -25,8 +25,8 @@ use crate::{INDEX_ALIAS, KEY_ALIAS, MAP_KEY_ALIAS, PARENT_ALIAS, REF_ALIAS_PREFI
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlanError {
     #[error(
-        "{view} at `{path}` refers back to {view}; add `depth = n` or `recursive = \"cte\"` to the `child` \
-         attribute of a collection on the cycle"
+        "{view} at `{path}` refers back to {view}; add `depth = n` or `recursive = \"cte\"` to the `child` or \
+         `to_one` attribute of a field on the cycle"
     )]
     Recursive { view: &'static str, path: String },
     #[error("{view} at `{path}`: {reason}")]
@@ -61,11 +61,14 @@ pub struct QueryPlan {
     pub selected: Vec<bool>,
 }
 
-/// A recursive collection loaded with one `WITH RECURSIVE` query.
+/// A recursive collection or to-one reference loaded with one `WITH RECURSIVE` query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cte {
     /// The most levels to load, all levels if `None`.
     pub depth: Option<u32>,
+    /// For a to-one reference, the column of each row that references the row of the next
+    /// level; a collection's next level is the rows that reference it.
+    pub follow: Option<&'static str>,
 }
 
 /// How a query is linked to its parent query.
@@ -317,7 +320,7 @@ impl QueryPlan {
                     };
                     children.push(ChildPlan { field_index, variant: None, query: Self::child_query(entry, stack)? });
                 }
-                FieldKind::ToOne { fk, shape: target, graph, .. } => {
+                FieldKind::ToOne { fk, shape: target, graph, recursion, .. } => {
                     let ref_alias = format!("{REF_ALIAS_PREFIX}{}", field.name);
                     columns.push(SelectColumn::new(*fk, ref_alias.clone()));
                     let entry = Entry {
@@ -327,7 +330,7 @@ impl QueryPlan {
                         order_by: Vec::new(),
                         child: None,
                         entered_by: address(field),
-                        recursion: None,
+                        recursion: *recursion,
                         graph: *graph,
                         selection: nested,
                     };
@@ -357,9 +360,14 @@ impl QueryPlan {
         }
 
         // A recursive collection selects all levels in one query when it loads itself with it
-        let cte = match stack.last().and_then(|f| f.recursion) {
-            Some(Recursion::Cte { depth }) if children.iter().any(|c| matches!(c.query, ChildQuery::Same)) => {
-                Some(Cte { depth })
+        let same = children.iter().find(|c| matches!(c.query, ChildQuery::Same));
+        let cte = match (stack.last().and_then(|f| f.recursion), same) {
+            (Some(Recursion::Cte { depth }), Some(same)) => {
+                let follow = match shape.fields[same.field_index].kind {
+                    FieldKind::ToOne { fk, .. } => Some(fk),
+                    _ => None,
+                };
+                Some(Cte { depth, follow })
             }
             _ => None,
         };
@@ -397,7 +405,15 @@ impl QueryPlan {
                 None if graph => Ok(ChildQuery::Repeat { up, depth: u32::MAX }),
                 None => Err(PlanError::Recursive { view: entry.shape.name, path: entry.path }),
                 Some(Recursion::Depth(depth)) => Ok(ChildQuery::Repeat { up, depth }),
-                Some(Recursion::Cte { .. }) if up == 0 && entry.recursion.is_some() => {
+                Some(Recursion::Cte { depth }) if up == 0 && entry.recursion.is_some() => {
+                    if let (Link::ToOne { .. }, Some(_)) = (&entry.link, depth) {
+                        return Err(PlanError::UnsupportedRecursion {
+                            view: entry.shape.name,
+                            path: entry.path,
+                            reason: "`recursive = \"cte\"` on a reference loads the whole chain, as chains can share \
+                                     rows; use `depth = n` to limit it",
+                        });
+                    }
                     if let Link::Child { through: Some(_), .. } = entry.link {
                         return Err(PlanError::UnsupportedRecursion {
                             view: entry.shape.name,
@@ -655,7 +671,13 @@ mod tests {
         Field { name: "address", kind: FieldKind::Embedded { column_prefix: "addr_", shape: || &ADDRESS } },
         Field {
             name: "assignee",
-            kind: FieldKind::ToOne { fk: "assignee_id", optional: true, shape: || &PERSON, graph: false },
+            kind: FieldKind::ToOne {
+                fk: "assignee_id",
+                optional: true,
+                shape: || &PERSON,
+                graph: false,
+                recursion: None,
+            },
         },
         Field {
             name: "children",
@@ -1008,6 +1030,69 @@ mod tests {
     static CTE_TREE: ViewShape =
         ViewShape { name: "CteTree", table: "task", key_column: "id", fields: &CTE_TREE_FIELDS };
 
+    // struct Crumb { parent: Option<Box<Crumb>> }, level by level, in one query, and both
+    static CRUMB_FIELDS: [Field; 1] = [Field {
+        name: "parent",
+        kind: FieldKind::ToOne {
+            fk: "parent_id",
+            optional: true,
+            shape: || &CRUMB,
+            graph: false,
+            recursion: Some(Recursion::Depth(2)),
+        },
+    }];
+    static CRUMB: ViewShape = ViewShape { name: "Crumb", table: "category", key_column: "id", fields: &CRUMB_FIELDS };
+    static CTE_CRUMB_FIELDS: [Field; 1] = [Field {
+        name: "parent",
+        kind: FieldKind::ToOne {
+            fk: "parent_id",
+            optional: true,
+            shape: || &CTE_CRUMB,
+            graph: false,
+            recursion: Some(Recursion::Cte { depth: None }),
+        },
+    }];
+    static CTE_CRUMB: ViewShape =
+        ViewShape { name: "CteCrumb", table: "category", key_column: "id", fields: &CTE_CRUMB_FIELDS };
+    static LIMITED_CRUMB_FIELDS: [Field; 1] = [Field {
+        name: "parent",
+        kind: FieldKind::ToOne {
+            fk: "parent_id",
+            optional: true,
+            shape: || &LIMITED_CRUMB,
+            graph: false,
+            recursion: Some(Recursion::Cte { depth: Some(3) }),
+        },
+    }];
+    static LIMITED_CRUMB: ViewShape =
+        ViewShape { name: "LimitedCrumb", table: "category", key_column: "id", fields: &LIMITED_CRUMB_FIELDS };
+
+    #[test]
+    fn recursive_references() {
+        let plan = QueryPlan::build(&CRUMB).unwrap();
+        let level = plan.children[0].plan().unwrap();
+        assert_eq!(level.link, Link::ToOne { ref_alias: "$ref.parent".into() });
+        assert!(matches!(level.children[0].query, ChildQuery::Repeat { up: 0, depth: 2 }));
+
+        let plan = QueryPlan::build(&CTE_CRUMB).unwrap();
+        let level = plan.children[0].plan().unwrap();
+        assert_eq!(level.cte, Some(Cte { depth: None, follow: Some("parent_id") }));
+        assert!(matches!(level.children[0].query, ChildQuery::Same));
+        assert_eq!(
+            crate::sql::select(level, &crate::sql::RootOptions::default()),
+            "WITH RECURSIVE \"$tree\" AS ( SELECT t0.\"id\" AS \"k\", t0.\"parent_id\" AS \"n\", ARRAY[t0.\"id\"] AS \"path\", \
+             1 AS \"depth\" FROM \"category\" AS t0 WHERE t0.\"id\" = ANY($1) UNION ALL SELECT t0.\"id\", \
+             t0.\"parent_id\", r.\"path\" || t0.\"id\", r.\"depth\" + 1 FROM \"category\" AS t0 JOIN \"$tree\" AS r \
+             ON t0.\"id\" = r.\"n\" WHERE t0.\"id\" <> ALL(r.\"path\") ) SELECT t0.\"id\" AS \"$key\", \
+             t0.\"parent_id\" AS \"$ref.parent\" FROM (SELECT DISTINCT \"k\" FROM \"$tree\") AS r JOIN \"category\" AS t0 \
+             ON t0.\"id\" = r.\"k\" ORDER BY t0.\"id\""
+        );
+
+        // Chains share rows, so a depth in one query would not be each chain's
+        let error = QueryPlan::build(&LIMITED_CRUMB).unwrap_err();
+        assert!(matches!(error, PlanError::UnsupportedRecursion { .. }), "{error}");
+    }
+
     #[test]
     fn recursive_collections_by_level() {
         let plan = QueryPlan::build(&TREE).unwrap();
@@ -1023,7 +1108,7 @@ mod tests {
     fn recursive_collections_in_one_query() {
         let plan = QueryPlan::build(&CTE_TREE).unwrap();
         let level = plan.children[0].plan().unwrap();
-        assert_eq!(level.cte, Some(Cte { depth: Some(10) }));
+        assert_eq!(level.cte, Some(Cte { depth: Some(10), follow: None }));
         assert!(matches!(level.children[0].query, ChildQuery::Same));
         assert_eq!(
             crate::sql::select(level, &crate::sql::RootOptions::default()),
@@ -1068,7 +1153,7 @@ mod tests {
     static NODE_FIELDS: [Field; 2] = [
         Field {
             name: "parent",
-            kind: FieldKind::ToOne { fk: "parent_id", optional: true, shape: || &NODE, graph: true },
+            kind: FieldKind::ToOne { fk: "parent_id", optional: true, shape: || &NODE, graph: true, recursion: None },
         },
         Field { name: "children", kind: FieldKind::Child(Child { graph: true, ..Child::new("parent_id", || &NODE) }) },
     ];

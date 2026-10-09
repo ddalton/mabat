@@ -1,0 +1,5 @@
+error: a recursive reference needs to be an `Option`, `None` at the end of the chain
+ --> tests/ui/recursive_reference_not_option.rs:6:13
+  |
+6 |     parent: Box<Category>,
+  |             ^^^
