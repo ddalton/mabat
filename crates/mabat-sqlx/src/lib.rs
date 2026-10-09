@@ -18,6 +18,7 @@ mod pooled;
 mod registry;
 mod report;
 mod write;
+mod write_batch;
 
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -180,6 +181,38 @@ where
     let written = write::save_row::<C::Backend>(&mut tx, row, None).await?;
     tx.commit().await.map_err(Error::Connection)?;
     after.written(&written)
+}
+
+/// Save many values, each as [`save`] saves one, in one transaction, with a few statements
+/// for all of them rather than statements for each: by table and by level, the rows that
+/// exist are updated by one statement and the new ones inserted by another, then the rows of
+/// their collections, variant tables and links the same way. Generated keys and new versions
+/// are written back into the values.
+///
+/// Rows whose keys the database generates are inserted one by one, to read their keys. A view
+/// with a column type that cannot be cloned is saved value by value, in the same transaction.
+pub async fn save_all<T, C>(values: &mut [T], conn: &mut C) -> Result<(), Error>
+where
+    T: ViewEncoder<C::Backend>,
+    C: Conn,
+    <C::Backend as sqlx::Database>::Connection: Send,
+{
+    use sqlx::Connection;
+    let rows = {
+        let _batch = write::BatchMode::on();
+        values.iter().map(ViewEncoder::write).collect::<Result<Vec<_>, _>>()?
+    };
+    for row in &rows {
+        no_graph_refs(row)?;
+    }
+    let mut conn = conn.source().single().await?;
+    let mut tx = conn.begin().await.map_err(Error::Connection)?;
+    let written = write_batch::save::<C::Backend>(&mut tx, rows).await?;
+    tx.commit().await.map_err(Error::Connection)?;
+    for (value, written) in values.iter_mut().zip(&written) {
+        value.written(written)?;
+    }
+    Ok(())
 }
 
 /// Values with references into a graph are saved with [`save_graph`], which knows the keys of
@@ -641,8 +674,8 @@ pub mod __private {
     };
     pub use crate::write::{
         ChangeFallback, ChangeProbe, ChangeViaEq, JsonWriteFallback, JsonWriteProbe, JsonWriteViaSerialize,
-        KeyFallback, KeyProbe, KeyViaInto, WriteFallback, WriteProbe, WriteViaEncode, Written, changes, target_key,
-        variant_table,
+        KeyFallback, KeyProbe, KeyViaInto, OwnedProbe, WriteFallback, WriteOwned, WriteOwnedFallback, WriteProbe,
+        WriteViaEncode, Written, changes, target_key, variant_table,
     };
     pub use crate::write::{EmbeddedEncoder, RowWrite, ViewEncoder};
     pub use mabat_core::{

@@ -918,6 +918,23 @@ Writes never go through override SQL. Overrides are for reads.
 >   rows that are no longer elements by setting the key NULL.
 > - **Not yet:** saving only what changed in a graph. `save_graph` writes every entity; a graph could record
 >   what `get_mut` touched, as section 14 sketched.
+>
+> **As built (fifth part):**
+>
+> - **`save_all(&mut values, conn)`** writes many values as loads read them: statements per table and level of
+>   the aggregate, not per row. The derive's rows keep owned copies of their bound values in batch mode (a
+>   thread-local switch while `save_all` builds them), because SQLx cannot merge the arguments of separate
+>   statements; a type that cannot be cloned makes the value fall back to `save`'s path, in the same
+>   transaction.
+> - **For each table:** one `UPDATE` from a table of values updates the rows that exist and returns their keys
+>   (`RETURNING`); the others are inserted by one multi-row upsert, or a plain insert for versioned rows, whose
+>   unique violation is a conflict. On PostgreSQL the table of values is cast to the column types, read once from
+>   `pg_attribute`, because `VALUES` types its columns on its own: an all-NULL column becomes `text`, and `jsonb`
+>   does not unify with `json`. MySQL cannot return keys, so there the rows that exist are found with
+>   `SELECT … FOR UPDATE` first; on PostgreSQL that lock was most of the time, since locking writes to each row.
+> - **Then** variant rows, owned collections (one `SELECT` of the children of all parents, one `DELETE` of those
+>   gone) and links (one `DELETE`, one multi-row `INSERT`), a level at a time. Generated keys are still inserted
+>   one by one: neither `RETURNING`'s order nor MySQL's auto-increment values tell which row got which key.
 
 ## 15. Crate layout
 

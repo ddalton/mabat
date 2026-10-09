@@ -81,3 +81,7 @@ required-features = ["postgres"]
 [[example]]
 name = "parity"
 required-features = ["postgres"]
+
+[[example]]
+name = "save_all"
+required-features = ["postgres"]

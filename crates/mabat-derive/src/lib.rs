@@ -915,14 +915,24 @@ fn write_value(field: &ViewField, index: usize, value: TokenStream2, scope: Scop
     };
     let probes = quote! {
         #[allow(unused_imports)]
-        use __mabat::__private::{JsonWriteFallback as _, JsonWriteViaSerialize as _, WriteFallback as _, WriteViaEncode as _};
+        use __mabat::__private::{
+            JsonWriteFallback as _, JsonWriteViaSerialize as _, WriteFallback as _, WriteOwned as _,
+            WriteOwnedFallback as _, WriteViaEncode as _,
+        };
     };
     let borrow = |ty: &Type, value: TokenStream2| quote! { ::core::borrow::Borrow::<#ty>::borrow(#value) };
     match &field.spec {
         FieldSpec::Column { column: name } => {
             let ty = &field.ty;
             let column = column(name);
-            quote! {{ #probes (&__mabat::__private::WriteProbe::<#ty, __Backend>::NEW).write_column(row, #column, #value)?; }}
+            // Kept for a batch if the type can be cloned, else encoded only
+            quote! {{
+                #probes
+                let column = #column;
+                if !(&__mabat::__private::OwnedProbe::<#ty, __Backend>::NEW).write_owned(row, &column, #value)? {
+                    (&__mabat::__private::WriteProbe::<#ty, __Backend>::NEW).write_column(row, column, #value)?;
+                }
+            }}
         }
         FieldSpec::Json { column: name } => {
             let ty = &field.ty;
@@ -948,8 +958,10 @@ fn write_value(field: &ViewField, index: usize, value: TokenStream2, scope: Scop
             let map_key = |row: TokenStream2| match (&child.map_key, &child.map_key_type) {
                 (Some(name), Some(key)) => quote! {
                     #probes
-                    (&__mabat::__private::WriteProbe::<#key, __Backend>::NEW)
-                        .write_column(&mut #row, ::std::string::String::from(#name), key)?;
+                    if !(&__mabat::__private::OwnedProbe::<#key, __Backend>::NEW).write_owned(&mut #row, #name, key)? {
+                        (&__mabat::__private::WriteProbe::<#key, __Backend>::NEW)
+                            .write_column(&mut #row, ::std::string::String::from(#name), key)?;
+                    }
                 },
                 _ => quote! {},
             };

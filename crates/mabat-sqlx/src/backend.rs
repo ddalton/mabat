@@ -105,6 +105,16 @@ pub trait Backend: Database + Sized {
         args: Self::Arguments,
     ) -> BoxFuture<'c, Result<Key, sqlx::Error>>;
 
+    /// The SQL types of the columns of `table` (as the dialect quotes it), by column name, so
+    /// that statements writing many rows can cast their values. Only PostgreSQL needs them.
+    fn column_types<'c>(
+        conn: &'c mut Self::Connection,
+        table: String,
+    ) -> BoxFuture<'c, Result<std::collections::HashMap<String, String>, sqlx::Error>> {
+        let _ = (conn, table);
+        Box::pin(async { Ok(std::collections::HashMap::new()) })
+    }
+
     /// Run a query with arguments and fetch its rows.
     fn fetch_args<'c>(
         conn: &'c mut Self::Connection,

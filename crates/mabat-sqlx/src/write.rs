@@ -21,22 +21,27 @@ pub(crate) const MAX_KEYS: usize = 1000;
 /// The row of a value to write, with what it owns. Also a link of a many-to-many
 /// collection, whose key is the key of the linked value.
 pub struct RowWrite<B: Backend> {
-    shape: &'static ViewShape,
-    key: Option<Key>,
+    pub(crate) shape: &'static ViewShape,
+    pub(crate) key: Option<Key>,
     /// Whether the database generates the key: a row without one is inserted, and its key read.
-    generated: bool,
-    columns: Vec<(String, ColumnValue)>,
-    args: B::Arguments,
+    pub(crate) generated: bool,
+    pub(crate) columns: Vec<(String, ColumnValue)>,
+    pub(crate) args: B::Arguments,
+    /// For [`crate::save_all`]: the bound values of `columns`, in order, kept so that the rows of
+    /// many values can be bound into one statement. `None` when saving one value.
+    pub(crate) owned: Option<Vec<Owned<B>>>,
+    /// A value of the row could not be kept in `owned`, so the row is saved on its own.
+    pub(crate) batchable: bool,
     /// Owned collections: the field and the rows of its elements, in order.
-    collections: Vec<(usize, Vec<RowWrite<B>>)>,
+    pub(crate) collections: Vec<(usize, Vec<RowWrite<B>>)>,
     /// Many-to-many collections: the field and its links, in order.
-    links: Vec<(usize, Vec<RowWrite<B>>)>,
+    pub(crate) links: Vec<(usize, Vec<RowWrite<B>>)>,
     /// Enums stored in a table per variant: the field, the variant, and its row.
-    variants: Vec<(usize, &'static str, Option<RowWrite<B>>)>,
+    pub(crate) variants: Vec<(usize, &'static str, Option<RowWrite<B>>)>,
     /// Insert or update the whole row, or update the columns given only.
     mode: Mode,
     /// The version column and the version of the value, for optimistic locking.
-    version: Option<(String, i64)>,
+    pub(crate) version: Option<(String, i64)>,
     /// For an update: the keys of the elements of owned collections that are gone.
     removed: Vec<(usize, Vec<Key>)>,
     /// For an update of an element of an ordered list: its position before.
@@ -45,6 +50,58 @@ pub struct RowWrite<B: Backend> {
     pub(crate) graph_refs: Vec<GraphRef>,
     /// Collections of references into a graph (`Vec<Ref<T>>`): the field and its elements.
     pub(crate) graph_collections: Vec<(usize, Vec<GraphTarget>)>,
+}
+
+/// A bound value kept by a row being saved with others, to bind it again into a statement
+/// that writes many rows.
+pub(crate) enum Owned<B: Backend> {
+    Key(Key),
+    Value(Box<dyn BindValue<B>>),
+}
+
+impl<B: Backend> Owned<B> {
+    pub(crate) fn bind(&self, args: &mut B::Arguments) -> Result<(), sqlx::error::BoxDynError> {
+        match self {
+            Owned::Key(key) => B::add_key(args, key),
+            Owned::Value(value) => value.bind(args),
+        }
+    }
+}
+
+/// A value that binds itself to the arguments of a statement.
+pub(crate) trait BindValue<B: Backend>: Send + Sync {
+    fn bind(&self, args: &mut B::Arguments) -> Result<(), sqlx::error::BoxDynError>;
+}
+
+struct Held<T>(T);
+
+impl<T, B: Backend> BindValue<B> for Held<T>
+where
+    T: for<'t> Encode<'t, B> + Type<B> + Send + Sync + 'static,
+{
+    fn bind(&self, args: &mut B::Arguments) -> Result<(), sqlx::error::BoxDynError> {
+        args.add(&self.0)
+    }
+}
+
+thread_local! {
+    /// Rows are written for [`crate::save_all`], and keep their values.
+    static BATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While it lives, the rows written on this thread keep their values for a batch.
+pub(crate) struct BatchMode(bool);
+
+impl BatchMode {
+    pub(crate) fn on() -> BatchMode {
+        BatchMode(BATCH.with(|batch| batch.replace(true)))
+    }
+}
+
+impl Drop for BatchMode {
+    fn drop(&mut self) {
+        BATCH.with(|batch| batch.set(self.0));
+    }
 }
 
 /// An entity of a graph: the shape of its type and its index in the arena.
@@ -82,9 +139,9 @@ enum Mode {
 /// produced, in order. Generated code writes it back into the value.
 #[derive(Debug, Default)]
 pub struct Written {
-    key: Option<Key>,
-    version: Option<i64>,
-    collections: Vec<(usize, Vec<Written>)>,
+    pub(crate) key: Option<Key>,
+    pub(crate) version: Option<i64>,
+    pub(crate) collections: Vec<(usize, Vec<Written>)>,
 }
 
 impl Written {
@@ -124,6 +181,8 @@ impl<B: Backend> RowWrite<B> {
             generated: false,
             columns: Vec::new(),
             args: B::Arguments::default(),
+            owned: BATCH.with(std::cell::Cell::get).then(Vec::new),
+            batchable: true,
             collections: Vec::new(),
             links: Vec::new(),
             variants: Vec::new(),
@@ -164,11 +223,23 @@ impl<B: Backend> RowWrite<B> {
         match key {
             Some(key) => {
                 B::add_key(&mut self.args, key).map_err(|e| self.error(format!("cannot encode `{column}`: {e}")))?;
+                if let Some(owned) = &mut self.owned {
+                    owned.push(Owned::Key(key.clone()));
+                }
                 self.columns.push((column, ColumnValue::Bound));
             }
             None => self.null(column),
         }
         Ok(())
+    }
+
+    /// Whether the row, and every row it owns or links, kept its values for a batch.
+    pub(crate) fn is_batchable(&self) -> bool {
+        self.owned.is_some()
+            && self.batchable
+            && self.collections.iter().flat_map(|(_, rows)| rows).all(RowWrite::is_batchable)
+            && self.links.iter().flat_map(|(_, rows)| rows).all(RowWrite::is_batchable)
+            && self.variants.iter().filter_map(|(_, _, row)| row.as_ref()).all(RowWrite::is_batchable)
     }
 
     /// The shape of the row's view.
@@ -219,13 +290,30 @@ impl<B: Backend> RowWrite<B> {
         Error::Write { view: self.shape.name, message }
     }
 
-    /// Bind a value to a column.
+    /// Bind a value to a column. A row of a batch cannot keep it, and is saved on its own.
     #[doc(hidden)]
     pub fn bind<'t, T>(&mut self, column: String, value: T) -> Result<(), Error>
     where
         T: Encode<'t, B> + Type<B>,
     {
         self.args.add(value).map_err(|e| self.error(format!("cannot encode `{column}`: {e}")))?;
+        if self.owned.is_some() {
+            self.batchable = false;
+        }
+        self.columns.push((column, ColumnValue::Bound));
+        Ok(())
+    }
+
+    /// Bind a value to a column, and keep a copy of it for a batch.
+    #[doc(hidden)]
+    pub fn bind_owned<T>(&mut self, column: String, value: &T) -> Result<(), Error>
+    where
+        T: for<'t> Encode<'t, B> + Type<B> + Clone + Send + Sync + 'static,
+    {
+        self.args.add(value).map_err(|e| self.error(format!("cannot encode `{column}`: {e}")))?;
+        if let Some(owned) = &mut self.owned {
+            owned.push(Owned::Value(Box::new(Held(value.clone()))));
+        }
         self.columns.push((column, ColumnValue::Bound));
         Ok(())
     }
@@ -250,14 +338,7 @@ impl<B: Backend> RowWrite<B> {
     /// Write the foreign key of a to-one reference: the key of the referenced value, or NULL.
     #[doc(hidden)]
     pub fn reference(&mut self, fk: &str, key: Option<Key>) -> Result<(), Error> {
-        match key {
-            Some(key) => {
-                B::add_key(&mut self.args, &key).map_err(|e| self.error(format!("cannot encode `{fk}`: {e}")))?;
-                self.columns.push((fk.to_string(), ColumnValue::Bound));
-            }
-            None => self.null(fk.to_string()),
-        }
-        Ok(())
+        self.bind_key(fk.to_string(), key.as_ref())
     }
 
     /// The elements of an owned collection, in order.
@@ -460,6 +541,42 @@ impl<T, B: Backend> WriteFallback<T, B> for &WriteProbe<T, B> {
     }
 }
 
+/// Selects whether a column value of type `T` is kept for a batch ([`crate::save_all`]): if it
+/// can be cloned, else the row is saved on its own. See [`crate::json::JsonProbe`].
+#[doc(hidden)]
+pub struct OwnedProbe<T, B>(PhantomData<fn() -> (T, B)>);
+
+impl<T, B> OwnedProbe<T, B> {
+    pub const NEW: OwnedProbe<T, B> = OwnedProbe(PhantomData);
+}
+
+#[doc(hidden)]
+pub trait WriteOwned<T, B: Backend> {
+    /// Bind the value and keep it, and say so; `false` if it cannot be kept.
+    fn write_owned(&self, row: &mut RowWrite<B>, column: &str, value: &T) -> Result<bool, Error>;
+}
+
+impl<T, B: Backend> WriteOwned<T, B> for OwnedProbe<T, B>
+where
+    T: for<'t> Encode<'t, B> + Type<B> + Clone + Send + Sync + 'static,
+{
+    fn write_owned(&self, row: &mut RowWrite<B>, column: &str, value: &T) -> Result<bool, Error> {
+        row.bind_owned(column.to_string(), value)?;
+        Ok(true)
+    }
+}
+
+#[doc(hidden)]
+pub trait WriteOwnedFallback<T, B: Backend> {
+    fn write_owned(&self, row: &mut RowWrite<B>, column: &str, value: &T) -> Result<bool, Error>;
+}
+
+impl<T, B: Backend> WriteOwnedFallback<T, B> for &OwnedProbe<T, B> {
+    fn write_owned(&self, _: &mut RowWrite<B>, _: &str, _: &T) -> Result<bool, Error> {
+        Ok(false)
+    }
+}
+
 /// Selects how two values of type `T` are compared for [`crate::save_changes`]: with
 /// `PartialEq` if `T` implements it, else they are taken to differ.
 #[doc(hidden)]
@@ -517,7 +634,7 @@ where
             row.null(column);
             return Ok(());
         }
-        row.bind(column, sqlx::types::Json(json))
+        row.bind_owned(column, &sqlx::types::Json(json))
     }
 }
 
@@ -567,12 +684,12 @@ impl<T> KeyFallback<T> for &KeyProbe<T> {
 /// The key of the parent of a row of an owned collection, and the position of the row in an
 /// ordered list.
 pub(crate) struct Parent {
-    fk: &'static str,
-    key: Key,
-    index: Option<(&'static str, i64)>,
+    pub(crate) fk: &'static str,
+    pub(crate) key: Key,
+    pub(crate) index: Option<(&'static str, i64)>,
 }
 
-fn query_error(shape: &ViewShape, sql: &str, source: sqlx::Error) -> Error {
+pub(crate) fn query_error(shape: &ViewShape, sql: &str, source: sqlx::Error) -> Error {
     Error::Query { view: shape.name, path: String::new(), sql: sql.to_string(), source }
 }
 
@@ -601,6 +718,7 @@ where
             previous_position,
             graph_refs,
             graph_collections,
+            ..
         } = row;
         // References into a graph are resolved by `save_graph` before a row is written
         debug_assert!(graph_refs.is_empty() && graph_collections.is_empty(), "unresolved graph references");
@@ -899,7 +1017,7 @@ where
     })
 }
 
-async fn delete_rows<B: Backend>(
+pub(crate) async fn delete_rows<B: Backend>(
     conn: &mut B::Connection,
     shape: &'static ViewShape,
     table: &str,

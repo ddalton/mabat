@@ -65,6 +65,11 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **The MPA specification.** `docs/mpa.md`, the Mabat Persistence Architecture, states Mabat's contract as
   numbered rules; `docs/mpa.json` indexes its capabilities, attributes, functions, errors and diagnostics, and
   `llms.txt` points AI tools to both. A test keeps the index in step with the derive and the errors.
+- **Saving many values (M8).** `mabat::save_all(&mut values, conn)` saves many aggregates in one transaction
+  with statements per table and level rather than per row: one multi-row `UPDATE` (from a table of values, cast to
+  the column types on PostgreSQL) and one multi-row insert for the rows of each table, then their collections,
+  variant rows and links the same way. Saving 1,000 tasks of 10 subtasks takes about 80 ms instead of 1.6 s on a
+  local PostgreSQL (`examples/save_all.rs`), and far less time waiting on the network for a remote one.
 - **Saving graphs (M8).** `mabat::save_graph(&mut graph, conn)` saves every entity of a `Graph`, each after the
   entities it references, so that generated keys exist and foreign keys hold; in a cycle, optional references are
   written NULL and set afterwards. `Vec<Ref<T>>` collections replace their links, write their elements' foreign
