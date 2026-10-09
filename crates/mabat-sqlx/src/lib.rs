@@ -245,11 +245,40 @@ where
     C: Conn,
     <C::Backend as sqlx::Database>::Connection: Send,
 {
+    save_graph_entities(graph, conn, false).await
+}
+
+/// Save the entities of a graph that changed since it was loaded or last saved, in a
+/// transaction, as [`save_graph`] saves them: those added with [`Graph::insert`] and those
+/// handed out by [`Graph::get_mut`], changed or not.
+///
+/// The rows of other entities are not written, except to set the foreign key that a
+/// changed entity's collection writes to its elements. Their keys are used as loaded. Link
+/// rows are replaced, and rows no longer in a collection unlinked, for the collections of
+/// changed entities only. After the save, no entity is changed.
+pub async fn save_graph_changes<R, C>(graph: &mut Graph<R>, conn: &mut C) -> Result<(), Error>
+where
+    R: ViewEncoder<C::Backend> + Send + Sync + 'static,
+    C: Conn,
+    <C::Backend as sqlx::Database>::Connection: Send,
+{
+    save_graph_entities(graph, conn, true).await
+}
+
+async fn save_graph_entities<R, C>(graph: &mut Graph<R>, conn: &mut C, changes: bool) -> Result<(), Error>
+where
+    R: ViewEncoder<C::Backend> + Send + Sync + 'static,
+    C: Conn,
+    <C::Backend as sqlx::Database>::Connection: Send,
+{
     use sqlx::Connection;
     let mut conn = conn.source().single().await?;
     let mut tx = conn.begin().await.map_err(Error::Connection)?;
-    graph_write::save::<C::Backend, R>(&mut tx, graph.arenas_mut()).await?;
-    tx.commit().await.map_err(Error::Connection)
+    let (arenas, changed) = graph.parts_mut();
+    graph_write::save::<C::Backend, R>(&mut tx, arenas, changes.then_some(&*changed)).await?;
+    tx.commit().await.map_err(Error::Connection)?;
+    changed.clear();
+    Ok(())
 }
 
 /// Delete the aggregate of a view with the key, in a transaction: the row and what it owns,

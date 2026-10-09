@@ -1,6 +1,7 @@
 //! Saving graphs on every database: new entities with generated keys referencing each other,
 //! cycles of references, collections that are the inverse of a reference, collections that
-//! write their elements' foreign key, link tables, and references from owned values.
+//! write their elements' foreign key, link tables, and references from owned values; and saving
+//! only the entities that changed.
 
 use mabat::{Conn, Error, Graph, Ref, View};
 use sqlx::{AssertSqlSafe, Connection, Executor};
@@ -255,6 +256,89 @@ where
     assert_eq!(titles, ["Build"]);
 }
 
+/// An employee's name, outside any graph.
+#[derive(View, Debug)]
+#[view(table = "employee")]
+struct EmployeeName {
+    id: i64,
+    name: String,
+}
+
+/// Rename an employee behind the graph's back, to see whether a save writes its row.
+async fn rename<C: Conn>(conn: &mut C, id: i64, name: &str)
+where
+    <C::Backend as sqlx::Database>::Connection: Send,
+    EmployeeName: mabat::ViewEncoder<C::Backend>,
+{
+    mabat::save(&mut EmployeeName { id, name: name.into() }, conn).await.unwrap();
+}
+
+async fn employee_name<C: Conn>(conn: &mut C, id: i64) -> String
+where
+    EmployeeName: mabat::ViewDecoder<C::Backend>,
+{
+    mabat::load::<EmployeeName>().by_key(id).one(conn).await.unwrap().name
+}
+
+async fn changes<C: Conn>(conn: &mut C)
+where
+    C::Backend: Send,
+    <C::Backend as sqlx::Database>::Connection: Send,
+    Team: mabat::ViewEncoder<C::Backend>,
+    Employee: mabat::ViewEncoder<C::Backend>,
+    Project: mabat::ViewEncoder<C::Backend>,
+    TaskRow: mabat::ViewDecoder<C::Backend>,
+    EmployeeName: mabat::ViewEncoder<C::Backend>,
+{
+    let teams = mabat::load::<Team>().order_by("id").graph(conn).await.unwrap();
+    let team_id = teams.root().unwrap().id.unwrap();
+
+    // A loaded graph has no changes, so nothing is written
+    let mut g = load_team(conn, team_id).await;
+    let members = g.root().unwrap().members.clone();
+    let (ada, grace) = (members[0], members[1]);
+    let (ada_id, grace_id) = (g.get(ada).id.unwrap(), g.get(grace).id.unwrap());
+    assert!(!g.is_changed(ada));
+    rename(conn, ada_id, "Ada (renamed)").await;
+    mabat::save_graph_changes(&mut g, conn).await.unwrap();
+    assert_eq!(employee_name(conn, ada_id).await, "Ada (renamed)");
+
+    // Only the entity handed out by get_mut is written; the other keeps its row
+    rename(conn, grace_id, "Grace (renamed)").await;
+    g.get_mut(ada).name = "Ada".into();
+    assert!(g.is_changed(ada) && !g.is_changed(grace));
+    mabat::save_graph_changes(&mut g, conn).await.unwrap();
+    assert!(!g.is_changed(ada), "a save leaves no changes");
+    assert_eq!(employee_name(conn, ada_id).await, "Ada");
+    assert_eq!(employee_name(conn, grace_id).await, "Grace (renamed)");
+
+    // A new entity referencing loaded ones gets its key; the loaded ones keep theirs
+    let alan = g.insert(Employee { manager: Some(grace), team: Some(g.root_refs()[0]), ..employee("Alan") });
+    assert!(g.is_changed(alan));
+    let team = g.root_refs()[0];
+    g.get_mut(team).members.push(alan);
+    g.get_mut(grace).reports.push(alan);
+    mabat::save_graph_changes(&mut g, conn).await.unwrap();
+    let alan_id = g.get(alan).id.expect("the new key is written back");
+    let loaded = load_team(conn, team_id).await;
+    let names: Vec<&str> = loaded.root().unwrap().members.iter().map(|&m| loaded.get(m).name.as_str()).collect();
+    assert_eq!(names, ["Ada", "Grace", "Alan"], "the team is written, with the employees as they are");
+    let alan = loaded.all::<Employee>().find(|(_, e)| e.id == Some(alan_id)).unwrap().1;
+    assert_eq!(alan.manager.map(|m| loaded.get(m).name.as_str()), Some("Grace"));
+
+    // A changed collection by a foreign key writes its elements' rows, which are not changed
+    let mut g = mabat::load::<Project>().order_by("id").graph(conn).await.unwrap();
+    let refs = g.root_refs().to_vec();
+    let tasks = g.get(refs[1]).tasks.clone();
+    let before = task_rows(conn).await;
+    g.get_mut(refs[0]).tasks.push(tasks[0]);
+    g.get_mut(refs[1]).tasks.clear();
+    mabat::save_graph_changes(&mut g, conn).await.unwrap();
+    let after = task_rows(conn).await;
+    let alpha = g.get(refs[0]).id;
+    assert_eq!(after[1], ("Build".to_string(), alpha, Some(1)), "{before:?}");
+}
+
 async fn scenario<C: Conn>(conn: &mut C)
 where
     C::Backend: Send,
@@ -263,9 +347,11 @@ where
     Employee: mabat::ViewEncoder<C::Backend>,
     Project: mabat::ViewEncoder<C::Backend>,
     TaskRow: mabat::ViewDecoder<C::Backend>,
+    EmployeeName: mabat::ViewEncoder<C::Backend>,
 {
     teams(conn).await;
     projects(conn).await;
+    changes(conn).await;
 }
 
 #[tokio::test]

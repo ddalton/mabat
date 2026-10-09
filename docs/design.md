@@ -934,7 +934,15 @@ Writes never go through override SQL. Overrides are for reads.
 >   and is checked to agree with it; otherwise it writes its elements' foreign key and position, and unlinks the
 >   rows that are no longer elements by setting the key NULL.
 > - **Not yet:** saving only what changed in a graph. `save_graph` writes every entity; a graph could record
->   what `get_mut` touched, as section 14 sketched.
+>   what `get_mut` touched, as section 14 sketched. (Done later, below.)
+>
+> **As built (changed entities of a graph):** `Graph` keeps a set of the entities `insert` added and `get_mut`
+> handed out, by view and arena index, cleared by a successful save. `save_graph_changes` builds the rows of every
+> entity as `save_graph` does, so that the checks of collections against references see the whole graph, then
+> writes only the changed entities and the elements a changed entity's collection assigns a foreign key to. The
+> dependency order and the cycles are computed among those alone: the others are not written and have their keys.
+> `get_mut` is taken as a change whether or not the entity changed, as comparing would need a copy of each
+> entity.
 >
 > **As built (fifth part):**
 >
