@@ -151,8 +151,9 @@
 //! # Streaming
 //!
 //! [`Load::stream`] loads many values a batch at a time, as a stream, holding one batch in
-//! memory: the keys of every match are read first, then each batch is loaded with its
-//! collections and references. [`Load::json_stream`] streams JSON objects.
+//! memory: the keys of every match are read, a batch at a time from a cursor on PostgreSQL, and
+//! each batch is loaded with its collections and references. [`Load::json_stream`] streams JSON
+//! objects.
 //!
 //! # Concurrent loads
 //!
@@ -235,7 +236,7 @@ pub use mabat_sqlx::{
     Backend, Builder, Conn, Diagnostic, Embedded, EmbeddedDecoder, EmbeddedEncoder, Error, Graph, Key, Load, Mabat,
     Nested, Node, OnInvalid, Origin, Pooled, Ref, Reloaded, Report, RowWrite, Selection, SelectionError, Severity,
     ShadowSummary, View, ViewDecoder, ViewEncoder, Written, delete, load, plan, save, save_all, save_changes,
-    save_graph, scaffold,
+    save_graph, save_graph_changes, scaffold,
 };
 pub use mabat_sqlx::{filter, manifest, schema};
 

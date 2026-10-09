@@ -313,6 +313,16 @@ graph.add_root(ada);
 mabat::save_graph(&mut graph, &mut tx).await?;     // keys generated and written back
 ```
 
+A loaded graph records the entities handed out by `get_mut` and added with `insert`, and
+`mabat::save_graph_changes` writes only those, plus the foreign keys their collections set:
+
+```rust
+let mut graph = mabat::load::<Person>().by_key(id).graph(&mut tx).await?;
+let root = graph.root_refs()[0];
+graph.get_mut(root).name = "Ada L.".into();
+mabat::save_graph_changes(&mut graph, &mut tx).await?;  // one UPDATE, not one per entity
+```
+
 Many values are saved at once with `mabat::save_all`, which writes them as loads read them: a few statements for
 each table and level of the aggregate, not for each row. Saving 1,000 tasks with 10 subtasks each takes about
 80 ms instead of 1.6 s with one `save` per task, on a local PostgreSQL; on a remote one the difference is
@@ -387,8 +397,9 @@ the Chinook music store with GraphiQL.
 ## Streaming many values
 
 `stream` loads values a batch at a time, so exporting a million rows holds one batch in memory, not a million.
-It reads the keys of every match first, with the filter, order and page, then loads each batch of keys with
-its collections and references, and yields the values in order:
+It reads the keys of every match, with the filter, order and page, then loads each batch of keys with its
+collections and references, and yields the values in order. On PostgreSQL the keys stay on the server, in a
+cursor, and are fetched a batch at a time:
 
 ```rust
 use futures_util::TryStreamExt;

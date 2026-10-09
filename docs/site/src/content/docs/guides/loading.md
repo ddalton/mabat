@@ -37,9 +37,10 @@ and every query runs on it, so it sees the uncommitted writes of its transaction
 
 ## Streaming
 
-`stream` loads many values without holding them all in memory. It reads the keys of every match first, with the
-filter, order and page, and then loads `batch_size` values at a time (1,000 by default), each batch with its
-collections and references. It yields the same values as `all`, in the same order
+`stream` loads many values without holding them all in memory. It reads the keys of every match, with the filter,
+order and page, and then loads `batch_size` values at a time (1,000 by default), each batch with its collections
+and references. On a PostgreSQL connection the keys stay on the server in a cursor and are fetched a batch at a
+time; elsewhere they are read at once. It yields the same values as `all`, in the same order
 ([MPA-LOAD-15](../../spec/mpa/#mpa-load-15)):
 
 ```rust
