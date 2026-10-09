@@ -498,6 +498,31 @@ error[M0202]: TaskView.$root: column `task.due` is not in the schema
    | did you mean `due_on`?
 ```
 
+In a build script, the same check makes `cargo build` fail when the views no longer match the schema. The
+`mabat-check` crate needs no database driver:
+
+```toml
+[build-dependencies]
+mabat-check = "0.1"
+```
+
+```rust
+// build.rs
+fn main() {
+    mabat_check::build("mabat/views.json", "mabat/schema.json").overrides("mabat/overrides").run();
+}
+```
+
+```text
+error: app@0.1.0: mabat error[M0202]: ProjectView.tasks: column `task.title` is not in the schema; did you mean `titel`? (mabat/schema.json)
+error: build script logged errors
+```
+
+The build script checks the committed files: the manifest test keeps `mabat/views.json` current, and
+`mabat schema --check` in CI keeps `mabat/schema.json` current. Warnings show as Cargo warnings. Before the
+manifest exists, or with `MABAT_SKIP_CHECK=1`, the check is skipped with a warning.
+`crates/mabat-example-build` is a complete example.
+
 `check` prints the same report as the application's startup check. Its exit status is 0 when there are no
 errors, 1 when there are, and 2 for any other problem, so it can run in a DBA's CI.
 

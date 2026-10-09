@@ -74,6 +74,11 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
   with no database: missing tables and columns, column types the fields cannot be decoded from, nullable columns
   under fields that are not `Option`, mismatched link keys, keys that are not primary keys, and generated keys the
   database does not generate (M0201–M0207). The manifest records which views have generated keys.
+  A build script can run the same check, `mabat_check::build("mabat/views.json", "mabat/schema.json").run()`,
+  so that `cargo build` fails when the views no longer match the schema (`crates/mabat-example-build`). The
+  manifest types, `explain`, `scaffold`, the override file parser and the report moved to `mabat-check`, with no
+  database driver, and are re-exported where they were; `Manifest::check(conn, dirs)` is now
+  `mabat::manifest::check(&manifest, conn, dirs)`.
 - **Saving many values (M8).** `mabat::save_all(&mut values, conn)` saves many aggregates in one transaction
   with statements per table and level rather than per row: one multi-row `UPDATE` (from a table of values, cast to
   the column types on PostgreSQL) and one multi-row insert for the rows of each table, then their collections,

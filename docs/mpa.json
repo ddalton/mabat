@@ -234,7 +234,8 @@
         "mabat schema",
         "mabat::schema::snapshot",
         "mabat check --snapshot",
-        "Manifest::check_snapshot"
+        "Manifest::check_snapshot",
+        "mabat_check::build"
       ],
       "rules": [
         "MPA-SCH-1",
@@ -242,7 +243,8 @@
         "MPA-SCH-3",
         "MPA-SCH-4",
         "MPA-SCH-5",
-        "MPA-SCH-6"
+        "MPA-SCH-6",
+        "MPA-SCH-7"
       ]
     },
     {
@@ -704,6 +706,13 @@
         "MPA-SCH-4",
         "MPA-SCH-5",
         "MPA-SCH-6"
+      ]
+    },
+    {
+      "api": "mabat_check::build",
+      "summary": "Check the views against a snapshot from a build script",
+      "rules": [
+        "MPA-SCH-7"
       ]
     },
     {
@@ -1602,6 +1611,11 @@
       "id": "MPA-SCH-6",
       "section": "13. Schema snapshots",
       "text": "Against a snapshot, override files are checked for their syntax and names only (M0100, M0101): their SQL needs a database to prepare it, with `mabat check --database-url` or the application's startup check (MPA-OVR-5)."
+    },
+    {
+      "id": "MPA-SCH-7",
+      "section": "13. Schema snapshots",
+      "text": "A build script checks the committed manifest against the committed snapshot with `mabat_check::build(\"mabat/views.json\", \"mabat/schema.json\").overrides(\"mabat/overrides\").run()`, the `mabat-check` crate in `[build-dependencies]`, which needs no database driver. Each error is a `cargo::error`, which fails the build, and each warning a `cargo::warning`; the build script runs again when either file or an override file changes. Before the manifest exists, or with `MABAT_SKIP_CHECK` set, nothing is checked and a warning says so. `Build::check` returns what it finds instead of telling Cargo. The manifest's types, its JSON form, `explain` and `scaffold`, the override file parser and the report are in `mabat-check`, and `mabat::manifest` re-exports them; checking a manifest against a database is `mabat::manifest::check`."
     }
   ]
 }
