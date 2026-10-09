@@ -55,8 +55,10 @@ view with every relationship.
 - **`json`** decodes a JSON column with `serde` ([MPA-VIEW-6](../../spec/mpa/#mpa-view-6)).
 - **`embed`** holds an embedded struct or an [enum](../enums/), whose columns carry an optional prefix; embedded
   values nest and prefixes concatenate ([MPA-VIEW-7](../../spec/mpa/#mpa-view-7)).
-- **`to_one(fk = "c")`** references another view through a foreign key of this table. `Option<T>` makes it
-  optional; a required reference to a missing row is an error ([MPA-VIEW-8](../../spec/mpa/#mpa-view-8)).
+- **`to_one(fk = "c")`** references another view through a foreign key of this table, held as `T`, `Box<T>`,
+  `Arc<T>` or `Ref<T>`. `Option<T>` makes it optional; a required reference to a missing row is an error
+  ([MPA-VIEW-8](../../spec/mpa/#mpa-view-8)). A reference to its own view, such as a parent, is
+  [recursive](../collections/#chains-of-parents).
 - **`child(fk = "c")`** is a to-many collection, described in [Collections and recursion](../collections/).
 - **`version`** marks an integer column for [optimistic locking](../writing/#optimistic-locking).
 

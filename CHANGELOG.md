@@ -39,6 +39,9 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
   - Many-to-many collections `through` a link table.
   - Recursive views loaded level by level (`depth = n`) or with one `WITH RECURSIVE` query
     (`recursive = "cte"`), with cycle detection.
+  - Chains of parents: a `to_one` reference back to its own view, held in an `Option<Box<T>>` or
+    `Option<Arc<T>>`, with `depth = n`, or `recursive = "cte"` for every chain to its end in one query.
+    `Box<T>` is accepted for any to-one reference.
 - **Shared values and graphs (M5).**
   - `Arc<T>` fields shared per entity.
   - `Ref<T>` fields loaded with `Load::graph` into a `Graph` of arenas, with generated navigation methods.

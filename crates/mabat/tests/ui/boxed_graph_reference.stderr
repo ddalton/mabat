@@ -1,0 +1,5 @@
+error: a `Box` holds an owned view, not an `Arc` or a `Ref`
+ --> tests/ui/boxed_graph_reference.rs:6:13
+  |
+6 |     parent: Option<Box<mabat::Ref<Category>>>,
+  |             ^^^^^^

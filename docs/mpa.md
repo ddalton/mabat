@@ -111,8 +111,10 @@ issues and AI assistants can cite.
   the view's columns with the optional prefix. Embedded values nest; prefixes concatenate.
 - **MPA-VIEW-8** A `to_one` field references another view: `fk` is the column of this view's table holding the
   referenced key. `Option<T>` makes it optional (a NULL foreign key is `None`); a non-`Option` reference whose row
-  is missing fails with `Error::MissingReference`. The field MAY be `T`, `Arc<T>` (MPA-LOAD-13) or `Ref<T>`
-  (MPA-LOAD-14).
+  is missing fails with `Error::MissingReference`. The field MAY be `T`, `Box<T>`, `Arc<T>` (MPA-LOAD-13) or
+  `Ref<T>` (MPA-LOAD-14). A reference back to its own view, such as a parent, takes `depth = n` (n ≥ 1) or
+  `recursive = "cte"` (MPA-PLAN-4), and MUST be an `Option` of a `Box<T>` or `Arc<T>`; `recursive = "cte"` with
+  a `depth`, recursion on a `Ref<T>`, and a `Box` of anything but an owned view are compile errors.
 - **MPA-VIEW-9** A `child` field is a collection of another view, loaded by a child query whose rows have `fk`
   equal to this row's key. Its arguments:
   - `order_by = "a, b desc"`: the order of the elements; the key is always the last tie-breaker.
@@ -125,7 +127,7 @@ issues and AI assistants can cite.
     the same key fail with `Error::DuplicateMapKey`.
   - `depth = n` (n ≥ 1) or `recursive = "cte"`: a recursive collection (MPA-PLAN-4).
 - **MPA-VIEW-10** A collection field MUST be a `Vec<T>`, `Vec<Arc<T>>`, `Vec<Ref<T>>`, `BTreeMap<K, T>` or
-  `HashMap<K, T>` of a view.
+  `HashMap<K, T>` of a view; `Vec<Box<T>>` is a compile error.
 - **MPA-VIEW-11** Invalid attributes are compile errors with a message naming the attribute, such as a `child`
   without `fk`, `index` on a map, or `version` on a collection.
 
@@ -192,10 +194,12 @@ let tasks = mabat::load::<TaskView>()
   (PostgreSQL only; other databases do not compile) shares one `REPEATABLE READ READ ONLY` snapshot between the
   connections, imported when the load starts; `Pooled::read_committed` (any database) lets each query see what is
   committed when it runs. Graph loads run their queries one at a time.
-- **MPA-LOAD-12** Recursive collections load as many levels as their `depth`, or all levels with
-  `recursive = "cte"` (MPA-PLAN-4). A cycle in the data of a `cte` collection fails with `Error::Cycle`.
+- **MPA-LOAD-12** Recursive collections and references load as many levels as their `depth`, or all levels with
+  `recursive = "cte"` (MPA-PLAN-4). A cycle in the data of a `cte` collection or chain of references fails with
+  `Error::Cycle`; with `depth`, a cycle repeats its rows until the last level.
 - **MPA-LOAD-13** An `Arc<T>` reference or element is decoded once per entity of a load and shared by everything
-  that references it.
+  that references it. With a recursive `depth`, an entity reached at several levels holds the references of the
+  level it was first decoded at.
 - **MPA-LOAD-14** A view with `Ref<T>` fields is a graph and MUST be loaded with `graph`, else
   `Error::GraphRequired`. `graph` returns a `Graph<T>` holding each entity once, with typed references and
   generated navigation methods (`task.manager(&graph)`); cycles end by themselves and need no `depth`. A graph is
@@ -236,7 +240,12 @@ let tasks = mabat::load::<TaskView>()
   extra columns are ignored.
 - **MPA-PLAN-4** A collection with `depth = n` runs its query again for each level, at most `n` levels. With
   `recursive = "cte"`, all levels come from one `WITH RECURSIVE` query whose path guard stops at cycles; it needs a
-  collection that contains its own view directly and no `through`.
+  collection that contains its own view directly and no `through`. A recursive to-one reference is planned the
+  same way: with `depth = n` its query runs again for each level, at most `n` levels below the first row, and the
+  references of the last level are `None`; with `recursive = "cte"`, one `WITH RECURSIVE` query follows the
+  references from the keys of the level above to the end of every chain. As chains share rows (two employees
+  with one manager), a depth in that query would not be each chain's own, so `recursive = "cte"` on a reference
+  takes no `depth` (`Error::Plan` for a shape built by hand).
 - **MPA-PLAN-5** `mabat::plan::<T>()` returns the plan, and `Mabat::explain::<T>()` its queries with their SQL,
   generated or overridden.
 

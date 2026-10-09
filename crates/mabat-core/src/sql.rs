@@ -263,23 +263,41 @@ pub fn render(plan: &QueryPlan, root: &RootOptions, render: &Render) -> String {
     let table = q(plan.shape.table);
     let key = q(plan.shape.key_column);
     let mut sql = String::new();
-    if let (Some(cte), Link::Child { fk, .. }) = (&plan.cte, &plan.link) {
-        // All levels of a recursive collection: the keys of the rows, then their columns, each
-        // row once even if it is below several of the parent keys. The path of keys stops the
-        // recursion at cycles in the data.
-        let fk = q(fk);
+    if let Some(cte) = &plan.cte {
+        // All levels of a recursive collection or chain of references: the keys of the rows,
+        // then their columns, each row once even if it is reached from several keys. The path
+        // of keys stops the recursion at cycles in the data.
         let tree = q(TREE);
         let (k, path, depth) = (q("k"), q("path"), q("depth"));
         let row_key = format!("{TABLE_ALIAS}.{key}");
         let (anchor_path, next_path, not_on_path) = dialect.path(&row_key, &format!("{TREE_ALIAS}.{path}"));
         let limit = cte.depth.map(|limit| format!(" AND {TREE_ALIAS}.{depth} < {limit}")).unwrap_or_default();
-        let anchor_keys = render.keys_condition(&format!("{TABLE_ALIAS}.{fk}"));
+        // A collection starts at the rows referencing the parent keys and goes on to the rows
+        // referencing those; a chain of references starts at the rows with the keys and goes
+        // on to the rows they reference, whose keys the tree carries as `n`
+        let (anchor_keys, next, select_next, carry_next) = match (cte.follow, &plan.link) {
+            (Some(follow), _) => {
+                let n = q("n");
+                let follow = format!("{TABLE_ALIAS}.{}", q(follow));
+                (
+                    render.keys_condition(&row_key),
+                    format!("{row_key} = {TREE_ALIAS}.{n}"),
+                    format!(", {follow} AS {n}"),
+                    format!(", {follow}"),
+                )
+            }
+            (None, Link::Child { fk, .. }) => {
+                let fk = format!("{TABLE_ALIAS}.{}", q(fk));
+                (render.keys_condition(&fk), format!("{fk} = {TREE_ALIAS}.{k}"), String::new(), String::new())
+            }
+            (None, _) => unreachable!("only collections and references are recursive"),
+        };
         let _ = write!(
             sql,
-            "WITH RECURSIVE {tree} AS ({clause}SELECT {row_key} AS {k}, {anchor_path} AS {path}, \
+            "WITH RECURSIVE {tree} AS ({clause}SELECT {row_key} AS {k}{select_next}, {anchor_path} AS {path}, \
              1 AS {depth} FROM {table} AS {TABLE_ALIAS} WHERE {anchor_keys}{clause}UNION ALL{clause}\
-             SELECT {row_key}, {next_path}, {TREE_ALIAS}.{depth} + 1 \
-             FROM {table} AS {TABLE_ALIAS} JOIN {tree} AS {TREE_ALIAS} ON {TABLE_ALIAS}.{fk} = {TREE_ALIAS}.{k} \
+             SELECT {row_key}{carry_next}, {next_path}, {TREE_ALIAS}.{depth} + 1 \
+             FROM {table} AS {TABLE_ALIAS} JOIN {tree} AS {TREE_ALIAS} ON {next} \
              WHERE {not_on_path}{limit}{clause}){clause}"
         );
     }
@@ -354,7 +372,7 @@ pub fn render(plan: &QueryPlan, root: &RootOptions, render: &Render) -> String {
                 let _ = write!(sql, "{clause}WHERE {conditions}");
             }
         }
-        Link::Child { .. } if plan.cte.is_some() => {}
+        _ if plan.cte.is_some() => {}
         Link::Child { .. } => {
             // The keys of the parents, and the filter of the collection
             let fk = child.as_deref().unwrap_or_default();

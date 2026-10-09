@@ -113,9 +113,9 @@ pub fn json_to_one<C: ViewDecoder<B>, B: Backend>(
     ref_alias: &str,
     optional: bool,
 ) -> Result<Value, Error> {
-    match node.child_rows(row, field_index, ref_alias)?.first() {
-        Some((row, child)) => C::decode_json(row, child),
-        None if optional && node.key(row, ref_alias)?.is_none() => Ok(Value::Null),
+    match node.referenced(row, field_index, ref_alias)? {
+        Some((_, (row, child))) => C::decode_json(row, child),
+        None if optional => Ok(Value::Null),
         None => Err(node.missing_reference(field_index, ref_alias)),
     }
 }
