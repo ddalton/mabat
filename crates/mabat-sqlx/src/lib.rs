@@ -18,6 +18,7 @@ mod pooled;
 mod registry;
 mod report;
 pub mod schema;
+mod stream;
 mod write;
 mod write_batch;
 
@@ -280,6 +281,7 @@ pub struct Load<T> {
     condition: Option<filter::Condition>,
     selection: Option<Selection>,
     nested: Vec<(String, Nested)>,
+    batch_size: usize,
     _view: PhantomData<fn() -> T>,
 }
 
@@ -353,6 +355,7 @@ impl<T: View> Load<T> {
             condition: None,
             selection: None,
             nested: Vec::new(),
+            batch_size: stream::BATCH_SIZE,
             _view: PhantomData,
         }
     }
@@ -642,18 +645,26 @@ impl Prepared {
         identity: Arc<graph::Identity>,
     ) -> Result<Node<B>, Error> {
         let runner = pooled::Runner::new(source, identity.graph).await?;
-        let overrides = self.overrides.as_ref().map(|c| &c.overrides);
-        let plan = &*self.plan;
-        let path = String::new();
-        let entities = identity.graph;
-        let mut args = node::QueryArgs::new(self.options, self.values);
-        for (name, options, values) in self.nested {
-            args.nest(name, options, values);
-        }
-        let node =
-            node::load::<B>(&runner, plan, &args, self.keys, overrides, path, Vec::new(), identity, entities).await?;
+        let node = self.load_on(&runner, identity, self.keys.clone(), self.options.clone()).await?;
         runner.finish().await?;
         Ok(node)
+    }
+
+    /// Run the queries of the load on the runner, for the keys and with the root options.
+    async fn load_on<B: Backend>(
+        &self,
+        runner: &pooled::Runner<'_, B>,
+        identity: Arc<graph::Identity>,
+        keys: Option<key::KeyList>,
+        options: RootOptions,
+    ) -> Result<Node<B>, Error> {
+        let overrides = self.overrides.as_ref().map(|c| &c.overrides);
+        let entities = identity.graph;
+        let mut args = node::QueryArgs::new(options, self.values.clone());
+        for (name, options, values) in &self.nested {
+            args.nest(name.clone(), options.clone(), values.clone());
+        }
+        node::load::<B>(runner, &self.plan, &args, keys, overrides, String::new(), Vec::new(), identity, entities).await
     }
 }
 

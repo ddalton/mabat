@@ -28,10 +28,35 @@ let page = mabat::load::<TaskView>()
 | `count` | `SELECT count(*)` of the root query | [MPA-LOAD-2](../../spec/mpa/#mpa-load-2) |
 | `graph` | a `Graph`, for views with `Ref<T>` | [MPA-LOAD-14](../../spec/mpa/#mpa-load-14) |
 | `json` | `serde_json::Value` objects | [MPA-JSON-1](../../spec/mpa/#mpa-json-1) |
+| `stream` | a `Stream` of values, a batch at a time | [MPA-LOAD-15](../../spec/mpa/#mpa-load-15) |
+| `json_stream` | a `Stream` of `serde_json::Value` objects | [MPA-LOAD-17](../../spec/mpa/#mpa-load-17) |
 
 A load takes a connection, a transaction, a pooled connection or a [`Pooled` pool](../databases/#concurrent-loads),
 and every query runs on it, so it sees the uncommitted writes of its transaction
 ([MPA-DB-5](../../spec/mpa/#mpa-db-5)).
+
+## Streaming
+
+`stream` loads many values without holding them all in memory. It reads the keys of every match first, with the
+filter, order and page, and then loads `batch_size` values at a time (1,000 by default), each batch with its
+collections and references. It yields the same values as `all`, in the same order
+([MPA-LOAD-15](../../spec/mpa/#mpa-load-15)):
+
+```rust
+use futures_util::TryStreamExt;
+
+let mut tasks = mabat::load::<TaskView>().order_by("id").batch_size(500).stream(&mut conn);
+while let Some(task) = tasks.try_next().await? {
+    export(&task)?;
+}
+```
+
+Each batch sees what the connection sees when it runs. Outside a transaction, a value deleted after the keys were
+read is skipped. In a `REPEATABLE READ` transaction, or with `Pooled::snapshot`, every batch sees one snapshot
+([MPA-LOAD-16](../../spec/mpa/#mpa-load-16)). `Arc<T>` values are shared within a batch, and graph views
+(`Ref<T>`) cannot be streamed. `json_stream` streams JSON, of a selection or of every field
+([MPA-LOAD-17](../../spec/mpa/#mpa-load-17)). The stream holds the connection until it ends; dropping it stops the
+load, and an error ends it ([MPA-LOAD-18](../../spec/mpa/#mpa-load-18)).
 
 ## Keys
 

@@ -568,6 +568,51 @@ pub fn count<'a>(
     }
 }
 
+/// The keys of the rows of the root query, in its order: the keys and the filter, the order
+/// and the page, selecting only the key, as the view's key alias. A stream reads them first,
+/// then loads the rows a batch of keys at a time. With `override_sql`, the override is a
+/// subquery, and `filter_keys` says whether the keys are applied to it, as in [`wrap_root`].
+///
+/// Returns a column that cannot be referred to as the error.
+pub fn keys<'a>(
+    plan: &QueryPlan,
+    root: &'a RootOptions,
+    override_sql: Option<(&str, bool)>,
+    render: &Render,
+) -> Result<String, &'a str> {
+    let alias = render.quote(&plan.key_alias);
+    let (mut sql, key, source): (String, String, &str) = match override_sql {
+        None => {
+            let key = format!("{TABLE_ALIAS}.{}", render.quote(plan.shape.key_column));
+            let sql = format!("SELECT {key} AS {alias} FROM {} AS {TABLE_ALIAS}", render.quote(plan.shape.table));
+            (sql, key, TABLE_ALIAS)
+        }
+        Some((override_sql, _)) => {
+            let key = format!("{OVERRIDE_ALIAS}.{alias}");
+            let sql = format!("SELECT {key} FROM ({}\n) AS {OVERRIDE_ALIAS}", trim_statement(override_sql));
+            (sql, key, OVERRIDE_ALIAS)
+        }
+    };
+    let filter_keys = override_sql.map_or(root.by_keys, |(_, filter_keys)| filter_keys);
+    let column = |name: &str| match override_sql {
+        None => Some(format!("{source}.{}", render.quote(name))),
+        Some(_) => override_column(plan, name, render.dialect),
+    };
+    if let Some(conditions) = root.conditions(render, &key, filter_keys, &column)? {
+        let _ = write!(sql, " WHERE {conditions}");
+    }
+    let mut terms = Vec::new();
+    for order in &root.order_by {
+        let column = column(order.column).ok_or(order.column)?;
+        terms.push(format!("{column}{}", if order.descending { " DESC" } else { "" }));
+    }
+    if !terms.is_empty() {
+        let _ = write!(sql, " ORDER BY {}", terms.join(", "));
+    }
+    paging(&mut sql, " ", root, render.dialect);
+    Ok(sql)
+}
+
 /// The reference to a column of the view's table in an override used as a subquery: the
 /// alias it is selected as.
 fn override_column(plan: &QueryPlan, column: &str, dialect: Dialect) -> Option<String> {
@@ -594,6 +639,27 @@ mod tests {
         kind: FieldKind::Child(Child { order_by: &ORDER, ..Child::new("list_id", || &ITEM) }),
     }];
     static LIST: ViewShape = ViewShape { name: "List", table: "list", key_column: "id", fields: &LIST_FIELDS };
+
+    #[test]
+    fn keys_of_the_root_query() {
+        let plan = QueryPlan::build(&LIST).unwrap();
+        let root = RootOptions {
+            order_by: vec![OrderBy::desc("name")],
+            limit: Some(10),
+            offset: Some(20),
+            ..RootOptions::default()
+        };
+        assert_eq!(
+            keys(&plan, &root, None, &Render::default()).unwrap(),
+            "SELECT t0.\"id\" AS \"$key\" FROM \"list\" AS t0 ORDER BY t0.\"name\" DESC LIMIT 10 OFFSET 20"
+        );
+        let by_keys = RootOptions { by_keys: true, ..RootOptions::default() };
+        assert_eq!(
+            keys(&plan, &by_keys, Some(("SELECT id AS \"$key\" FROM list;", true)), &Render::default()).unwrap(),
+            "SELECT o.\"$key\" FROM (SELECT id AS \"$key\" FROM list\n) AS o WHERE o.\"$key\" = ANY($1)"
+        );
+        assert_eq!(keys(&plan, &root, Some(("SELECT 1", false)), &Render::default()), Err("name"));
+    }
 
     #[test]
     fn quoting() {
