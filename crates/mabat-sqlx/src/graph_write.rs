@@ -20,7 +20,7 @@ use mabat_core::write::{self as statement, ColumnValue};
 
 use crate::Error;
 use crate::backend::Backend;
-use crate::graph::{Arenas, shape_id};
+use crate::graph::{Arenas, Entities, shape_id};
 use crate::key::{Key, KeyList};
 use crate::write::{GraphRef, GraphTarget, RowWrite, ViewEncoder, Written, save_row};
 
@@ -116,11 +116,13 @@ struct Collection {
     elements: Vec<usize>,
 }
 
-/// Save every entity of a graph whose roots are views `R`, in the transaction `conn`, and
-/// write generated keys and new versions back into the entities.
+/// Save the entities of a graph whose roots are views `R`, in the transaction `conn`, and
+/// write generated keys and new versions back into the entities: every entity, or with
+/// `changed`, those entities and the elements whose foreign key their collections write.
 pub(crate) async fn save<B: Backend, R: ViewEncoder<B> + Send + Sync + 'static>(
     conn: &mut B::Connection,
     arenas: &mut Arenas,
+    changed: Option<&Entities>,
 ) -> Result<(), Error>
 where
     B::Connection: Send,
@@ -224,21 +226,40 @@ where
         unlink.push(c);
     }
 
-    // The order: an entity after the entities its row needs the keys of
+    // The entities to write: the changed ones, and the elements their collections assign a
+    // foreign key to. The others keep their rows, and their keys are as loaded.
+    let mut write: Vec<bool> = nodes
+        .iter()
+        .map(|node| changed.is_none_or(|c| c.contains(&(shape_id(types.entities[node.ty].shape()), node.index))))
+        .collect();
+    for node in 0..nodes.len() {
+        if nodes[node].assigned.iter().any(|a| write[a.owner]) {
+            write[node] = true;
+        }
+    }
+    let collections: Vec<(usize, Collection)> =
+        collections.into_iter().enumerate().filter(|(_, c)| write[c.owner]).collect();
+    let unlink: Vec<usize> = unlink.into_iter().filter(|c| collections.iter().any(|(i, _)| i == c)).collect();
+
+    // The order: an entity after the entities its row needs the keys of, among those written
     let edges: Vec<Vec<(usize, bool)>> = nodes
         .iter()
-        .map(|node| {
+        .enumerate()
+        .map(|(n, node)| {
+            if !write[n] {
+                return Vec::new();
+            }
             let refs = node.refs.iter().filter_map(|(r, target)| target.map(|t| (t, r.optional)));
             let assigned = node.assigned.iter().map(|a| (a.owner, false));
             let owned = node.owned_refs.iter().map(|t| (*t, false));
-            refs.chain(assigned).chain(owned).collect()
+            refs.chain(assigned).chain(owned).filter(|(t, _)| write[*t]).collect()
         })
         .collect();
     let components = strongly_connected(&edges);
 
     let mut keys: Vec<Option<Key>> = nodes.iter().map(|n| n.row.as_ref().and_then(|r| r.row_key().cloned())).collect();
     let mut written: Vec<Option<Written>> = (0..nodes.len()).map(|_| None).collect();
-    for component in &components {
+    for component in components.iter().filter(|component| write[component[0]]) {
         let cyclic = component.len() > 1 || edges[component[0]].iter().any(|(t, _)| *t == component[0]);
         let inside: HashSet<usize> = component.iter().copied().collect();
         // A cycle is broken at its optional references, which are written NULL and set once the
@@ -283,7 +304,7 @@ where
     }
 
     // Links, and the rows that are no longer elements of a collection
-    for collection in &collections {
+    for (_, collection) in &collections {
         let owner_shape = types.entities[nodes[collection.owner].ty].shape();
         let owner = key_of(&keys, collection.owner, &nodes, &types)?.clone();
         let elements =
@@ -293,7 +314,7 @@ where
         }
     }
     for c in unlink {
-        let collection = &collections[c];
+        let (_, collection) = collections.iter().find(|(i, _)| *i == c).expect("unlinked collections are kept");
         let owner = key_of(&keys, collection.owner, &nodes, &types)?.clone();
         let elements: Vec<Key> =
             collection.elements.iter().map(|&e| key_of(&keys, e, &nodes, &types).cloned()).collect::<Result<_, _>>()?;

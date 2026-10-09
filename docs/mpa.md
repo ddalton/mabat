@@ -200,7 +200,8 @@ let tasks = mabat::load::<TaskView>()
   `Error::GraphRequired`. `graph` returns a `Graph<T>` holding each entity once, with typed references and
   generated navigation methods (`task.manager(&graph)`); cycles end by themselves and need no `depth`. A graph is
   also built in code: `Graph::new()` makes an empty one, `insert` adds an entity and returns its `Ref`,
-  `add_root` makes an entity a root, and `get_mut` changes one; `save_graph` saves it (MPA-WRITE-14).
+  `add_root` makes an entity a root, and `get_mut` changes one; `save_graph` saves it (MPA-WRITE-14), and
+  `save_graph_changes` saves the entities that changed (MPA-WRITE-20).
 - **MPA-LOAD-15** `stream(conn)` loads the matching values a batch at a time, as a `futures::Stream` of
   `Result<T, Error>`. One query first reads the keys of every matching root, with the keys, filter, order, limit
   and offset of the load, selecting only the key. Then each batch of `batch_size(n)` keys (1,000 by default, at
@@ -388,6 +389,14 @@ mabat::delete::<Board, _>(board.id, &mut tx).await?;        // the board and wha
   30,000 parameters. A version conflict names the keys of the rows of its statement; on MySQL it cannot tell
   which of them changed. A view with a column type that does not implement `Clone` is saved value by value, in
   the same transaction. Values with references into a graph fail with `Error::Write`.
+- **MPA-WRITE-20** A graph records its changed entities: those added with `insert` and those handed out by
+  `get_mut`, whether or not they were then changed, since it was loaded or last saved; `is_changed(r)` tells.
+  `save_graph_changes(&mut graph, conn)` saves as `save_graph` does (MPA-WRITE-14 to MPA-WRITE-18), but writes
+  only the rows of the changed entities, and of the elements whose foreign key a changed entity's collection
+  writes (MPA-WRITE-16); the other entities' keys are used as loaded. Link rows are replaced (MPA-WRITE-17), and
+  rows no longer in a collection set to NULL, only for the collections of changed entities. Collections and the
+  references they are the inverse of MUST still agree across the whole graph. A successful `save_graph` or
+  `save_graph_changes` leaves no entity changed; a failed one is rolled back and keeps them changed.
 
 ## 11. Errors and diagnostics
 
@@ -453,7 +462,7 @@ Mabat 0.1 does not do the following; tools SHOULD NOT generate code that relies 
 - **MPA-NOT-7** Arguments on map collections in GraphQL, and GraphQL mutations.
 - **MPA-NOT-8** Pipelining queries on one connection.
 - **MPA-NOT-9** Schema generation or migrations: views describe existing tables.
-- **MPA-NOT-10** Saving only what changed in a graph: `save_graph` writes every entity (MPA-WRITE-14).
+- **MPA-NOT-10** Removed: `save_graph_changes` saves only the changed entities of a graph (MPA-WRITE-20).
 
 ## 13. Schema snapshots
 

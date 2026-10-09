@@ -284,6 +284,22 @@ async fn overrides_with_computed_keys() {
     assert_eq!(one.title, "OLD");
 }
 
+/// The columns in another order than the view's fields.
+const REORDERED: &str = r#"
+-- mabat: query $root
+SELECT i.title AS "title", i.id AS "id" FROM issue i
+"#;
+
+#[tokio::test]
+async fn decodes_columns_in_any_order() {
+    let mut conn = setup().await;
+    let mabat = Mabat::builder().register::<IssueSummary>().overrides_sql("IssueSummary", REORDERED);
+    let mabat = mabat.build(&mut conn).await.unwrap();
+    let issues = mabat.load::<IssueSummary>().order_by("id").all(&mut conn).await.unwrap();
+    let plain = mabat::load::<IssueSummary>().order_by("id").all(&mut conn).await.unwrap();
+    assert_eq!(issues, plain);
+}
+
 #[tokio::test]
 async fn checks_find_errors_in_overrides() {
     let mut conn = setup().await;
