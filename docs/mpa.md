@@ -461,3 +461,11 @@ the schema without a database.
 - **MPA-SCH-6** Against a snapshot, override files are checked for their syntax and names only (M0100, M0101):
   their SQL needs a database to prepare it, with `mabat check --database-url` or the application's startup check
   (MPA-OVR-5).
+- **MPA-SCH-7** A build script checks the committed manifest against the committed snapshot with
+  `mabat_check::build("mabat/views.json", "mabat/schema.json").overrides("mabat/overrides").run()`, the
+  `mabat-check` crate in `[build-dependencies]`, which needs no database driver. Each error is a `cargo::error`,
+  which fails the build, and each warning a `cargo::warning`; the build script runs again when either file or an
+  override file changes. Before the manifest exists, or with `MABAT_SKIP_CHECK` set, nothing is checked and a
+  warning says so. `Build::check` returns what it finds instead of telling Cargo. The manifest's types, its JSON
+  form, `explain` and `scaffold`, the override file parser and the report are in `mabat-check`, and
+  `mabat::manifest` re-exports them; checking a manifest against a database is `mabat::manifest::check`.

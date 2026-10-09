@@ -336,6 +336,6 @@ async fn a_postgres_manifest_is_refused() {
     assert_eq!(error.backend, "SQLite");
     let mut manifest = error;
     manifest.backend = "PostgreSQL".to_string();
-    let error = manifest.check(&mut conn, &[]).await.unwrap_err();
+    let error = mabat::manifest::check(&manifest, &mut conn, &[]).await.unwrap_err();
     assert!(error.to_string().contains("PostgreSQL"), "{error}");
 }

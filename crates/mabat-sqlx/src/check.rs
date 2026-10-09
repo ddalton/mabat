@@ -58,7 +58,7 @@ pub(crate) async fn check<B: Backend>(
 
     for view in &manifest.views {
         let file = files.remove(&view.name);
-        let by_query = queries_of(view, file.as_ref(), report);
+        let by_query = mabat_check::check::queries_of(view, file.as_ref(), report);
 
         let mut overrides = Overrides::new();
         // The key classes of the columns of each checked query, to check the links of its children
@@ -80,61 +80,9 @@ pub(crate) async fn check<B: Backend>(
         checked.insert(view.name.clone(), overrides);
     }
 
-    unknown_views(manifest, files.into_values(), report);
+    mabat_check::check::unknown_views(manifest, files.into_values(), report);
 
     Ok(checked)
-}
-
-/// The overrides of the file of a view by query; an override of a query the view does not
-/// have is reported (M0101).
-pub(crate) fn queries_of<'f>(
-    view: &ViewManifest,
-    file: Option<&'f OverrideFile>,
-    report: &mut Report,
-) -> HashMap<&'f str, &'f QueryOverride> {
-    let mut by_query = HashMap::new();
-    let Some(file) = file else { return by_query };
-    let names: Vec<&str> = view.queries.iter().map(|q| q.name.as_str()).collect();
-    for query in &file.queries {
-        if names.contains(&query.query.as_str()) {
-            by_query.insert(query.query.as_str(), query);
-            continue;
-        }
-        let mut notes = vec![format!("the queries of {} are: {}", view.name, names.join(", "))];
-        if let Some(name) = suggest(&query.query, names.iter().copied()) {
-            notes.insert(0, format!("did you mean \"{name}\"?"));
-        }
-        report.push(Diagnostic {
-            severity: Severity::Error,
-            code: "M0101",
-            view: view.name.clone(),
-            query: query.query.clone(),
-            origin: Some(query.origin.to_string()),
-            summary: format!("\"{}\" is not a query of {}", query.query, view.name),
-            notes,
-        });
-    }
-    by_query
-}
-
-/// Report the override files of views that the manifest does not have (M0101).
-pub(crate) fn unknown_views(manifest: &Manifest, files: impl IntoIterator<Item = OverrideFile>, report: &mut Report) {
-    for file in files {
-        let mut notes = Vec::new();
-        if let Some(name) = suggest(&file.view, manifest.views.iter().map(|v| v.name.as_str())) {
-            notes.push(format!("did you mean {name}?"));
-        }
-        notes.push("override files are named after a registered view, e.g. TaskView.toml".to_string());
-        report.push(Diagnostic {
-            severity: Severity::Error,
-            code: "M0101",
-            view: file.view.clone(),
-            query: String::new(),
-            origin: Some(file.file.clone()),
-            summary: format!("{} is not a registered view", file.view),
-            notes,
-        });
-    }
 }
 
 /// The key class the query is linked to its parent query with: the class of the parent's
@@ -184,7 +132,7 @@ async fn check_query<B: Backend>(
         }
     }
     let generated_ok = generated_report.is_ok();
-    for mut diagnostic in generated_report.diagnostics {
+    for mut diagnostic in generated_report.into_diagnostics() {
         match active {
             Some((override_, _)) if override_.shadow => {
                 diagnostic.notes.push("the override is shadowed, which runs the generated query too".to_string());

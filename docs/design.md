@@ -949,6 +949,7 @@ Writes never go through override SQL. Overrides are for reads.
 | `mabat-core` | Shape IR, paths, planner, decoder runtime, `Graph`/`Ref`, errors | none (no database) |
 | `mabat-derive` | `#[derive(View)]` proc macro; generates the static shape and the decoder | `syn`, `quote` |
 | `mabat-sqlx` | Executor, filters, validation, overrides, shadow mode, and a `Backend` trait implemented for each database | `sqlx` 0.9 |
+| `mabat-check` | The manifest of the views, override file parsing, reports, schema snapshots, checking views against a snapshot, and the build script entry point (`mabat_check::build`) | `serde`, `toml` (no database) |
 | `mabat-cli` | `mabat check`, `mabat explain`, `mabat scaffold` (generate an override from the generated SQL), on a manifest written by the application | `mabat-sqlx` |
 | `mabat-graphql` | A schema generated from views; sub-shapes from the selection set | `async-graphql` 7.x |
 | `mabat` | Facade that re-exports the above | all |

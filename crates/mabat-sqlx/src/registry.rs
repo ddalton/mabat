@@ -16,7 +16,7 @@ use mabat_core::{ChildQuery, QueryPlan, ViewShape};
 use crate::backend::{Backend, Conn};
 use crate::check::{self, Checked, ViewEntry};
 use crate::manifest::{self, Manifest, ScaffoldFormat};
-use crate::overrides::{self, Origin, OverrideFile};
+use crate::overrides::{Origin, Source, parse_sources, read_sources};
 use crate::report::{Diagnostic, Report, Severity};
 use crate::{Error, Load, View, ViewDecoder};
 
@@ -110,21 +110,6 @@ impl<B: Backend> Clone for Builder<B> {
     }
 }
 
-/// The content of an override file, before it is parsed.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub(crate) struct Source {
-    view: String,
-    file: String,
-    format: Format,
-    content: String,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum Format {
-    Toml,
-    Sql,
-}
-
 impl<B: Backend> Builder<B> {
     /// Register a view, so that it can be loaded with [`Mabat::load`] and overridden.
     /// The views it contains do not need to be registered.
@@ -150,7 +135,7 @@ impl<B: Backend> Builder<B> {
     pub fn overrides(mut self, view: impl Into<String>, toml: impl Into<String>) -> Self {
         let view = view.into();
         let file = format!("{view}.toml (inline)");
-        self.inline.push(Source { view, file, format: Format::Toml, content: toml.into() });
+        self.inline.push(Source::toml(view, file, toml));
         self
     }
 
@@ -158,7 +143,7 @@ impl<B: Backend> Builder<B> {
     pub fn overrides_sql(mut self, view: impl Into<String>, sql: impl Into<String>) -> Self {
         let view = view.into();
         let file = format!("{view}.sql (inline)");
-        self.inline.push(Source { view, file, format: Format::Sql, content: sql.into() });
+        self.inline.push(Source::sql(view, file, sql));
         self
     }
 
@@ -294,73 +279,6 @@ impl<B: Backend> Builder<B> {
     }
 }
 
-/// Read and parse the override files of the directories. Problems are added to the report.
-pub(crate) fn read_override_files(dirs: &[PathBuf], inline: &[Source], report: &mut Report) -> Vec<OverrideFile> {
-    let sources = read_sources(dirs, inline, report);
-    parse_sources(&sources, report)
-}
-
-/// Read the override files of the directories, and the inline overrides.
-fn read_sources(dirs: &[PathBuf], inline: &[Source], report: &mut Report) -> Vec<Source> {
-    {
-        let mut sources = Vec::new();
-        for dir in dirs {
-            let entries = match std::fs::read_dir(dir) {
-                Ok(entries) => entries,
-                Err(e) => {
-                    report.push(file_error(&dir.display().to_string(), 1, format!("cannot read the directory: {e}")));
-                    continue;
-                }
-            };
-            let mut paths: Vec<(PathBuf, Format)> = entries
-                .filter_map(|entry| entry.ok().map(|e| e.path()))
-                .filter_map(|path| {
-                    let format = match path.extension()?.to_str()? {
-                        "toml" => Format::Toml,
-                        "sql" => Format::Sql,
-                        _ => return None,
-                    };
-                    Some((path, format))
-                })
-                .collect();
-            paths.sort_by(|a, b| a.0.cmp(&b.0));
-            for (path, format) in paths {
-                let file = path.display().to_string();
-                let view = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => sources.push(Source { view, file, format, content }),
-                    Err(e) => report.push(file_error(&file, 1, format!("cannot read the file: {e}"))),
-                }
-            }
-        }
-        sources.extend(inline.iter().cloned());
-        sources
-    }
-}
-
-fn parse_sources(sources: &[Source], report: &mut Report) -> Vec<OverrideFile> {
-    let mut files: Vec<OverrideFile> = Vec::new();
-    for source in sources {
-        if let Some(other) = files.iter().find(|f| f.view == source.view) {
-            report.push(file_error(
-                &source.file,
-                1,
-                format!("{} already has an override file, {}", source.view, other.file),
-            ));
-            continue;
-        }
-        let parsed = match source.format {
-            Format::Toml => overrides::parse(&source.view, &source.file, &source.content),
-            Format::Sql => overrides::parse_sql(&source.view, &source.file, &source.content),
-        };
-        match parsed {
-            Ok(parsed) => files.push(parsed),
-            Err((origin, message)) => report.push(file_error(&origin.file, origin.line, message)),
-        }
-    }
-    files
-}
-
 /// A hash of the override files and the problems reading them, to tell whether they changed.
 fn fingerprint(sources: &[Source], read_problems: &Report) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -369,18 +287,6 @@ fn fingerprint(sources: &[Source], read_problems: &Report) -> u64 {
         diagnostic.to_string().hash(&mut hasher);
     }
     hasher.finish()
-}
-
-fn file_error(file: &str, line: usize, message: String) -> Diagnostic {
-    Diagnostic {
-        severity: Severity::Error,
-        code: "M0100",
-        view: String::new(),
-        query: String::new(),
-        origin: Some(format!("{file}:{line}")),
-        summary: "override file cannot be used".to_string(),
-        notes: vec![message],
-    }
 }
 
 fn shape_id(shape: &'static ViewShape) -> usize {

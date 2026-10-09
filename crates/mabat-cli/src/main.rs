@@ -256,7 +256,7 @@ fn read_schema(schema: &std::path::Path) -> Result<String, String> {
 async fn check_postgres(args: &Args, manifest: &Manifest, url: &str) -> Result<mabat_sqlx::Report, String> {
     let mut conn = sqlx::PgConnection::connect(url).await.map_err(|e| format!("cannot connect: {e}"))?;
     let report = match &args.schema {
-        None => manifest.check(&mut conn, &args.overrides).await.map_err(|e| e.to_string())?,
+        None => mabat_sqlx::manifest::check(manifest, &mut conn, &args.overrides).await.map_err(|e| e.to_string())?,
         Some(schema) => {
             let ddl = read_schema(schema)?;
             // Everything happens in a transaction that is rolled back
@@ -265,7 +265,8 @@ async fn check_postgres(args: &Args, manifest: &Manifest, url: &str) -> Result<m
             let setup = format!("CREATE SCHEMA \"{name}\"; SET LOCAL search_path TO \"{name}\", public");
             tx.execute(AssertSqlSafe(setup)).await.map_err(|e| e.to_string())?;
             tx.execute(AssertSqlSafe(ddl)).await.map_err(|e| format!("the schema file failed: {e}"))?;
-            let report = manifest.check(&mut tx, &args.overrides).await.map_err(|e| e.to_string());
+            let report =
+                mabat_sqlx::manifest::check(manifest, &mut tx, &args.overrides).await.map_err(|e| e.to_string());
             tx.rollback().await.map_err(|e| e.to_string())?;
             report?
         }
@@ -277,7 +278,7 @@ async fn check_postgres(args: &Args, manifest: &Manifest, url: &str) -> Result<m
 async fn check_mysql(args: &Args, manifest: &Manifest, url: &str) -> Result<mabat_sqlx::Report, String> {
     let mut conn = sqlx::MySqlConnection::connect(url).await.map_err(|e| format!("cannot connect: {e}"))?;
     let Some(schema) = &args.schema else {
-        return manifest.check(&mut conn, &args.overrides).await.map_err(|e| e.to_string());
+        return mabat_sqlx::manifest::check(manifest, &mut conn, &args.overrides).await.map_err(|e| e.to_string());
     };
     let ddl = read_schema(schema)?;
     // MySQL commits DDL, so the schema goes in a database of its own, dropped afterwards
@@ -285,7 +286,7 @@ async fn check_mysql(args: &Args, manifest: &Manifest, url: &str) -> Result<maba
     let setup = format!("CREATE DATABASE `{name}`; USE `{name}`");
     conn.execute(AssertSqlSafe(setup)).await.map_err(|e| e.to_string())?;
     let report = match conn.execute(AssertSqlSafe(ddl)).await {
-        Ok(_) => manifest.check(&mut conn, &args.overrides).await.map_err(|e| e.to_string()),
+        Ok(_) => mabat_sqlx::manifest::check(manifest, &mut conn, &args.overrides).await.map_err(|e| e.to_string()),
         Err(e) => Err(format!("the schema file failed: {e}")),
     };
     conn.execute(AssertSqlSafe(format!("DROP DATABASE `{name}`"))).await.map_err(|e| e.to_string())?;
@@ -301,13 +302,14 @@ async fn check_sqlite(args: &Args, manifest: &Manifest, url: Option<String>) -> 
     };
     let mut conn = sqlx::SqliteConnection::connect(&url).await.map_err(|e| format!("cannot connect: {e}"))?;
     match &args.schema {
-        None => manifest.check(&mut conn, &args.overrides).await.map_err(|e| e.to_string()),
+        None => mabat_sqlx::manifest::check(manifest, &mut conn, &args.overrides).await.map_err(|e| e.to_string()),
         Some(schema) => {
             let ddl = read_schema(schema)?;
             // SQLite rolls back DDL too
             let mut tx = conn.begin().await.map_err(|e| e.to_string())?;
             tx.execute(AssertSqlSafe(ddl)).await.map_err(|e| format!("the schema file failed: {e}"))?;
-            let report = manifest.check(&mut tx, &args.overrides).await.map_err(|e| e.to_string());
+            let report =
+                mabat_sqlx::manifest::check(manifest, &mut tx, &args.overrides).await.map_err(|e| e.to_string());
             tx.rollback().await.map_err(|e| e.to_string())?;
             report
         }

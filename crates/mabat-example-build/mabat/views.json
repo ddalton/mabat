@@ -1,0 +1,120 @@
+{
+  "format": 2,
+  "backend": "SQLite",
+  "views": [
+    {
+      "name": "ProjectView",
+      "queries": [
+        {
+          "name": "$root",
+          "view": "ProjectView",
+          "link": {
+            "kind": "root"
+          },
+          "table": "project",
+          "key_column": "id",
+          "generated": true,
+          "key_alias": "id",
+          "sql": "SELECT t0.\"id\" AS \"id\",\n       t0.\"name\" AS \"name\",\n       t0.\"description\" AS \"description\"\nFROM \"project\" AS t0",
+          "columns": [
+            {
+              "alias": "id",
+              "role": "field",
+              "column": "id",
+              "optional": true,
+              "type": {
+                "rust": "Option<i64>",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "name",
+              "role": "field",
+              "column": "name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "description",
+              "role": "field",
+              "column": "description",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "tasks",
+          "view": "TaskView",
+          "parent": 0,
+          "link": {
+            "kind": "child",
+            "fk": "project_id"
+          },
+          "table": "task",
+          "key_column": "id",
+          "key_alias": "id",
+          "sql": "SELECT t0.\"project_id\" AS \"$parent\",\n       t0.\"id\" AS \"id\",\n       t0.\"title\" AS \"title\",\n       t0.\"done\" AS \"done\"\nFROM \"task\" AS t0\nWHERE t0.\"project_id\" IN (:keys)\nORDER BY t0.\"id\"",
+          "columns": [
+            {
+              "alias": "$parent",
+              "role": "parent",
+              "column": "project_id"
+            },
+            {
+              "alias": "id",
+              "role": "field",
+              "column": "id",
+              "type": {
+                "rust": "i64",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "title",
+              "role": "field",
+              "column": "title",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "done",
+              "role": "field",
+              "column": "done",
+              "type": {
+                "rust": "bool",
+                "sql": "BOOLEAN",
+                "accepts": [
+                  "INTEGER",
+                  "BOOLEAN"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

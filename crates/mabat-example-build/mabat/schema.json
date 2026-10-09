@@ -1,0 +1,76 @@
+{
+  "format": 1,
+  "backend": "SQLite",
+  "tables": [
+    {
+      "name": "project",
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "declared": "INTEGER",
+          "nullable": false,
+          "generated": true
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "declared": "VARCHAR(100)",
+          "nullable": false
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "declared": "TEXT",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "id"
+      ]
+    },
+    {
+      "name": "task",
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "declared": "BIGINT",
+          "nullable": false
+        },
+        {
+          "name": "project_id",
+          "type": "INTEGER",
+          "declared": "BIGINT",
+          "nullable": false
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "declared": "VARCHAR(200)",
+          "nullable": false
+        },
+        {
+          "name": "done",
+          "type": "BOOLEAN",
+          "declared": "BOOLEAN",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "project_id"
+          ],
+          "table": "project",
+          "references": [
+            "id"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+[package]
+name = "mabat-example-build"
+description = "An example of checking Mabat views against a schema snapshot from a build script"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+mabat = { workspace = true, features = ["sqlite"] }
+sqlx = { workspace = true, features = ["sqlite"] }
+
+[build-dependencies]
+mabat-check.workspace = true
+
+[dev-dependencies]
+mabat-check.workspace = true
+tokio.workspace = true

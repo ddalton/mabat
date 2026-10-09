@@ -1255,6 +1255,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -1296,6 +1297,16 @@ dependencies = [
  "mabat-graphql",
  "rust_decimal",
  "serde_json",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "mabat-example-build"
+version = "0.1.0"
+dependencies = [
+ "mabat",
+ "mabat-check",
  "sqlx",
  "tokio",
 ]
