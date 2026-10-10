@@ -169,8 +169,12 @@ impl Default for Render {
 pub struct RootOptions {
     /// Restrict the root rows to the bound keys. Always set for a child query.
     pub by_keys: bool,
-    /// Restrict the rows to the rows that match. Its values are bound after the keys.
+    /// Restrict the rows to the rows that match. Its values are bound after the keys and the
+    /// named parameters.
     pub filter: Option<Filter>,
+    /// The names of the parameters of the root query's own SQL (`:name`), in the order their
+    /// values are bound: after the keys, before the filter's values.
+    pub params: Vec<String>,
     /// The number of values of each list parameter slot of the filter (0 for other slots),
     /// for MySQL and SQLite, which bind each value of a list.
     pub filter_lists: Vec<usize>,
@@ -194,10 +198,16 @@ impl RootOptions {
         }
     }
 
-    /// The placeholder number of the first filter value on PostgreSQL: `$2` after the keys,
-    /// else `$1`.
-    pub fn first_filter_param(&self) -> usize {
+    /// The placeholder number of the first named parameter on PostgreSQL: `$2` after the
+    /// keys, else `$1`.
+    pub fn first_param(&self) -> usize {
         if self.by_keys { 2 } else { 1 }
+    }
+
+    /// The placeholder number of the first filter value on PostgreSQL: after the keys and the
+    /// named parameters.
+    pub fn first_filter_param(&self) -> usize {
+        self.first_param() + self.params.len()
     }
 
     /// The WHERE clause of the root query, without `WHERE`, or `None` if there are no
@@ -459,6 +469,106 @@ pub fn expand_keys(sql: &str, dialect: Dialect, count: usize) -> String {
     out
 }
 
+/// A placeholder of SQL with named parameters, in the order of the text: see [`expand_params`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Slot {
+    /// The keys, [`KEYS_TOKEN`].
+    Keys,
+    /// The named parameter with this index.
+    Param(usize),
+}
+
+/// The `:name` tokens of SQL, outside literals, quoted identifiers and comments, and not a
+/// `::` cast, each with its byte range.
+fn param_tokens(sql: &str) -> Vec<(std::ops::Range<usize>, &str)> {
+    let bytes = sql.as_bytes();
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            quote @ (b'\'' | b'"' | b'`') => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i < bytes.len() && !(bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/')) {
+                    i += 1;
+                }
+                i += 2;
+            }
+            b':' if bytes.get(i + 1) == Some(&b':') => i += 2,
+            b':' if bytes.get(i + 1).is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_') => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && word(bytes[i]) {
+                    i += 1;
+                }
+                tokens.push((start..i, &sql[start + 1..i]));
+            }
+            _ => i += 1,
+        }
+    }
+    tokens
+}
+
+/// Whether SQL takes the keys: [`KEYS_TOKEN`] outside literals and comments, or `$1`.
+pub fn takes_keys(sql: &str) -> bool {
+    param_tokens(sql).iter().any(|(_, name)| *name == "keys") || sql.contains("$1")
+}
+
+/// The names of the named parameters of SQL (`:name`), each once, in the order they first
+/// appear; [`KEYS_TOKEN`] is not one.
+pub fn param_names(sql: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for (_, name) in param_tokens(sql) {
+        if name != "keys" && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// Replace the keys token and the named parameters `:name` of SQL with placeholders: the keys
+/// as for [`expand_keys`], and the parameter `names[i]` as `$(first + i)` on PostgreSQL, `?`
+/// elsewhere. Returns the SQL and its placeholders in the order of the text, which is the order
+/// MySQL and SQLite bind them in. A parameter that is not in `names` is the error.
+pub fn expand_params(
+    sql: &str,
+    dialect: Dialect,
+    keys: usize,
+    names: &[String],
+    first: usize,
+) -> Result<(String, Vec<Slot>), String> {
+    let keys_replacement = if dialect.binds_arrays() { dialect.placeholder(1) } else { list(keys.max(1)) };
+    let mut out = String::with_capacity(sql.len());
+    let mut slots = Vec::new();
+    let mut last = 0;
+    for (range, name) in param_tokens(sql) {
+        out.push_str(&sql[last..range.start]);
+        if name == "keys" {
+            out.push_str(&keys_replacement);
+            slots.push(Slot::Keys);
+        } else {
+            let index = names.iter().position(|n| n == name).ok_or_else(|| name.to_string())?;
+            out.push_str(&dialect.placeholder(first + index));
+            slots.push(Slot::Param(index));
+        }
+        last = range.end;
+    }
+    out.push_str(&sql[last..]);
+    Ok((out, slots))
+}
+
 /// Apply the root options to the SQL of an override of the root query.
 ///
 /// The override becomes a subquery, so ordering and filters refer to its column aliases:
@@ -632,10 +742,13 @@ pub fn keys<'a>(
 }
 
 /// The reference to a column of the view's table in an override used as a subquery: the
-/// alias it is selected as.
+/// alias it is selected as. A computed field is selected by its name.
 fn override_column(plan: &QueryPlan, column: &str, dialect: Dialect) -> Option<String> {
-    let selected = plan.columns.iter().find(|c| c.column == column)?;
-    Some(format!("{OVERRIDE_ALIAS}.{}", dialect.quote(&selected.alias)))
+    let alias = match plan.columns.iter().find(|c| c.column == column) {
+        Some(selected) => &selected.alias,
+        None => plan.computed.iter().find(|alias| *alias == column)?,
+    };
+    Some(format!("{OVERRIDE_ALIAS}.{}", dialect.quote(alias)))
 }
 
 fn trim_statement(sql: &str) -> &str {
@@ -921,6 +1034,21 @@ mod tests {
         );
         let sqlite = render(&plan, &options, &Render::new(Dialect::Sqlite).with_keys(1));
         assert!(sqlite.ends_with("LIMIT -1 OFFSET 5"), "{sqlite}");
+    }
+
+    #[test]
+    fn named_parameters() {
+        let sql = "SELECT c.id, x::text, ':not' AS \"a:b\" -- :comment\n FROM c WHERE d >= :from AND c.id IN (:keys) \
+                   /* :block */ AND d < :to AND e = :from";
+        assert_eq!(param_names(sql), ["from", "to"]);
+        let names = vec!["to".to_string(), "from".to_string()];
+        let (pg, slots) = expand_params(sql, Dialect::Postgres, 1, &names, 2).unwrap();
+        assert!(pg.ends_with("WHERE d >= $3 AND c.id IN ($1) /* :block */ AND d < $2 AND e = $3"), "{pg}");
+        assert!(pg.contains("x::text, ':not' AS \"a:b\" -- :comment"), "{pg}");
+        assert_eq!(slots, [Slot::Param(1), Slot::Keys, Slot::Param(0), Slot::Param(1)]);
+        let (sqlite, _) = expand_params(sql, Dialect::Sqlite, 2, &names, 1).unwrap();
+        assert!(sqlite.ends_with("WHERE d >= ? AND c.id IN (?, ?) /* :block */ AND d < ? AND e = ?"), "{sqlite}");
+        assert_eq!(expand_params(sql, Dialect::Sqlite, 1, &names[..1], 1).unwrap_err(), "from");
     }
 
     #[test]

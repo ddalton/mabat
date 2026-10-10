@@ -1066,16 +1066,7 @@ fn statement(
     let dialect = render.dialect;
     match (active, &plan.link) {
         (None, _) => Ok(sql::render(plan, &RootOptions { by_keys: has_keys, ..options.clone() }, render).into()),
-        (Some(active), Link::Root) => {
-            if active.keys_param && !has_keys {
-                return Err(Error::KeysRequired { view, origin: active.origin.to_string() });
-            }
-            let options = RootOptions { by_keys: has_keys, ..options.clone() };
-            let own = sql::expand_keys(&active.sql, dialect, render.keys);
-            let sql = sql::wrap_root(&own, plan, &options, has_keys && !active.keys_param, render)
-                .map_err(|column| Error::ColumnNotSelected { view, column: column.to_string() })?;
-            Ok(sql.into())
-        }
+        (Some(_), Link::Root) => unreachable!("a root override runs through `root_override`"),
         (Some(active), Link::Child { .. }) => {
             let own = sql::expand_keys(&active.sql, dialect, render.keys);
             let sql = sql::wrap_child(&own, plan, options, render)
@@ -1110,15 +1101,15 @@ pub(crate) async fn count<B: Backend>(
     let (keys, render) = root_keys::<B>(keys);
     let options = RootOptions {
         by_keys: has_keys,
-        filter_lists: values.iter().map(Bound::list_len).collect(),
+        filter_lists: values.iter().skip(options.params.len()).map(Bound::list_len).collect(),
         ..options.clone()
     };
-    let override_sql = match overrides.and_then(|o| o.get(plan.query_name())) {
-        Some(active) if active.keys_param && !has_keys => {
-            return Err(Error::KeysRequired { view, origin: active.origin.to_string() });
+    let (override_sql, keys, values) = match overrides.and_then(|o| o.get(plan.query_name())) {
+        Some(active) => {
+            let root = root_override::<B>(plan, active, &options, keys, &render, values)?;
+            (Some((root.own, root.filter_keys)), root.keys, root.values)
         }
-        Some(active) => Some((sql::expand_keys(&active.sql, B::DIALECT, render.keys), has_keys && !active.keys_param)),
-        None => None,
+        None => (None, keys, values),
     };
     let sql: Arc<str> = sql::count(plan, &options, override_sql.as_ref().map(|(s, f)| (s.as_str(), *f)), &render)
         .map_err(|column| Error::ColumnNotSelected { view, column: column.to_string() })?
@@ -1148,17 +1139,15 @@ impl KeysQuery {
         let (keys, render) = root_keys::<B>(keys);
         let options = RootOptions {
             by_keys: has_keys,
-            filter_lists: values.iter().map(Bound::list_len).collect(),
+            filter_lists: values.iter().skip(options.params.len()).map(Bound::list_len).collect(),
             ..options.clone()
         };
-        let override_sql = match overrides.and_then(|o| o.get(plan.query_name())) {
-            Some(active) if active.keys_param && !has_keys => {
-                return Err(Error::KeysRequired { view, origin: active.origin.to_string() });
-            }
+        let (override_sql, keys, values) = match overrides.and_then(|o| o.get(plan.query_name())) {
             Some(active) => {
-                Some((sql::expand_keys(&active.sql, B::DIALECT, render.keys), has_keys && !active.keys_param))
+                let root = root_override::<B>(plan, active, &options, keys, &render, values)?;
+                (Some((root.own, root.filter_keys)), root.keys, root.values)
             }
-            None => None,
+            None => (None, keys, values),
         };
         let sql = sql::keys(plan, &options, override_sql.as_ref().map(|(s, f)| (s.as_str(), *f)), &render)
             .map_err(|column| Error::ColumnNotSelected { view, column: column.to_string() })?
@@ -1186,6 +1175,58 @@ pub(crate) fn read_keys<B: Backend>(plan: &QueryPlan, rows: &[B::Row]) -> Result
     Ok(found)
 }
 
+/// The SQL of a root override, or of [`crate::Load::sql`], with its keys and named parameters
+/// as placeholders, and the keys and values to bind for them.
+struct RootOverride {
+    own: String,
+    /// The keys are bound but the SQL does not take them: they filter it from outside.
+    filter_keys: bool,
+    keys: Option<KeyList>,
+    values: Vec<Bound>,
+}
+
+/// Expand a root override's keys and named parameters. `options` are those of the root query,
+/// with `by_keys` set if keys are bound, and `values` the named parameters' values followed by
+/// the filter's. PostgreSQL numbers its placeholders; MySQL and SQLite bind in the order of the
+/// text, so with named parameters the keys are bound there among the values.
+fn root_override<B: Backend>(
+    plan: &QueryPlan,
+    active: &ActiveOverride,
+    options: &RootOptions,
+    keys: Option<KeyList>,
+    render: &Render,
+    values: Vec<Bound>,
+) -> Result<RootOverride, Error> {
+    let view = plan.shape.name;
+    let has_keys = keys.is_some();
+    if active.keys_param && !has_keys {
+        return Err(Error::KeysRequired { view, origin: active.origin.to_string() });
+    }
+    let (own, slots) = sql::expand_params(&active.sql, B::DIALECT, render.keys, &options.params, options.first_param())
+        .map_err(|name| Error::Params {
+            view,
+            message: format!("the root query takes `:{name}`, but no value is bound to it"),
+        })?;
+    let filter_keys = has_keys && !active.keys_param;
+    if B::DIALECT.binds_arrays() || options.params.is_empty() {
+        return Ok(RootOverride { own, filter_keys, keys, values });
+    }
+    // The placeholders of the override, then the keys filtering it, then the filter's values
+    let key_values = keys.map(KeyList::into_bound).unwrap_or_default();
+    let mut ordered = Vec::with_capacity(values.len() + key_values.len());
+    for slot in slots {
+        match slot {
+            sql::Slot::Keys => ordered.extend(key_values.iter().cloned()),
+            sql::Slot::Param(index) => ordered.push(values[index].clone()),
+        }
+    }
+    if filter_keys {
+        ordered.extend(key_values);
+    }
+    ordered.extend(values.into_iter().skip(options.params.len()));
+    Ok(RootOverride { own, filter_keys, keys: None, values: ordered })
+}
+
 /// The keys of the root query, padded on MySQL and SQLite, and how to render for them.
 fn root_keys<B: Backend>(keys: Option<KeyList>) -> (Option<KeyList>, Render) {
     let render = Render::new(B::DIALECT);
@@ -1210,8 +1251,17 @@ async fn fetch<B: Backend>(
 ) -> Result<Vec<B::Row>, Error> {
     let has_keys = keys.is_some();
     let root = matches!(plan.link, Link::Root);
-    let values = values.to_vec();
-    let options = RootOptions { filter_lists: values.iter().map(Bound::list_len).collect(), ..options.clone() };
+    let mut values = values.to_vec();
+    let mut options = options.clone();
+    // The generated query takes no named parameters: it runs in their place in shadow mode
+    if active.is_none() && !options.params.is_empty() {
+        values.drain(..options.params.len());
+        options.params.clear();
+    }
+    let options = RootOptions {
+        filter_lists: values.iter().skip(options.params.len()).map(Bound::list_len).collect(),
+        ..options
+    };
 
     // MySQL and SQLite bind each key: child queries split many keys into several statements,
     // each padded so that statements are reused
@@ -1233,8 +1283,17 @@ async fn fetch<B: Backend>(
         // Generated SQL only contains quoted identifiers from the static shape of the view and
         // integer limits. Override SQL comes from configuration and was checked when the
         // registry was built. All values, including the keys, are bound parameters.
-        let sql = statement(plan, &options, has_keys, active, &render)?;
-        let batch = B::fetch(conn, sql.clone(), keys, values.clone()).await.map_err(|source| Error::Query {
+        let (sql, keys, values) = match active {
+            Some(active) if root => {
+                let options = RootOptions { by_keys: has_keys, ..options.clone() };
+                let root = root_override::<B>(plan, active, &options, keys, &render, values.clone())?;
+                let sql = sql::wrap_root(&root.own, plan, &options, root.filter_keys, &render)
+                    .map_err(|column| Error::ColumnNotSelected { view: plan.shape.name, column: column.to_string() })?;
+                (Arc::from(sql), root.keys, root.values)
+            }
+            _ => (statement(plan, &options, has_keys, active, &render)?, keys, values.clone()),
+        };
+        let batch = B::fetch(conn, sql.clone(), keys, values).await.map_err(|source| Error::Query {
             view: plan.shape.name,
             path: plan.path.clone(),
             sql: sql.to_string(),

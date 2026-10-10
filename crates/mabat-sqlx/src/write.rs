@@ -395,7 +395,7 @@ fn columns_of(fields: &'static [mabat_core::Field], prefix: &str, out: &mut Vec<
                     }
                 }
             },
-            FieldKind::Child(_) | FieldKind::ToOne { .. } => {}
+            FieldKind::Computed { .. } | FieldKind::Child(_) | FieldKind::ToOne { .. } => {}
         }
     }
 }

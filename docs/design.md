@@ -235,6 +235,16 @@ let open: Vec<TaskView> = mabat
     .await?;
 ```
 
+> **Reports (as built, later):** `Load::sql(text)` runs `text` as the root query: it becomes an override of
+> `$root` for that load, so the subquery wrapping of filters, order and paging (section 9) applies, and children
+> load by the keys it selects. Named parameters `:name` (`Load::bind`) are found by a small lexer that skips
+> literals, quoted identifiers, comments and `::` casts. PostgreSQL numbers them after the keys and before the
+> filter's values; MySQL and SQLite bind in the order of the text, so there the keys are bound among the values,
+> in the order their placeholders appear. A root override may take them too: the checks prepare them as
+> placeholders. `#[view(computed)]` (`FieldKind::Computed`) is a field the generated query does not select: the
+> manifest lists it with the role `computed`, so override checks require it and the generated query's check does
+> not, and the snapshot check skips it. A required computed field with no SQL fails the load before it runs.
+
 ### 5.3 Attributes
 
 | Attribute | On | Meaning |
@@ -1099,9 +1109,10 @@ specification.
 5. ~~Should the GraphQL integration also generate the GraphQL schema from views, or only resolve against an
    existing schema?~~ It generates the schema.
 6. ~~Are writes (M8) in scope for the first release?~~ Yes: aggregates, changes, many values and graphs are saved.
-7. Should views be generic? Generic embedded structs and JSON payloads (`Range<T>`, `Event<P>`) would cover most
-   needs; generic views over a table are rare, as a table has fixed column types, and would need shapes built at
-   run time, identity by `TypeId` and a name per instantiation.
+7. ~~Should views be generic?~~ Embedded structs can be (`Range<T>`): each instantiation builds its shape the first
+   time, kept by `TypeId` and named after it (`Range<NaiveDate>`), with the value types of its parameter-typed
+   fields found from their type names at run time (`ValueType::of`). Views stay concrete, as a table has fixed
+   column types. Generic JSON payloads (`Event<P>`) remain open: `json` fields cannot use a type parameter.
 8. ~~Should graphs serialize as JSON with `$id`/`$ref` (section 7.3), keeping identity, rather than only unrolling
    with a selection?~~ Yes: `Load::graph_json`.
 9. Should views read from sources other than SQL, such as in-memory data or borrowed (`&'a T`) views? SQLite in

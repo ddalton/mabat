@@ -111,4 +111,9 @@ pub enum Error {
         "{view}: cannot order or filter by `{column}`: the root query is overridden and the view does not select it"
     )]
     ColumnNotSelected { view: &'static str, column: String },
+
+    /// The named parameters of the root query's SQL and the values bound with
+    /// [`Load::bind`](crate::Load::bind) do not match.
+    #[error("{view}: {message}")]
+    Params { view: &'static str, message: String },
 }
