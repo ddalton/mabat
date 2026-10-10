@@ -70,6 +70,8 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **The MPA specification.** `docs/mpa.md`, the Mabat Persistence Architecture, states Mabat's contract as
   numbered rules; `docs/mpa.json` indexes its capabilities, attributes, functions, errors and diagnostics, and
   `llms.txt` points AI tools to both. A test keeps the index in step with the derive and the errors.
+- **Benchmarks.** `benches/orm-comparison` loads the same nested data with Mabat, hand-written SQLx, SeaORM and
+  diesel-async at 1, 100 and 10,000 roots with criterion; the results are in the performance guide.
 - **Streaming.** `Load::stream` loads values a batch at a time as a `futures::Stream`, holding one batch
   in memory: one query reads the keys of every match, with the filter, order and page, then each batch of
   `batch_size` keys (1,000 by default) is loaded with its collections and references, yielding the values in the
