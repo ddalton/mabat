@@ -44,7 +44,28 @@ for colleague in me.manager(&graph).unwrap().reports(&graph) {
 - Navigation borrows the `Graph`: no runtime borrow checks. Changes go through `graph.get_mut(r)`.
 - `Graph` is `Send + Sync`.
 - A view with `Ref` fields is loaded with `graph`, or as [JSON with a selection](../json/), which unrolls it into a
-  tree as deep as the selection asks.
+  tree as deep as the selection asks, or with `graph_json`, which keeps identity.
+
+## A graph as JSON
+
+`graph_json` writes the whole graph, each entity once, without a selection
+([MPA-JSON-7](../../spec/mpa/#mpa-json-7)). An entity is an object with an `$id`, its view and key, where it is
+first reached from the roots; everywhere else it is a `$ref` to that id, so cycles and shared entities stay as they
+are:
+
+```rust
+let json = mabat::load::<Employee>().by_key(3).graph_json(&mut conn).await?;
+```
+
+```json
+[{ "$id": "Employee:3", "first_name": "Jane",
+   "manager": { "$id": "Employee:2", "first_name": "Nancy",
+                "manager": { "$id": "Employee:1", "...": "..." },
+                "reports": [{ "$ref": "Employee:3" }, { "$id": "Employee:4", "...": "..." }] },
+   "reports": [] }]
+```
+
+This is the `$id`/`$ref` convention of Json.NET and of several JavaScript libraries that restore the references.
 
 ## Saving a graph
 

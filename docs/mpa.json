@@ -50,13 +50,15 @@
     },
     {
       "id": "embedded-values",
-      "summary": "Structs stored in columns of the containing view",
+      "summary": "Structs stored in columns of the containing view, generic or not",
       "api": [
         "#[view(embedded)]",
-        "#[view(embed(prefix))]"
+        "#[view(embed(prefix))]",
+        "mabat::GenericColumn"
       ],
       "rules": [
         "MPA-VIEW-3",
+        "MPA-VIEW-4",
         "MPA-VIEW-7"
       ]
     },
@@ -280,18 +282,34 @@
       ]
     },
     {
+      "id": "report-queries",
+      "summary": "Reports: root SQL with named parameters and computed fields",
+      "api": [
+        "Load::sql",
+        "Load::bind",
+        "#[view(computed)]"
+      ],
+      "rules": [
+        "MPA-LOAD-19",
+        "MPA-VIEW-13",
+        "MPA-OVR-3"
+      ]
+    },
+    {
       "id": "json-loading",
       "summary": "Load views as JSON, whole or a selection of their fields",
       "api": [
         "Load::json",
         "Load::select",
-        "Selection::parse"
+        "Selection::parse",
+        "Load::graph_json"
       ],
       "rules": [
         "MPA-JSON-1",
         "MPA-JSON-3",
         "MPA-JSON-4",
-        "MPA-JSON-5"
+        "MPA-JSON-5",
+        "MPA-JSON-7"
       ]
     },
     {
@@ -428,9 +446,10 @@
       "name": "embedded",
       "on": "struct",
       "syntax": "#[view(embedded)]",
-      "summary": "A struct stored in columns of the containing view",
+      "summary": "A struct stored in columns of the containing view, generic over types or not",
       "rules": [
-        "MPA-VIEW-3"
+        "MPA-VIEW-3",
+        "MPA-VIEW-4"
       ]
     },
     {
@@ -514,6 +533,15 @@
       "summary": "A key the database generates when the row is inserted",
       "rules": [
         "MPA-WRITE-13"
+      ]
+    },
+    {
+      "name": "computed",
+      "on": "field",
+      "syntax": "#[view(computed)]",
+      "summary": "A value SQL computes, not a column of the table",
+      "rules": [
+        "MPA-VIEW-13"
       ]
     },
     {
@@ -675,6 +703,20 @@
       ]
     },
     {
+      "api": "Load::sql",
+      "summary": "Run SQL as the root query, for reports",
+      "rules": [
+        "MPA-LOAD-19"
+      ]
+    },
+    {
+      "api": "Load::bind",
+      "summary": "Bind a named parameter of the root query's SQL",
+      "rules": [
+        "MPA-LOAD-19"
+      ]
+    },
+    {
       "api": "Load::all / one / optional / count",
       "summary": "Run a load",
       "rules": [
@@ -693,6 +735,13 @@
       "summary": "Load as JSON",
       "rules": [
         "MPA-JSON-1"
+      ]
+    },
+    {
+      "api": "Load::graph_json",
+      "summary": "Load a graph as JSON, each entity once with $id and $ref",
+      "rules": [
+        "MPA-JSON-7"
       ]
     },
     {
@@ -1004,6 +1053,13 @@
       ]
     },
     {
+      "variant": "mabat::Error::Params",
+      "rules": [
+        "MPA-LOAD-19",
+        "MPA-VIEW-13"
+      ]
+    },
+    {
       "variant": "mabat::Error::Invalid",
       "rules": [
         "MPA-OVR-5"
@@ -1255,7 +1311,7 @@
     {
       "id": "MPA-VIEW-4",
       "section": "3.1 Container attributes",
-      "text": "A view MUST NOT have generic parameters."
+      "text": "A view MUST NOT have generic parameters. An embedded struct MAY have type parameters (`struct Range<T> { start: T, end: T }`), and each instantiation (`Range<NaiveDate>`, `Range<i32>`) is a shape of its own, named after it and built the first time it is used. A field whose type uses a type parameter MUST be a column or an embedded struct, not `json`, and its type MUST implement `mabat::GenericColumn` on each database: decoded, encoded, `Serialize`, `Clone`, `PartialEq`, `Send`, `Sync` and `'static`. Lifetimes and const parameters are compile errors."
     },
     {
       "id": "MPA-VIEW-5",
@@ -1296,6 +1352,11 @@
       "id": "MPA-VIEW-12",
       "section": "3.3 Column types",
       "text": "The derive records the Rust type of each column (`shape::ValueType`): nullable for `Option`, a list for `Vec` (except `Vec<u8>`), and a scalar named after the type: `Boolean`, `Int` (up to 32 bits), `BigInt`, `Float`, `String`, `Uuid`, `Date`, `Time`, `DateTime`, `NaiveDateTime`, `Decimal`, `Json`, `Bytes`, or the name of any other type. GraphQL types and filters (section 9) come from it."
+    },
+    {
+      "id": "MPA-VIEW-13",
+      "section": "3.3 Column types",
+      "text": "A `computed` field is a value that SQL computes, such as `count(*) AS \"invoices\"`: not a column of the view's table. The generated query does not select it; SQL that selects its alias (the field's name) fills it: the load's own root SQL (MPA-LOAD-19) or an override, whose checks require it unless it is an `Option` (MPA-OVR-3). Loading a view whose computed field is not an `Option` with a generated query fails with `Error::Params`; an `Option` is then `None`. A computed field is never written, MAY be ordered and filtered by over root SQL, and is a scalar in GraphQL. It belongs to a view's own fields, not to embedded structs or variants, and takes no `column`, `json`, `version` or `generated` (compile errors)."
     },
     {
       "id": "MPA-SUM-1",
@@ -1408,6 +1469,11 @@
       "text": "The stream holds the connection until it ends or is dropped, and dropping it stops the load (the connections of a `Pooled` stream are given back, and its snapshot rolled back). The cursor of a PostgreSQL stream is closed when the stream ends; one left open by a dropped stream stays open on the connection until the next stream on it closes it, its transaction rolls back, or the connection closes. Nothing runs until the stream is first polled. An error, from preparing the load or from a query, is yielded once and ends the stream."
     },
     {
+      "id": "MPA-LOAD-19",
+      "section": "5. Loading",
+      "text": "`sql(text)` runs `text` as the root query, as an override of it runs (MPA-OVR-3, MPA-OVR-4): for reports and other queries that are not a table, such as aggregates and joins. Its rows are decoded as the view, and the view's collections and references load as usual, by the keys it selects. `bind(name, value)` binds `:name`, a named parameter of the root query's SQL, of `sql` or of a root override; a parameter is a whole `:name` token outside literals, quoted identifiers and comments, not a `::` cast, and MAY appear more than once. Every parameter MUST have a value and every value a parameter, else `Error::Params`. Filters, order, paging, `count` and streams apply to its rows as a subquery. Unlike an override, it is not checked beforehand: a missing alias fails when it runs."
+    },
+    {
       "id": "MPA-PLAN-1",
       "section": "6. Query planning",
       "text": "A view is loaded by one root query plus one query per to-one reference, per collection and per variant table, at any depth, each batched by the keys of the rows above: never one query per row, and never a join of two collections."
@@ -1445,7 +1511,7 @@
     {
       "id": "MPA-OVR-3",
       "section": "7. Overrides",
-      "text": "An override MUST select the aliases of section 6 that the view decodes: its columns, `$key` or the key field, `$parent` for a collection, `$ref.<field>` for references."
+      "text": "An override MUST select the aliases of section 6 that the view decodes: its columns, `$key` or the key field, `$parent` for a collection, `$ref.<field>` for references, and its computed fields (MPA-VIEW-13). A root override MAY take named parameters, `:name`, bound by each load (MPA-LOAD-19); the checks prepare them as placeholders after the keys. Other overrides take only the keys."
     },
     {
       "id": "MPA-OVR-4",
@@ -1485,7 +1551,7 @@
     {
       "id": "MPA-JSON-3",
       "section": "8. JSON and selections",
-      "text": "`select(Selection)` loads only the selected fields: only their columns are selected and only their child queries run. `Selection::parse(\"name assignee { name } children { name }\")` reads GraphQL-like text."
+      "text": "`select(Selection)` loads only the selected fields: only their columns are selected and only their child queries run. `Selection::parse(\"name assignee { name } children { name }\")` reads GraphQL-like text. The key column is always selected, named after the key field if the view has one, selected or not: the name overrides give it (MPA-OVR-3), so overridden queries load selections too."
     },
     {
       "id": "MPA-JSON-4",
@@ -1495,12 +1561,17 @@
     {
       "id": "MPA-JSON-5",
       "section": "8. JSON and selections",
-      "text": "A selection has a finite depth, so recursive and graph views load as trees as deep as it asks. A graph view loaded as JSON without a selection fails with `Error::GraphRequired`."
+      "text": "A selection has a finite depth, so recursive and graph views load as trees as deep as it asks. A graph view loaded with `json` without a selection fails with `Error::GraphRequired`; `graph_json` writes it whole (MPA-JSON-7)."
     },
     {
       "id": "MPA-JSON-6",
       "section": "8. JSON and selections",
       "text": "A selection is loaded with `json`; typed terminals with a selection fail with `Error::SelectionWithoutJson`. Overrides apply to selections."
+    },
+    {
+      "id": "MPA-JSON-7",
+      "section": "8. JSON and selections",
+      "text": "`graph_json(conn)` loads as `graph` does (MPA-LOAD-14) and returns the roots as a JSON array that keeps identity: each entity is written once, as an object whose `$id` is its view and key (`\"Employee:2\"`), where it is first reached from the roots, depth first; everywhere else it is `{\"$ref\": \"Employee:2\"}`. `Ref<T>` fields are references, `Vec<Ref<T>>` arrays of them; owned values are written as `json` writes them. A selection fails with `Error::SelectionWithoutJson`."
     },
     {
       "id": "MPA-GQL-1",

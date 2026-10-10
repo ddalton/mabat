@@ -1,3 +1,5 @@
 /target
 /benches/orm-comparison/target
 Cargo.lock.bak
+chinook.db
+chinook.db-*

@@ -1,0 +1,5 @@
+error: a view cannot have generic parameters; an embedded struct (`#[view(embedded)]`) can have type parameters
+ --> tests/ui/generic_view.rs:3:15
+  |
+3 | struct Booking<T> {
+  |               ^

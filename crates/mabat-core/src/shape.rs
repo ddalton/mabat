@@ -91,6 +91,10 @@ pub enum FieldKind {
     /// column references the key of this view, or with [`Child::through`], rows linked to
     /// this view by a link table.
     Child(Child),
+    /// A value that SQL computes, such as `sum(total) AS sales`: not a column of the view's
+    /// table, so the generated query does not select it. It is filled by SQL that selects its
+    /// alias, the field's name: the load's own root SQL, or an override.
+    Computed { ty: ValueType },
     /// A to-one reference: the `fk` column of this view references the key of the target view.
     /// With `graph`, the value is a reference into a graph (`Ref<T>`), not an owned value. With
     /// `recursion`, the reference leads back to its own view, as a chain of parents does.
@@ -130,6 +134,51 @@ impl ValueType {
 
     pub const fn new(scalar: Scalar) -> ValueType {
         ValueType { scalar, nullable: false, list: false }
+    }
+
+    /// The value type of the Rust type `T`, from its name, as `#[derive(View)]` finds it from
+    /// the type as written: for a field whose type is a type parameter of a generic embedded
+    /// struct, known only when the struct is instantiated.
+    pub fn of<T: ?Sized>() -> ValueType {
+        ValueType::of_type_name(std::any::type_name::<T>())
+    }
+
+    /// The value type of a Rust type by its full name, as `std::any::type_name` writes it.
+    pub fn of_type_name(name: &'static str) -> ValueType {
+        let generic = |name: &'static str, outer: &str| -> Option<&'static str> {
+            let start = name.find('<')?;
+            let path = &name[..start];
+            (path.rsplit("::").next() == Some(outer)).then(|| &name[start + 1..name.len() - 1])
+        };
+        let last = |name: &'static str| -> &'static str {
+            let path = name.split('<').next().unwrap_or(name);
+            path.rsplit("::").next().unwrap_or(path)
+        };
+        let (nullable, name) = match generic(name, "Option") {
+            Some(inner) => (true, inner),
+            None => (false, name),
+        };
+        let (list, name) = match generic(name, "Vec") {
+            Some(inner) if last(inner) != "u8" => (true, inner),
+            _ => (false, name),
+        };
+        let scalar = match last(name) {
+            "Vec" => Scalar::Bytes,
+            "bool" => Scalar::Boolean,
+            "i8" | "i16" | "i32" | "u8" | "u16" => Scalar::Int,
+            "i64" | "u32" | "u64" | "i128" | "u128" | "isize" | "usize" => Scalar::BigInt,
+            "f32" | "f64" => Scalar::Float,
+            "String" | "str" | "char" => Scalar::String,
+            "Uuid" => Scalar::Uuid,
+            "NaiveDate" => Scalar::Date,
+            "NaiveTime" => Scalar::Time,
+            "DateTime" => Scalar::DateTime,
+            "NaiveDateTime" => Scalar::NaiveDateTime,
+            "Decimal" | "BigDecimal" => Scalar::Decimal,
+            "Value" => Scalar::Json,
+            other => Scalar::Other(other),
+        };
+        ValueType { scalar, nullable, list }
     }
 }
 

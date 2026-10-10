@@ -85,6 +85,13 @@ let total = mabat::load::<TaskView>().filter(col("status").eq("open")).count(&mu
 println!("{}", mabat::plan::<TaskView>()?.explain());
 ```
 
+## A complete example
+
+[`crates/mabat-example-chinook`](https://github.com/ddalton/mabat/tree/main/crates/mabat-example-chinook) is a
+web service on the Chinook music store: REST and GraphQL from the same views, NDJSON streaming, playlists saved
+with generated keys, a DBA's override, and a build script that fails `cargo build` when the views no longer match
+the schema. It runs on SQLite with nothing to set up: `cargo run -p mabat-example-chinook`.
+
 ## Collections and recursive views
 
 ```rust
@@ -363,7 +370,8 @@ let tasks: Vec<serde_json::Value> = mabat::load::<TaskView>().select(selection).
 Columns are written with the `Serialize` implementation of their Rust type, enums as objects whose `__typename`
 names the variant. A collection or reference selected by name alone loads the columns of its view. A selection
 has a finite depth, so recursive views and graph views load as trees as deep as it asks. Overrides apply as for
-typed loads.
+typed loads. `graph_json` writes a whole graph instead, each entity once with an `$id` and `{"$ref": id}`
+everywhere else, so cycles and shared entities keep their identity.
 
 ## GraphQL
 
@@ -393,6 +401,40 @@ filters the columns of the view with `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `in`, `
 parent, such as `tasks { subtasks(orderBy: [{ position: ASC }], limit: 3) { name } }`. Overrides of a registry apply with `.registry(..)`, and
 `.connections(n)` runs the queries of a level concurrently. `cargo run -p mabat-graphql --example chinook` serves
 the Chinook music store with GraphiQL.
+
+## Reports
+
+A report is not a table: its rows come from aggregates and joins. `sql` runs your SQL as the root query, with
+named parameters bound by `bind`, and `#[view(computed)]` fields hold what it computes. The view's collections and
+references still load by the keys it selects, so the report comes out typed and nested:
+
+```rust
+#[derive(View)]
+#[view(table = "customer", key = "customer_id")]
+struct TopCustomer {
+    customer_id: i32,
+    last_name: String,
+    #[view(computed)]                      // not a column: the SQL computes it
+    invoices: i64,
+    #[view(child(fk = "customer_id", order_by = "invoice_date"))]
+    period: Vec<InvoiceDate>,              // loaded as usual, by the keys the SQL selects
+}
+
+let top = mabat::load::<TopCustomer>()
+    .sql(r#"SELECT c.customer_id AS "customer_id", c.last_name AS "last_name", count(*) AS "invoices"
+            FROM customer c JOIN invoice i ON i.customer_id = c.customer_id
+            WHERE i.invoice_date >= :from AND i.invoice_date < :to
+            GROUP BY c.customer_id, c.last_name"#)
+    .bind("from", from)
+    .bind("to", to)
+    .nested("period", Nested::new().filter(col("invoice_date").ge(from) & col("invoice_date").lt(to)))
+    .order_by_desc("invoices")
+    .limit(10)
+    .all(&mut conn)
+    .await?;
+```
+
+The same SQL in an override of the root query is checked at startup, and each load binds its parameters.
 
 ## Streaming many values
 

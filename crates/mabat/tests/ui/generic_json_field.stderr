@@ -1,0 +1,5 @@
+error: a `json` field cannot have a type parameter's type
+ --> tests/ui/generic_json_field.rs:5:5
+  |
+5 |     value: T,
+  |     ^^^^^
