@@ -140,6 +140,8 @@ pub enum Role {
     Index,
     /// `$map_key`: the key in a map.
     MapKey,
+    /// A computed field: not a column of the table, so only an override selects it.
+    Computed,
 }
 
 /// The Rust type of a column.

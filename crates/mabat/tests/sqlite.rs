@@ -282,6 +282,13 @@ async fn overrides_with_computed_keys() {
 
     let one = mabat.load::<IssueSummary>().by_key(4_i64).one(&mut conn).await.unwrap();
     assert_eq!(one.title, "OLD");
+
+    // A selection without the key fields reads the keys the overrides name after them (`id`)
+    // or `$key` (comments), whichever name the plan expects
+    let selection = mabat::Selection::parse("title comments { body }").unwrap();
+    let json = mabat.load::<IssueSummary>().select(selection).order_by("id").json(&mut conn).await.unwrap();
+    assert_eq!(json[0]["title"], "CRASH");
+    assert_eq!(json[0]["comments"].as_array().unwrap().len(), 2);
 }
 
 /// The columns in another order than the view's fields.

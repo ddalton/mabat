@@ -313,6 +313,10 @@ pub struct Load<T> {
     selection: Option<Selection>,
     nested: Vec<(String, Nested)>,
     batch_size: usize,
+    /// The root query's own SQL, see [`Load::sql`].
+    root_sql: Option<String>,
+    /// The values of its named parameters, see [`Load::bind`].
+    params: Vec<(String, filter::Bound)>,
     _view: PhantomData<fn() -> T>,
 }
 
@@ -387,6 +391,8 @@ impl<T: View> Load<T> {
             selection: None,
             nested: Vec::new(),
             batch_size: stream::BATCH_SIZE,
+            root_sql: None,
+            params: Vec::new(),
             _view: PhantomData,
         }
     }
@@ -462,6 +468,42 @@ impl<T: View> Load<T> {
         self
     }
 
+    /// Run `sql` as the root query, as an override of it would run, for reports and other
+    /// queries that are not a table: aggregates, joins, window functions. Its rows are decoded
+    /// as the view and its collections and references load as usual, by the keys it selects.
+    ///
+    /// It selects the aliases of the view's fields (`AS "name"`), its key as the key field's
+    /// name or `$key`, and its [computed](crate::View) fields, and takes values as named
+    /// parameters, `:name`, bound with [`Load::bind`]; `:keys` takes the keys of
+    /// [`Load::by_keys`]. Filters, order and paging apply to its rows as a subquery. Unlike an
+    /// override, it is not checked at startup: a missing alias fails when it runs.
+    ///
+    /// ```ignore
+    /// let top = mabat::load::<TopCustomer>()
+    ///     .sql("SELECT c.customer_id, c.last_name, sum(i.total) AS sales FROM customer c \
+    ///           JOIN invoice i ON i.customer_id = c.customer_id \
+    ///           WHERE i.invoice_date >= :from GROUP BY c.customer_id, c.last_name")
+    ///     .bind("from", since)
+    ///     .order_by_desc("sales")
+    ///     .limit(5)
+    ///     .all(&mut conn)
+    ///     .await?;
+    /// ```
+    pub fn sql(mut self, sql: impl Into<String>) -> Self {
+        self.root_sql = Some(sql.into());
+        self
+    }
+
+    /// Bind `value` to the named parameter `:name` of the root query's SQL: of [`Load::sql`],
+    /// or of an override of the root query. Every parameter of the SQL needs a value, and every
+    /// value a parameter, else [`Error::Params`].
+    pub fn bind(mut self, name: impl Into<String>, value: impl Into<filter::Value>) -> Self {
+        let name = name.into();
+        self.params.retain(|(n, _)| *n != name);
+        self.params.push((name, filter::Bound::One(value.into())));
+        self
+    }
+
     /// Load only some of the elements of the to-many collection at `path`, the name of its
     /// query, such as `children` or `children.notes`, and in another order. The paging
     /// applies to the elements of each parent, with one query for all parents.
@@ -515,7 +557,69 @@ impl<T: View> Load<T> {
             }
             None => (None, Vec::new()),
         };
-        let options = RootOptions { by_keys: keys.is_some(), filter, ..self.options };
+        // The root query's own SQL replaces an override of it, as an override does the
+        // generated query
+        let mut overrides = overrides;
+        if let Some(sql) = self.root_sql {
+            let mut checked = match &overrides {
+                Some(checked) => Checked::clone(checked),
+                None => Checked::new(T::shape(), plan.clone(), B::NAME),
+            };
+            checked.overrides.insert(mabat_core::ROOT_QUERY.to_string(), registry::ActiveOverride::of_load(sql));
+            overrides = Some(Arc::new(checked));
+        }
+        // A computed field that is not an `Option` needs SQL that selects it
+        let has_sql = |name: &str| overrides.as_ref().is_some_and(|o| o.overrides.contains_key(name));
+        let mut needs_sql = None;
+        plan.walk(&mut |query| {
+            if needs_sql.is_none() && !has_sql(query.query_name()) {
+                needs_sql = query
+                    .shape
+                    .fields
+                    .iter()
+                    .find(|f| {
+                        matches!(f.kind, mabat_core::FieldKind::Computed { ty } if !ty.nullable)
+                            && query.computed.iter().any(|alias| alias == f.name)
+                    })
+                    .map(|f| (query.query_name().to_string(), f.name));
+            }
+        });
+        if let Some((query, field)) = needs_sql {
+            return Err(Error::Params {
+                view,
+                message: format!(
+                    "`{field}` is computed by SQL, but the query `{query}` is generated: give it SQL with `Load::sql` \
+                     or an override, or make the field an `Option`"
+                ),
+            });
+        }
+        let root_sql = overrides.as_ref().and_then(|o| o.overrides.get(mabat_core::ROOT_QUERY)).map(|o| &o.sql);
+        let names = root_sql.map(|sql| mabat_core::sql::param_names(sql)).unwrap_or_default();
+        let params_error = |message: String| Error::Params { view, message };
+        if let Some(name) = names.iter().find(|name| !self.params.iter().any(|(n, _)| n == *name)) {
+            return Err(params_error(format!("the root query takes `:{name}`, but no value is bound to it")));
+        }
+        if let Some((name, _)) = self.params.iter().find(|(name, _)| !names.contains(name)) {
+            return Err(params_error(match root_sql {
+                Some(_) => format!("a value is bound to `{name}`, but the root query has no `:{name}`"),
+                None => format!(
+                    "a value is bound to `{name}`, but the root query is generated: bound values are for the SQL of \
+                     `Load::sql` or of an override"
+                ),
+            }));
+        }
+        // The values: the named parameters in the order of their names, then the filter's
+        let mut params = self.params;
+        let mut bound: Vec<filter::Bound> = names
+            .iter()
+            .map(|name| {
+                let index = params.iter().position(|(n, _)| n == name).expect("every name has a value");
+                params.swap_remove(index).1
+            })
+            .collect();
+        bound.extend(values);
+        let values = bound;
+        let options = RootOptions { by_keys: keys.is_some(), filter, params: names, ..self.options };
 
         // The arguments of collections, for their queries
         let mut nested = Vec::new();

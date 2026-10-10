@@ -35,12 +35,20 @@ impl<B: Backend> Clone for ViewEntry<B> {
 impl<B: Backend> Copy for ViewEntry<B> {}
 
 /// A checked view: its plan, and the overrides that passed the checks.
+#[derive(Clone)]
 pub(crate) struct Checked {
     pub(crate) shape: &'static ViewShape,
     pub(crate) plan: Arc<QueryPlan>,
     pub(crate) overrides: Overrides,
     /// The database the overrides were checked against, by `sqlx::Database::NAME`.
     pub(crate) backend: &'static str,
+}
+
+impl Checked {
+    /// A view without overrides, for a load that brings its own root SQL.
+    pub(crate) fn new(shape: &'static ViewShape, plan: Arc<QueryPlan>, backend: &'static str) -> Checked {
+        Checked { shape, plan, overrides: Overrides::new(), backend }
+    }
 }
 
 /// Check the views of the manifest and their override files. Problems are added to the
@@ -171,7 +179,11 @@ async fn inspect<B: Backend>(conn: &mut B::Connection, sql: &str) -> Result<Resu
     // statement prepared without arguments, e.g. `smallint[]` for `smallint_column = ANY($1)`,
     // while a load binds integer keys as `bigint[]`: the comment keeps the statements of the
     // checks apart from the statements that loads run on the same connection.
-    let sql = format!("/* mabat check */ {}", sql::expand_keys(sql, B::DIALECT, 1));
+    // Named parameters are placeholders after the keys, as when they are bound
+    let names = sql::param_names(sql);
+    let first = if sql::takes_keys(sql) { 2 } else { 1 };
+    let expanded = sql::expand_params(sql, B::DIALECT, 1, &names, first).expect("every name is a parameter");
+    let sql = format!("/* mabat check */ {}", expanded.0);
     B::inspect(conn, sql).await
 }
 
@@ -216,15 +228,18 @@ impl Query<'_> {
         }
     }
 
-    fn expected(&self) -> Vec<Expected<'_>> {
+    /// The columns a query selects: an override also selects the computed fields, which the
+    /// generated query cannot.
+    fn expected(&self, overridden: bool) -> Vec<Expected<'_>> {
         self.query
             .columns
             .iter()
+            .filter(|c| overridden || c.role != Role::Computed)
             .map(|c| {
                 let key = match c.role {
                     Role::Key | Role::Parent | Role::Reference => true,
                     Role::Field => c.alias == self.query.key_alias,
-                    Role::Index | Role::MapKey => false,
+                    Role::Index | Role::MapKey | Role::Computed => false,
                 };
                 Expected { alias: &c.alias, column: c.r#type.as_ref(), optional: c.optional, key }
             })
@@ -240,7 +255,7 @@ impl Query<'_> {
         override_: Option<&QueryOverride>,
         report: &mut Report,
     ) -> Option<(KeyClasses, bool)> {
-        let expected = self.expected();
+        let expected = self.expected(override_.is_some());
         let mut errors = Vec::new();
         let mut classes = KeyClasses::new();
         let mut seen = HashSet::new();
@@ -374,13 +389,29 @@ impl Query<'_> {
     /// Returns whether the query takes the keys.
     fn parameters(&self, statement: &Inspected, sql: Option<&str>, classes: &KeyClasses) -> Result<bool, Vec<String>> {
         let root = matches!(self.query.link, LinkManifest::Root);
+        // Named parameters, bound with `Load::bind`, come after the keys
+        let (named, occurrences) = match sql {
+            Some(sql) => {
+                let names = sql::param_names(sql);
+                let occurrences = sql::expand_params(sql, mabat_core::sql::Dialect::Sqlite, 1, &names, 1)
+                    .map(|(_, slots)| slots.iter().filter(|s| matches!(s, sql::Slot::Param(_))).count())
+                    .unwrap_or(0);
+                (names.len(), occurrences)
+            }
+            None => (0, 0),
+        };
+        if named > 0 && !root {
+            return Err(vec![
+                "named parameters (`:name`) are for the root query; a child query takes only the keys".to_string(),
+            ]);
+        }
         let (keys, of) = match &self.query.link {
             LinkManifest::Root => (classes.get(&self.query.key_alias).copied(), "root keys"),
             LinkManifest::Child { .. } | LinkManifest::Variant { .. } => (self.link_class, "parent keys"),
             LinkManifest::ToOne { .. } => (self.link_class, "referenced keys"),
         };
         match &statement.params {
-            InspectedParams::Types(types) => match types.as_slice() {
+            InspectedParams::Types(types) => match &types[..types.len().saturating_sub(named)] {
                 [] if root => Ok(false),
                 [] => Err(vec![format!("the query needs to take the array of {of} as $1, e.g. `WHERE fk = ANY($1)`")]),
                 [(None, name)] => {
@@ -399,7 +430,7 @@ impl Query<'_> {
             },
             InspectedParams::Count(count) => {
                 let takes_keys = sql.is_some_and(|sql| sql.contains(KEYS_TOKEN));
-                let expected = usize::from(takes_keys);
+                let expected = usize::from(takes_keys) + occurrences;
                 if !takes_keys && !root {
                     return Err(vec![format!("the query needs to take the {of} as `IN ({KEYS_TOKEN})`")]);
                 }

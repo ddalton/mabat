@@ -160,7 +160,7 @@ impl Types {
         for field in fields {
             let name = field_name(field);
             let (ty, resolve) = match &field.kind {
-                FieldKind::Column { ty, .. } => (self.scalar(*ty), Resolve::Scalar),
+                FieldKind::Column { ty, .. } | FieldKind::Computed { ty } => (self.scalar(*ty), Resolve::Scalar),
                 FieldKind::Embedded { shape, .. } => {
                     let (type_name, resolve) = self.embedded(shape());
                     (TypeRef::named_nn(type_name), resolve)

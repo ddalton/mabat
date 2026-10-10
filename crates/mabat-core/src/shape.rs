@@ -91,6 +91,10 @@ pub enum FieldKind {
     /// column references the key of this view, or with [`Child::through`], rows linked to
     /// this view by a link table.
     Child(Child),
+    /// A value that SQL computes, such as `sum(total) AS sales`: not a column of the view's
+    /// table, so the generated query does not select it. It is filled by SQL that selects its
+    /// alias, the field's name: the load's own root SQL, or an override.
+    Computed { ty: ValueType },
     /// A to-one reference: the `fk` column of this view references the key of the target view.
     /// With `graph`, the value is a reference into a graph (`Ref<T>`), not an owned value. With
     /// `recursion`, the reference leads back to its own view, as a chain of parents does.

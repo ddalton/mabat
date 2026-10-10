@@ -109,7 +109,9 @@ pub(crate) fn selection(
         let sub_path =
             if path.is_empty() { view_field.name.to_string() } else { format!("{path}.{}", view_field.name) };
         selection = match &view_field.kind {
-            FieldKind::Column { .. } | FieldKind::Embedded { .. } => selection.field(view_field.name),
+            FieldKind::Column { .. } | FieldKind::Computed { .. } | FieldKind::Embedded { .. } => {
+                selection.field(view_field.name)
+            }
             FieldKind::Child(child) if child.map_key.is_some() => {
                 let mut fields = Selection::new();
                 for entry in sub.selection_set().filter(|s| s.name() == "value") {

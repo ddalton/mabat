@@ -214,7 +214,12 @@ impl<'c, B: Backend, I> State<'c, B, I> {
         let view = load.plan.shape.name;
         let positions: HashMap<&Key, usize> = keys.iter().enumerate().map(|(i, key)| (key, i)).collect();
         let list = KeyList::new(keys.clone()).map_err(|_| Error::MixedKeys { view })?;
-        let options = RootOptions { by_keys: true, filter: load.options.filter.clone(), ..RootOptions::default() };
+        let options = RootOptions {
+            by_keys: true,
+            filter: load.options.filter.clone(),
+            params: load.options.params.clone(),
+            ..RootOptions::default()
+        };
         let node = load.load_on(runner, Identity::new(false), Some(list), options).await?;
         let mut values = Vec::with_capacity(keys.len());
         for row in node.rows() {

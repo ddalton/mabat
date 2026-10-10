@@ -103,6 +103,7 @@ issues and AI assistants can cite.
 | `#[view(json)]` | JSON column | MPA-VIEW-6 |
 | `#[view(version)]` | version column | MPA-WRITE-9 |
 | `#[view(generated)]` | key column | MPA-WRITE-13 |
+| `#[view(computed)]` | a value SQL computes | MPA-VIEW-13 |
 | `#[view(embed)]`, `#[view(embed(prefix = "p_"))]` | embedded struct or enum | MPA-VIEW-7 |
 | `#[view(to_one(fk = "c"))]` | to-one reference | MPA-VIEW-8 |
 | `#[view(child(fk = "c", …))]` | to-many collection | MPA-VIEW-9 |
@@ -142,6 +143,13 @@ issues and AI assistants can cite.
   list for `Vec` (except `Vec<u8>`), and a scalar named after the type: `Boolean`, `Int` (up to 32 bits), `BigInt`,
   `Float`, `String`, `Uuid`, `Date`, `Time`, `DateTime`, `NaiveDateTime`, `Decimal`, `Json`, `Bytes`, or the name
   of any other type. GraphQL types and filters (section 9) come from it.
+- **MPA-VIEW-13** A `computed` field is a value that SQL computes, such as `count(*) AS "invoices"`: not a column of
+  the view's table. The generated query does not select it; SQL that selects its alias (the field's name) fills
+  it: the load's own root SQL (MPA-LOAD-19) or an override, whose checks require it unless it is an `Option`
+  (MPA-OVR-3). Loading a view whose computed field is not an `Option` with a generated query fails with
+  `Error::Params`; an `Option` is then `None`. A computed field is never written, MAY be ordered and filtered by
+  over root SQL, and is a scalar in GraphQL. It belongs to a view's own fields, not to embedded structs or variants,
+  and takes no `column`, `json`, `version` or `generated` (compile errors).
 
 ## 4. Enums with data
 
@@ -239,6 +247,14 @@ let tasks = mabat::load::<TaskView>()
   stream is closed when the stream ends; one left open by a dropped stream stays open on the connection until the
   next stream on it closes it, its transaction rolls back, or the connection closes. Nothing runs until the stream
   is first polled. An error, from preparing the load or from a query, is yielded once and ends the stream.
+- **MPA-LOAD-19** `sql(text)` runs `text` as the root query, as an override of it runs (MPA-OVR-3, MPA-OVR-4): for
+  reports and other queries that are not a table, such as aggregates and joins. Its rows are decoded as the view,
+  and the view's collections and references load as usual, by the keys it selects. `bind(name, value)` binds
+  `:name`, a named parameter of the root query's SQL, of `sql` or of a root override; a parameter is a whole
+  `:name` token outside literals, quoted identifiers and comments, not a `::` cast, and MAY appear more than once.
+  Every parameter MUST have a value and every value a parameter, else `Error::Params`. Filters, order, paging,
+  `count` and streams apply to its rows as a subquery. Unlike an override, it is not checked beforehand: a missing
+  alias fails when it runs.
 
 ## 6. Query planning
 
@@ -270,7 +286,9 @@ let tasks = mabat::load::<TaskView>()
   (`[query."children.notes"] sql = "…"`, optional `shadow = true`) or `TaskView.sql` (each query after a
   `-- mabat: query children.notes` line, optionally `, shadow`).
 - **MPA-OVR-3** An override MUST select the aliases of section 6 that the view decodes: its columns, `$key` or the
-  key field, `$parent` for a collection, `$ref.<field>` for references.
+  key field, `$parent` for a collection, `$ref.<field>` for references, and its computed fields (MPA-VIEW-13).
+  A root override MAY take named parameters, `:name`, bound by each load (MPA-LOAD-19); the checks prepare them
+  as placeholders after the keys. Other overrides take only the keys.
 - **MPA-OVR-4** A child query override MUST take the keys of the rows above: `:keys` on any database
   (`= ANY(:keys)` on PostgreSQL, `IN (:keys)` elsewhere), or `$1` on PostgreSQL. `:keys` is replaced as a whole
   token, not inside literals, quoted identifiers or longer names. A root override MAY take keys, and then MUST be
@@ -299,6 +317,8 @@ let tasks = mabat::load::<TaskView>()
   as JSON; the view still compiles.
 - **MPA-JSON-3** `select(Selection)` loads only the selected fields: only their columns are selected and only
   their child queries run. `Selection::parse("name assignee { name } children { name }")` reads GraphQL-like text.
+  The key column is always selected, named after the key field if the view has one, selected or not: the name
+  overrides give it (MPA-OVR-3), so overridden queries load selections too.
 - **MPA-JSON-4** A view selected without fields loads its columns and embedded values, not its collections or
   references. Embedded structs and enums are loaded whole. Unknown fields fail with `PlanError::Selection`.
 - **MPA-JSON-5** A selection has a finite depth, so recursive and graph views load as trees as deep as it asks.
@@ -435,6 +455,7 @@ Every failure is a `mabat::Error`; messages name the view and the path.
 | `Json` | a column that cannot be written as JSON | MPA-JSON-2 |
 | `ColumnNotSelected` | an order or filter column an override does not select | MPA-LOAD-7, MPA-LOAD-10 |
 | `KeysRequired` | a root override that takes keys, loaded without keys | MPA-OVR-4 |
+| `Params` | a named parameter without a value, a value without a parameter, or a computed field without SQL | MPA-LOAD-19, MPA-VIEW-13 |
 | `Invalid` | `build` found errors; carries the `Report` | MPA-OVR-5 |
 | `Check` | the checks could not run | MPA-OVR-5 |
 | `NotRegistered` | a registry load of a view that is not registered | MPA-OVR-1 |

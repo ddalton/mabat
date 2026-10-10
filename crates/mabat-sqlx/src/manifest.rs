@@ -55,7 +55,7 @@ fn add_query<B: Backend>(
     let mut description = Description::<B>::default();
     describe(&mut description);
 
-    let columns = plan
+    let mut columns: Vec<ColumnManifest> = plan
         .columns
         .iter()
         .map(|c| {
@@ -78,6 +78,17 @@ fn add_query<B: Backend>(
             }
         })
         .collect();
+    for alias in &plan.computed {
+        let column = description.column_type(alias);
+        columns.push(ColumnManifest {
+            alias: alias.clone(),
+            role: Role::Computed,
+            column: String::new(),
+            link_table: false,
+            optional: column.is_some_and(|c| c.optional),
+            r#type: column.map(type_manifest),
+        });
+    }
     let link = match &plan.link {
         Link::Root => LinkManifest::Root,
         Link::Child { fk, through } => LinkManifest::Child {
