@@ -79,3 +79,38 @@ fn the_index_is_up_to_date() {
     let unknown: Vec<&String> = referred.difference(&in_index).collect();
     assert!(unknown.is_empty(), "docs/mpa.md refers to rules it does not define: {unknown:?}");
 }
+
+/// `llms.txt`, for AI tools, lists every capability and everything not supported, as
+/// `scripts/mpa-index.py` writes them from the index; the `mabat` crate carries it and the
+/// specification for tools that read the crate's source.
+#[test]
+fn llms_txt_is_up_to_date() {
+    let llms = read("llms.txt");
+    let index = index();
+    let section = |name: &str| -> Vec<String> {
+        let start = llms.split(&format!("## {name}\n")).nth(1).expect("the section is in llms.txt");
+        start.split("\n## ").next().unwrap().lines().filter(|l| l.starts_with("- **")).map(str::to_string).collect()
+    };
+    let capabilities = section("Capabilities");
+    let expected = index["capabilities"].as_array().unwrap();
+    assert_eq!(capabilities.len(), expected.len(), "llms.txt is stale: run scripts/mpa-index.py");
+    for (line, capability) in capabilities.iter().zip(expected) {
+        let start =
+            format!("- **{}**: {}.", capability["id"].as_str().unwrap(), capability["summary"].as_str().unwrap());
+        assert!(line.starts_with(&start), "llms.txt is stale: run scripts/mpa-index.py ({line})");
+    }
+    let unsupported = section("Not supported");
+    let expected: Vec<String> = index["unsupported"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| format!("- **{}** {}", r["id"].as_str().unwrap(), r["text"].as_str().unwrap()))
+        .collect();
+    assert_eq!(unsupported, expected, "llms.txt is stale: run scripts/mpa-index.py");
+
+    // The crate's copies are links to these files
+    for (in_crate, file) in [("crates/mabat/MPA.md", "docs/mpa.md"), ("crates/mabat/mpa.json", "docs/mpa.json")] {
+        assert_eq!(read(in_crate), read(file), "{in_crate} is not {file}");
+    }
+    assert_eq!(read("crates/mabat/llms.txt"), llms);
+}

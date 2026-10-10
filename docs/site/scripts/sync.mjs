@@ -276,6 +276,38 @@ ${toc.join('\n')}
   return pages.length;
 })();
 
+// For AI tools: llms.txt as it is, and llms-full.txt with the README, every guide and the specification in one
+// file, each under a heading with its address
+{
+  const pub = join(site, 'public');
+  mkdirSync(pub, { recursive: true });
+  const llms = read('llms.txt');
+  writeFileSync(join(pub, 'llms.txt'), llms);
+  const frontmatter = (markdown) => {
+    const match = markdown.match(/^---\n([\s\S]*?)\n---\n/);
+    const title = match?.[1].match(/^title: *"?(.*?)"?$/m)?.[1];
+    return { title, body: match ? markdown.slice(match[0].length) : markdown };
+  };
+  const site_url = 'https://ddalton.github.io/mabat';
+  const parts = [llms, `# README\n\nSource: ${github}/README.md\n\n${read('README.md').replace(/^# .*\n/, '')}`];
+  const pages = [
+    'start/getting-started.mdx',
+    ...readdirSync(join(content, 'guides'))
+      .filter((file) => file.endsWith('.md'))
+      .sort()
+      .map((file) => `guides/${file}`),
+  ];
+  for (const page of pages) {
+    const { title, body } = frontmatter(readFileSync(join(content, page), 'utf8'));
+    const slug = page.replace(/\.mdx?$/, '');
+    // MDX components are left out; their text is kept
+    const text = body.replace(/^import .*\n/gm, '').replace(/<\/?[A-Z][^>]*>/g, '');
+    parts.push(`# ${title ?? slug}\n\nSource: ${site_url}/${slug}/\n\n${text.trim()}`);
+  }
+  parts.push(`# MPA specification\n\nSource: ${site_url}/spec/mpa/\n\n${read('docs/mpa.md').replace(/^# .*\n/, '')}`);
+  writeFileSync(join(pub, 'llms-full.txt'), `${parts.map((part) => part.trim()).join('\n\n---\n\n')}\n`);
+}
+
 console.log(
-  `synced: spec (${index.rules.length} rules), design, changelog, reference, architecture (${architecture} pages)`,
+  `synced: spec (${index.rules.length} rules), design, changelog, reference, architecture (${architecture} pages), llms.txt`,
 );

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Write docs/mpa.json, the machine-readable index of the MPA specification, from docs/mpa.md
-and the capabilities, attributes, functions and errors listed here. Run it after changing either:
+and the capabilities, attributes, functions and errors listed here, and the generated sections of
+llms.txt from it. Run it after changing either:
 
     python3 scripts/mpa-index.py
 
@@ -183,4 +184,23 @@ index = {
     "rules": rules,
 }
 (ROOT / "docs" / "mpa.json").write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n")
+
+# The generated sections of llms.txt, for AI tools: the capabilities and what is not supported
+def fill(text, name, lines):
+    start = f"<!-- generated from docs/mpa.json by scripts/mpa-index.py: do not edit -->\n"
+    end = f"<!-- end of generated {name} -->"
+    head, rest = text.split(f"## {name[0].upper()}{name[1:]}\n", 1)
+    before, after = rest.split(end, 1)
+    assert start.strip() in before, f"llms.txt lost the start marker of {name}"
+    return f"{head}## {name[0].upper()}{name[1:]}\n\n{start}" + "".join(f"{line}\n" for line in lines) + end + after
+
+llms_path = ROOT / "llms.txt"
+llms = llms_path.read_text()
+llms = fill(llms, "capabilities", [
+    f"- **{c['id']}**: {c['summary']}. API: {', '.join(f'`{a}`' for a in c['api'])}. Rules: {', '.join(c['rules'])}"
+    for c in index["capabilities"]
+])
+llms = fill(llms, "not supported", [f"- **{r['id']}** {r['text']}" for r in index["unsupported"]])
+llms_path.write_text(llms)
+
 print(f"{len(rules)} rules, {len(capabilities)} capabilities, {len(attributes)} attributes, {len(errors)} errors")
