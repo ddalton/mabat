@@ -121,6 +121,33 @@ pub struct Colleague {
     pub title: Option<String>,
 }
 
+// A report: rows that are not a table, from the override in `mabat/overrides/TopCustomer.sql`
+
+/// A customer with what they spent in a period, computed by the report's SQL, and their invoices
+/// of the period, loaded as any collection.
+#[derive(View, Serialize, Debug, Clone)]
+#[view(table = "customer", key = "customer_id")]
+pub struct TopCustomer {
+    pub customer_id: i32,
+    pub first_name: String,
+    pub last_name: String,
+    pub country: Option<String>,
+    #[view(computed)]
+    pub invoices: i64,
+    #[view(computed)]
+    pub spent: f64,
+    #[view(child(fk = "customer_id", order_by = "invoice_date"))]
+    pub period: Vec<InvoiceTotal>,
+}
+
+#[derive(View, Serialize, Debug, Clone)]
+#[view(table = "invoice", key = "invoice_id")]
+pub struct InvoiceTotal {
+    pub invoice_id: i32,
+    pub invoice_date: NaiveDateTime,
+    pub total: f64,
+}
+
 // The staff: up the chain of managers, and down the organization chart
 
 /// An employee and every manager above, in one `WITH RECURSIVE` query.
@@ -180,6 +207,7 @@ pub fn views() -> mabat::Builder<Sqlite> {
         .register::<OrgChart>()
         .register::<Playlist>()
         .register::<TrackName>()
+        .register::<TopCustomer>()
         .overrides_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/mabat/overrides"))
 }
 
@@ -239,6 +267,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/employees/chart", get(chart))
         .route("/playlists", axum::routing::post(create_playlist))
         .route("/playlists/{id}", get(playlist).put(update_playlist).delete(delete_playlist))
+        .route("/reports/top-customers", get(top_customers))
         .route("/explain/{view}", get(explain))
         .route("/graphql", get(graphiql).post(graphql))
         .with_state(app)
@@ -445,6 +474,39 @@ async fn delete_playlist(State(app): State<Arc<App>>, UrlPath(id): UrlPath<i32>)
     Ok(if deleted { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND })
 }
 
+#[derive(Deserialize)]
+struct Period {
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+    #[serde(default = "top")]
+    limit: u64,
+}
+
+fn top() -> u64 {
+    5
+}
+
+/// `GET /reports/top-customers?from=2022-01-01&to=2023-01-01&limit=5`: the report of the DBA's
+/// override, with its parameters bound, ordered by a computed field, and each customer's
+/// invoices of the period.
+async fn top_customers(State(app): State<Arc<App>>, Query(period): Query<Period>) -> Result<Json> {
+    let (from, to) = (period.from.and_time(chrono::NaiveTime::MIN), period.to.and_time(chrono::NaiveTime::MIN));
+    let in_period = col("invoice_date").ge(from) & col("invoice_date").lt(to);
+    let mut conn = app.pool.acquire().await?;
+    let report = app
+        .mabat
+        .load::<TopCustomer>()
+        .bind("from", from)
+        .bind("to", to)
+        .nested("period", mabat::Nested::new().filter(in_period))
+        .order_by_desc("spent")
+        .order_by("customer_id")
+        .limit(period.limit.min(100))
+        .all(&mut conn)
+        .await?;
+    to_json(report)
+}
+
 /// `GET /explain/{view}`: the queries of a view with their SQL, generated or overridden, for a
 /// DBA.
 async fn explain(State(app): State<Arc<App>>, UrlPath(view): UrlPath<String>) -> Result<String> {
@@ -457,6 +519,7 @@ async fn explain(State(app): State<Arc<App>>, UrlPath(view): UrlPath<String>) ->
         "OrgChart" => mabat.explain::<OrgChart>(),
         "Playlist" => mabat.explain::<Playlist>(),
         "TrackName" => mabat.explain::<TrackName>(),
+        "TopCustomer" => mabat.explain::<TopCustomer>(),
         _ => None,
     };
     explained.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no view {view}")))

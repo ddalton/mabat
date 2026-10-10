@@ -12,6 +12,8 @@ what Mabat does in one small application ([`src/lib.rs`](src/lib.rs)):
 - **GraphQL** generated from the views, with GraphiQL.
 - **A DBA's override** in [`mabat/overrides/Discography.sql`](mabat/overrides/Discography.sql), checked at startup,
   and `GET /explain/{view}` to see the SQL that runs.
+- **A report** in [`mabat/overrides/TopCustomer.sql`](mabat/overrides/TopCustomer.sql): an aggregate with named
+  parameters and computed fields, checked like any override, whose customers still load their invoices.
 - **Schema checks at build time:** [`build.rs`](build.rs) checks the views against
   [`mabat/schema.json`](mabat/schema.json), so `cargo build` fails when they no longer match the schema;
   [`tests/files.rs`](tests/files.rs) keeps the manifest and the snapshot up to date.
@@ -52,6 +54,9 @@ curl -X POST localhost:3000/playlists -H 'content-type: application/json' \
      -d '{"name": "Road trip", "track_ids": [1, 2, 3]}'
 curl -X PUT localhost:3000/playlists/19 -H 'content-type: application/json' -d '{"name": "Long road trip"}'
 curl -X DELETE localhost:3000/playlists/19
+
+# A report a DBA maintains in an override, with its period bound by the request
+curl 'localhost:3000/reports/top-customers?from=2022-01-01&to=2023-01-01&limit=3'
 
 # The SQL of a view, with the override
 curl localhost:3000/explain/Discography

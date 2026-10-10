@@ -1,0 +1,5 @@
+error: `computed` is a value that SQL selects by the field's name; it takes no `column`, `json`, `version`, `generated`, `child`, `to_one` or `embed`
+ --> tests/ui/computed_with_column.rs:6:5
+  |
+6 |     total: i64,
+  |     ^^^^^
