@@ -294,6 +294,8 @@ let tasks = mabat::load::<TaskView>()
   as JSON; the view still compiles.
 - **MPA-JSON-3** `select(Selection)` loads only the selected fields: only their columns are selected and only
   their child queries run. `Selection::parse("name assignee { name } children { name }")` reads GraphQL-like text.
+  The key column is always selected, named after the key field if the view has one, selected or not: the name
+  overrides give it (MPA-OVR-3), so overridden queries load selections too.
 - **MPA-JSON-4** A view selected without fields loads its columns and embedded values, not its collections or
   references. Embedded structs and enums are loaded whole. Unknown fields fail with `PlanError::Selection`.
 - **MPA-JSON-5** A selection has a finite depth, so recursive and graph views load as trees as deep as it asks.

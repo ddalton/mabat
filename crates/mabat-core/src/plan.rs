@@ -372,13 +372,20 @@ impl QueryPlan {
             _ => None,
         };
 
-        // Select the key column only once when a selected field holds it
+        // The key column is named after the field that holds it, if one does, selected or not:
+        // the name overrides give it (MPA-OVR-3). It is selected once.
         let mut key_alias = KEY_ALIAS.to_string();
-        let key_field = shape.fields.iter().zip(&selected).find(|(f, selected)| {
-            **selected && matches!(f.kind, FieldKind::Column { column, .. } if column == shape.key_column)
-        });
-        if let Some((field, _)) = key_field {
-            columns.remove(0);
+        let key_field = shape
+            .fields
+            .iter()
+            .zip(&selected)
+            .find(|(f, _)| matches!(f.kind, FieldKind::Column { column, .. } if column == shape.key_column));
+        if let Some((field, selected)) = key_field {
+            if *selected {
+                columns.remove(0);
+            } else {
+                columns[0].alias = field.name.to_string();
+            }
             key_alias = field.name.to_string();
         }
 

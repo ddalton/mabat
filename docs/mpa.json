@@ -1485,7 +1485,7 @@
     {
       "id": "MPA-JSON-3",
       "section": "8. JSON and selections",
-      "text": "`select(Selection)` loads only the selected fields: only their columns are selected and only their child queries run. `Selection::parse(\"name assignee { name } children { name }\")` reads GraphQL-like text."
+      "text": "`select(Selection)` loads only the selected fields: only their columns are selected and only their child queries run. `Selection::parse(\"name assignee { name } children { name }\")` reads GraphQL-like text. The key column is always selected, named after the key field if the view has one, selected or not: the name overrides give it (MPA-OVR-3), so overridden queries load selections too."
     },
     {
       "id": "MPA-JSON-4",

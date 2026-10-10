@@ -85,6 +85,13 @@ let total = mabat::load::<TaskView>().filter(col("status").eq("open")).count(&mu
 println!("{}", mabat::plan::<TaskView>()?.explain());
 ```
 
+## A complete example
+
+[`crates/mabat-example-chinook`](https://github.com/ddalton/mabat/tree/main/crates/mabat-example-chinook) is a
+web service on the Chinook music store: REST and GraphQL from the same views, NDJSON streaming, playlists saved
+with generated keys, a DBA's override, and a build script that fails `cargo build` when the views no longer match
+the schema. It runs on SQLite with nothing to set up: `cargo run -p mabat-example-chinook`.
+
 ## Collections and recursive views
 
 ```rust
