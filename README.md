@@ -478,6 +478,10 @@ before it. Graph loads run their queries one at a time on one connection of the 
 
 ## Tuning without code changes
 
+Mabat traces each load, query and statement with `tracing` at the `debug` level, with the query's name, whether an
+override ran, its rows and its time, so the slow query of a trace is the one to tune:
+`RUST_LOG=mabat=debug`.
+
 Any query of a view can be replaced with SQL from an override file. A DBA can change joins, ordering, hints, or
 the tables themselves, and can read from a materialized view, without touching the Rust code. The rows are
 decoded by column alias, so the override only has to keep the aliases:

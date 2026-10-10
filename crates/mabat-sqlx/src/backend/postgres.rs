@@ -121,7 +121,9 @@ impl Backend for Postgres {
         args: <Postgres as sqlx::Database>::Arguments,
     ) -> super::BoxFuture<'c, Result<Key, sqlx::Error>> {
         Box::pin(async move {
-            let row = sqlx::query_with(sqlx::AssertSqlSafe(sql), args).fetch_one(conn).await?;
+            let text = sql.clone();
+            let run = sqlx::query_with(sqlx::AssertSqlSafe(sql), args).fetch_one(conn);
+            let row = crate::trace::statement(<Self as sqlx::Database>::NAME, &text, |_| 1, run).await?;
             super::returned_key::<Self>(&row)
         })
     }
@@ -210,14 +212,19 @@ impl Backend for Postgres {
                 sqlx::query(sqlx::AssertSqlSafe(format!("CLOSE {CURSOR}"))).execute(&mut *conn).await?;
             }
             let declare = format!("DECLARE {CURSOR} NO SCROLL CURSOR WITH HOLD FOR {sql}");
-            bind(sqlx::query(sqlx::AssertSqlSafe(declare)), keys, values).execute(&mut *conn).await?;
+            let text = declare.clone();
+            let run = bind(sqlx::query(sqlx::AssertSqlSafe(declare)), keys, values).execute(&mut *conn);
+            crate::trace::statement(<Self as sqlx::Database>::NAME, &text, |done| done.rows_affected(), run).await?;
             Ok(true)
         })
     }
 
     fn fetch_cursor<'c>(conn: &'c mut PgConnection, n: usize) -> super::BoxFuture<'c, Result<Vec<PgRow>, sqlx::Error>> {
         Box::pin(async move {
-            sqlx::query(sqlx::AssertSqlSafe(format!("FETCH FORWARD {n} FROM {CURSOR}"))).fetch_all(conn).await
+            let fetch = format!("FETCH FORWARD {n} FROM {CURSOR}");
+            let run = sqlx::query(sqlx::AssertSqlSafe(fetch.clone())).fetch_all(conn);
+            crate::trace::statement(<Self as sqlx::Database>::NAME, &fetch, |rows: &Vec<PgRow>| rows.len() as u64, run)
+                .await
         })
     }
 

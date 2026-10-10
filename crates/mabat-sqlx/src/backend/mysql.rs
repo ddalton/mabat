@@ -91,7 +91,10 @@ impl Backend for MySql {
         args: <MySql as sqlx::Database>::Arguments,
     ) -> super::BoxFuture<'c, Result<Key, sqlx::Error>> {
         Box::pin(async move {
-            let done = sqlx::query_with(sqlx::AssertSqlSafe(sql), args).execute(conn).await?;
+            let text = sql.clone();
+            let run = sqlx::query_with(sqlx::AssertSqlSafe(sql), args).execute(conn);
+            let done = crate::trace::statement(<Self as sqlx::Database>::NAME, &text, |done| done.rows_affected(), run)
+                .await?;
             let key = i64::try_from(done.last_insert_id()).map_err(|e| sqlx::Error::ColumnDecode {
                 index: "LAST_INSERT_ID()".to_string(),
                 source: Box::new(e),

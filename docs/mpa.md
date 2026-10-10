@@ -69,6 +69,13 @@ issues and AI assistants can cite.
 - **MPA-DB-5** Wherever a load or write takes a connection, it accepts a connection, a `sqlx::Transaction`, a
   pooled connection, or a `mabat::Pooled` pool (MPA-LOAD-11). Every query of a load runs on the connection
   given, so it sees the uncommitted writes of its transaction.
+- **MPA-DB-6** Mabat traces its work with the `tracing` crate at the `debug` level: a span for each operation
+  (`mabat.load`, `mabat.count`, `mabat.save`, `mabat.save_changes`, `mabat.save_all`, `mabat.save_graph`,
+  `mabat.delete`) with its view; a `mabat.query` span for each query of a load with the view, the query's name,
+  its path, whether an override ran, the number of keys and the rows it returned; and a `mabat.statement` span for
+  each statement with the database (`db.system.name`), its SQL (`db.query.text`), the rows it returned or changed
+  and its time in milliseconds (`elapsed_ms`), ending with a `statement ran` or `statement failed` event. Bound
+  values are never traced.
 
 ## 3. Declaring views
 

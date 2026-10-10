@@ -87,6 +87,9 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
   checks require them, and loads may order and filter by them. The view's collections and references load as
   usual. `Error::Params` reports a parameter without a value, a value without a parameter, or a computed field
   without SQL.
+- **Tracing.** `tracing` spans at the `debug` level: `mabat.load` and the other operations with their view,
+  `mabat.query` for each query of a load (view, query name, path, override, keys, rows), and `mabat.statement`
+  for each statement (database, SQL, rows, `elapsed_ms`). Bound values are never traced.
 - **Streaming.** `Load::stream` loads values a batch at a time as a `futures::Stream`, holding one batch
   in memory: one query reads the keys of every match, with the filter, order and page, then each batch of
   `batch_size` keys (1,000 by default) is loaded with its collections and references, yielding the values in the

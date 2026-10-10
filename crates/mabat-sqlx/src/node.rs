@@ -13,6 +13,7 @@ use mabat_core::{
     REF_ALIAS_PREFIX, TAG_ALIAS, ViewShape,
 };
 use sqlx::{Decode, Type};
+use tracing::Instrument;
 
 use crate::backend::Backend;
 use crate::filter::Bound;
@@ -661,9 +662,18 @@ where
         let (options, values) = args.of(plan);
 
         // The connection is held for this query only, not while the children load
-        let rows = {
+        let span = tracing::debug_span!(
+            "mabat.query",
+            view,
+            query = plan.query_name(),
+            path = path.as_str(),
+            overridden = active.is_some(),
+            keys = keys.as_ref().map_or(0, KeyList::len),
+            rows = tracing::field::Empty,
+        );
+        let rows = async {
             let mut conn = runner.lease().await?;
-            match active {
+            let rows = match active {
                 Some(active) if active.shadow => {
                     let start = Instant::now();
                     let rows = fetch::<B>(&mut conn, plan, options, keys.clone(), values, Some(active)).await?;
@@ -692,8 +702,12 @@ where
                     rows
                 }
                 _ => fetch::<B>(&mut conn, plan, options, keys, values, active).await?,
-            }
-        };
+            };
+            Ok::<_, Error>(rows)
+        }
+        .instrument(span.clone())
+        .await?;
+        span.record("rows", rows.len());
 
         let mut node = Node::new(path, rows, plan, &identity)?;
         if identity.graph && entities {

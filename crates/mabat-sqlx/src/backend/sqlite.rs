@@ -107,7 +107,9 @@ impl Backend for Sqlite {
         args: <Sqlite as sqlx::Database>::Arguments,
     ) -> super::BoxFuture<'c, Result<Key, sqlx::Error>> {
         Box::pin(async move {
-            let row = sqlx::query_with(sqlx::AssertSqlSafe(sql), args).fetch_one(conn).await?;
+            let text = sql.clone();
+            let run = sqlx::query_with(sqlx::AssertSqlSafe(sql), args).fetch_one(conn);
+            let row = crate::trace::statement(<Self as sqlx::Database>::NAME, &text, |_| 1, run).await?;
             super::returned_key::<Self>(&row)
         })
     }

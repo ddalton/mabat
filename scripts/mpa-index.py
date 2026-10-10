@@ -51,6 +51,7 @@ capabilities = [
     ("schema-snapshots", "A snapshot of the database's schema, its drift, and views checked against it without a database", ["mabat schema", "mabat::schema::snapshot", "mabat check --snapshot", "Manifest::check_snapshot", "mabat_check::build"], ["MPA-SCH-1", "MPA-SCH-2", "MPA-SCH-3", "MPA-SCH-4", "MPA-SCH-5", "MPA-SCH-6", "MPA-SCH-7"]),
     ("dba-tooling", "A manifest of the views and the mabat command line tool: check, explain, scaffold", ["Builder::manifest", "mabat check", "mabat explain", "mabat scaffold"], ["MPA-OVR-8"]),
     ("report-queries", "Reports: root SQL with named parameters and computed fields", ["Load::sql", "Load::bind", "#[view(computed)]"], ["MPA-LOAD-19", "MPA-VIEW-13", "MPA-OVR-3"]),
+    ("tracing", "tracing spans for each operation, query and statement, with names, rows and times", ["tracing", "RUST_LOG=mabat=debug"], ["MPA-DB-6"]),
     ("json-loading", "Load views as JSON, whole or a selection of their fields", ["Load::json", "Load::select", "Selection::parse", "Load::graph_json"], ["MPA-JSON-1", "MPA-JSON-3", "MPA-JSON-4", "MPA-JSON-5", "MPA-JSON-7"]),
     ("graphql", "A GraphQL schema generated from views, each root field one load", ["mabat_graphql::schema"], ["MPA-GQL-1", "MPA-GQL-2", "MPA-GQL-3", "MPA-GQL-4"]),
     ("save-aggregates", "Save a value and everything it owns, creating or replacing rows by key", ["mabat::save"], ["MPA-WRITE-1", "MPA-WRITE-3", "MPA-WRITE-4", "MPA-WRITE-5", "MPA-WRITE-6"]),

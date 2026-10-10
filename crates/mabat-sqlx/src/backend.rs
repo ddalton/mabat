@@ -313,7 +313,12 @@ macro_rules! common_methods {
             keys: Option<crate::key::KeyList>,
             values: Vec<crate::filter::Bound>,
         ) -> crate::backend::BoxFuture<'c, Result<Vec<$row>, sqlx::Error>> {
-            Box::pin(async move { bind(sqlx::query(sqlx::AssertSqlSafe(sql)), keys, values).fetch_all(conn).await })
+            Box::pin(async move {
+                let text = sql.clone();
+                let run = bind(sqlx::query(sqlx::AssertSqlSafe(sql)), keys, values).fetch_all(conn);
+                crate::trace::statement(<$db as sqlx::Database>::NAME, &text, |rows: &Vec<$row>| rows.len() as u64, run)
+                    .await
+            })
         }
 
         fn fetch_count<'c>(
@@ -323,7 +328,9 @@ macro_rules! common_methods {
             values: Vec<crate::filter::Bound>,
         ) -> crate::backend::BoxFuture<'c, Result<i64, sqlx::Error>> {
             Box::pin(async move {
-                let row = bind(sqlx::query(sqlx::AssertSqlSafe(sql)), keys, values).fetch_one(conn).await?;
+                let text = sql.clone();
+                let run = bind(sqlx::query(sqlx::AssertSqlSafe(sql)), keys, values).fetch_one(conn);
+                let row = crate::trace::statement(<$db as sqlx::Database>::NAME, &text, |_| 1, run).await?;
                 sqlx::Row::try_get::<i64, _>(&row, 0)
             })
         }
@@ -334,8 +341,11 @@ macro_rules! common_methods {
             args: <$db as sqlx::Database>::Arguments,
         ) -> crate::backend::BoxFuture<'c, Result<u64, sqlx::Error>> {
             Box::pin(async move {
-                let done = sqlx::query_with(sqlx::AssertSqlSafe(sql), args).execute(conn).await?;
-                Ok(done.rows_affected())
+                let text = sql.clone();
+                let run = async move {
+                    Ok(sqlx::query_with(sqlx::AssertSqlSafe(sql), args).execute(conn).await?.rows_affected())
+                };
+                crate::trace::statement(<$db as sqlx::Database>::NAME, &text, |rows: &u64| *rows, run).await
             })
         }
 
@@ -344,7 +354,12 @@ macro_rules! common_methods {
             sql: String,
             args: <$db as sqlx::Database>::Arguments,
         ) -> crate::backend::BoxFuture<'c, Result<Vec<$row>, sqlx::Error>> {
-            Box::pin(async move { sqlx::query_with(sqlx::AssertSqlSafe(sql), args).fetch_all(conn).await })
+            Box::pin(async move {
+                let text = sql.clone();
+                let run = sqlx::query_with(sqlx::AssertSqlSafe(sql), args).fetch_all(conn);
+                crate::trace::statement(<$db as sqlx::Database>::NAME, &text, |rows: &Vec<$row>| rows.len() as u64, run)
+                    .await
+            })
         }
 
         fn clone_args(args: &<$db as sqlx::Database>::Arguments) -> <$db as sqlx::Database>::Arguments {

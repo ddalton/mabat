@@ -296,6 +296,17 @@
       ]
     },
     {
+      "id": "tracing",
+      "summary": "tracing spans for each operation, query and statement, with names, rows and times",
+      "api": [
+        "tracing",
+        "RUST_LOG=mabat=debug"
+      ],
+      "rules": [
+        "MPA-DB-6"
+      ]
+    },
+    {
       "id": "json-loading",
       "summary": "Load views as JSON, whole or a selection of their fields",
       "api": [
@@ -1292,6 +1303,11 @@
       "id": "MPA-DB-5",
       "section": "2. Databases",
       "text": "Wherever a load or write takes a connection, it accepts a connection, a `sqlx::Transaction`, a pooled connection, or a `mabat::Pooled` pool (MPA-LOAD-11). Every query of a load runs on the connection given, so it sees the uncommitted writes of its transaction."
+    },
+    {
+      "id": "MPA-DB-6",
+      "section": "2. Databases",
+      "text": "Mabat traces its work with the `tracing` crate at the `debug` level: a span for each operation (`mabat.load`, `mabat.count`, `mabat.save`, `mabat.save_changes`, `mabat.save_all`, `mabat.save_graph`, `mabat.delete`) with its view; a `mabat.query` span for each query of a load with the view, the query's name, its path, whether an override ran, the number of keys and the rows it returned; and a `mabat.statement` span for each statement with the database (`db.system.name`), its SQL (`db.query.text`), the rows it returned or changed and its time in milliseconds (`elapsed_ms`), ending with a `statement ran` or `statement failed` event. Bound values are never traced."
     },
     {
       "id": "MPA-VIEW-1",
