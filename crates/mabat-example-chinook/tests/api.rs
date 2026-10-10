@@ -99,6 +99,18 @@ async fn reads() {
     assert_eq!(chart["last_name"], "Adams");
     assert_eq!(chart["reports"].as_array().unwrap().len(), 2);
 
+    // A report: what the DBA's override computes, with each customer's invoices of the period
+    let top = service.get("/reports/top-customers?from=2022-01-01&to=2023-01-01&limit=3").await;
+    let top = top.as_array().unwrap();
+    assert_eq!(top.len(), 3);
+    for customer in top {
+        let period = customer["period"].as_array().unwrap();
+        assert_eq!(customer["invoices"].as_u64().unwrap() as usize, period.len());
+        let spent: f64 = period.iter().map(|i| i["total"].as_f64().unwrap()).sum();
+        assert!((customer["spent"].as_f64().unwrap() - spent).abs() < 0.001, "{customer}");
+    }
+    assert!(top[0]["spent"].as_f64() >= top[1]["spent"].as_f64());
+
     // The SQL of a view, with the override
     let (status, explained) = service.call("GET", "/explain/Discography", None).await;
     assert_eq!(status, StatusCode::OK);

@@ -235,6 +235,16 @@ let open: Vec<TaskView> = mabat
     .await?;
 ```
 
+> **Reports (as built, later):** `Load::sql(text)` runs `text` as the root query: it becomes an override of
+> `$root` for that load, so the subquery wrapping of filters, order and paging (section 9) applies, and children
+> load by the keys it selects. Named parameters `:name` (`Load::bind`) are found by a small lexer that skips
+> literals, quoted identifiers, comments and `::` casts. PostgreSQL numbers them after the keys and before the
+> filter's values; MySQL and SQLite bind in the order of the text, so there the keys are bound among the values,
+> in the order their placeholders appear. A root override may take them too: the checks prepare them as
+> placeholders. `#[view(computed)]` (`FieldKind::Computed`) is a field the generated query does not select: the
+> manifest lists it with the role `computed`, so override checks require it and the generated query's check does
+> not, and the snapshot check skips it. A required computed field with no SQL fails the load before it runs.
+
 ### 5.3 Attributes
 
 | Attribute | On | Meaning |

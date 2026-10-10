@@ -75,6 +75,12 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **The MPA specification.** `docs/mpa.md`, the Mabat Persistence Architecture, states Mabat's contract as
   numbered rules; `docs/mpa.json` indexes its capabilities, attributes, functions, errors and diagnostics, and
   `llms.txt` points AI tools to both. A test keeps the index in step with the derive and the errors.
+- **Reports.** `Load::sql` runs SQL as the root query, for aggregates, joins and other rows that are not a table,
+  with named parameters (`:name`) bound by `Load::bind`; a root override may take named parameters too.
+  `#[view(computed)]` fields hold values the SQL computes; the generated query does not select them, override
+  checks require them, and loads may order and filter by them. The view's collections and references load as
+  usual. `Error::Params` reports a parameter without a value, a value without a parameter, or a computed field
+  without SQL.
 - **Streaming.** `Load::stream` loads values a batch at a time as a `futures::Stream`, holding one batch
   in memory: one query reads the keys of every match, with the filter, order and page, then each batch of
   `batch_size` keys (1,000 by default) is loaded with its collections and references, yielding the values in the

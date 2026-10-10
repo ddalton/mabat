@@ -59,6 +59,9 @@ pub struct QueryPlan {
     /// Whether each field of the view is loaded, by its index in [`ViewShape::fields`]: all
     /// of them, unless the plan is of a [`Selection`].
     pub selected: Vec<bool>,
+    /// The aliases of the selected computed fields, which the generated SQL does not select:
+    /// only SQL of the load or an override does (see [`FieldKind::Computed`]).
+    pub computed: Vec<String>,
 }
 
 /// A recursive collection or to-one reference loaded with one `WITH RECURSIVE` query.
@@ -244,7 +247,9 @@ impl QueryPlan {
                     // The GraphQL meta field, answered without a column
                     None if name == "__typename" => {}
                     None => return Err(error("no such field")),
-                    Some(Field { kind: FieldKind::Column { .. }, .. }) if !nested.is_empty() => {
+                    Some(Field { kind: FieldKind::Column { .. } | FieldKind::Computed { .. }, .. })
+                        if !nested.is_empty() =>
+                    {
                         return Err(error("a column has no fields to select"));
                     }
                     Some(_) => {}
@@ -275,6 +280,7 @@ impl QueryPlan {
         let mut sums = Vec::new();
         let mut variants = Vec::new();
         let mut children = Vec::new();
+        let mut computed = Vec::new();
         let mut selected = Vec::with_capacity(shape.fields.len());
         for (field_index, field) in shape.fields.iter().enumerate() {
             // The selection of the field's view, `None` for all of its fields. A view selected
@@ -282,7 +288,9 @@ impl QueryPlan {
             let nested = match selection {
                 None => None,
                 Some(selection) if selection.is_empty() => match field.kind {
-                    FieldKind::Column { .. } | FieldKind::Embedded { .. } => Some(selection),
+                    FieldKind::Column { .. } | FieldKind::Computed { .. } | FieldKind::Embedded { .. } => {
+                        Some(selection)
+                    }
                     FieldKind::Child(_) | FieldKind::ToOne { .. } => {
                         selected.push(false);
                         continue;
@@ -300,6 +308,7 @@ impl QueryPlan {
             let field_path = join_path(&path, field.name);
             match &field.kind {
                 FieldKind::Column { column, .. } => columns.push(SelectColumn::new(*column, field.name)),
+                FieldKind::Computed { .. } => computed.push(field.name.to_string()),
                 FieldKind::Embedded { column_prefix, shape: embedded } => {
                     let mut row = Row { view: shape, columns: &mut columns, sums: &mut sums, variants: &mut variants };
                     let top = Some((field_index, field_path.as_str()));
@@ -389,7 +398,7 @@ impl QueryPlan {
             key_alias = field.name.to_string();
         }
 
-        Ok(QueryPlan { shape, path, link, key_alias, columns, order_by, sums, cte, children, selected })
+        Ok(QueryPlan { shape, path, link, key_alias, columns, order_by, sums, cte, children, selected, computed })
     }
 
     /// Plan the query of a child field, or find that it repeats a query above.
@@ -632,6 +641,11 @@ impl Row<'_> {
                 ));
                 Ok(())
             }
+            FieldKind::Computed { .. } => Err(PlanError::UnsupportedEmbedded {
+                view: self.view.name,
+                field: format!("{alias_prefix}{}", field.name),
+                kind: "computed value",
+            }),
             FieldKind::Embedded { column_prefix: inner, shape } => self.add_embedded(
                 shape(),
                 &format!("{column_prefix}{inner}"),

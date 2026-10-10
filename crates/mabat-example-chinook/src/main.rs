@@ -21,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  GET  /employees/8/managers       the chain of managers above an employee");
     println!("  GET  /employees/chart            the organization chart");
     println!("  POST /playlists                  a new playlist; GET, PUT, DELETE /playlists/{{id}}");
+    println!("  GET  /reports/top-customers?from=2022-01-01&to=2023-01-01  a report");
     println!("  GET  /explain/Discography        the SQL of a view, overrides included");
     println!("  GET  /graphql                    GraphiQL");
     axum::serve(listener, mabat_example_chinook::router(Arc::new(app))).await?;

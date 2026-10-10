@@ -1133,6 +1133,154 @@
           ]
         }
       ]
+    },
+    {
+      "name": "TopCustomer",
+      "queries": [
+        {
+          "name": "$root",
+          "view": "TopCustomer",
+          "link": {
+            "kind": "root"
+          },
+          "table": "customer",
+          "key_column": "customer_id",
+          "key_alias": "customer_id",
+          "sql": "SELECT t0.\"customer_id\" AS \"customer_id\",\n       t0.\"first_name\" AS \"first_name\",\n       t0.\"last_name\" AS \"last_name\",\n       t0.\"country\" AS \"country\"\nFROM \"customer\" AS t0",
+          "columns": [
+            {
+              "alias": "customer_id",
+              "role": "field",
+              "column": "customer_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "first_name",
+              "role": "field",
+              "column": "first_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "last_name",
+              "role": "field",
+              "column": "last_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "country",
+              "role": "field",
+              "column": "country",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "invoices",
+              "role": "computed",
+              "type": {
+                "rust": "i64",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "spent",
+              "role": "computed",
+              "type": {
+                "rust": "f64",
+                "sql": "REAL",
+                "accepts": [
+                  "REAL"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "period",
+          "view": "InvoiceTotal",
+          "parent": 0,
+          "link": {
+            "kind": "child",
+            "fk": "customer_id"
+          },
+          "table": "invoice",
+          "key_column": "invoice_id",
+          "key_alias": "invoice_id",
+          "sql": "SELECT t0.\"customer_id\" AS \"$parent\",\n       t0.\"invoice_id\" AS \"invoice_id\",\n       t0.\"invoice_date\" AS \"invoice_date\",\n       t0.\"total\" AS \"total\"\nFROM \"invoice\" AS t0\nWHERE t0.\"customer_id\" IN (:keys)\nORDER BY t0.\"invoice_date\", t0.\"invoice_id\"",
+          "columns": [
+            {
+              "alias": "$parent",
+              "role": "parent",
+              "column": "customer_id"
+            },
+            {
+              "alias": "invoice_id",
+              "role": "field",
+              "column": "invoice_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "invoice_date",
+              "role": "field",
+              "column": "invoice_date",
+              "type": {
+                "rust": "NaiveDateTime",
+                "sql": "DATETIME",
+                "accepts": [
+                  "INTEGER",
+                  "REAL",
+                  "TEXT",
+                  "DATETIME"
+                ]
+              }
+            },
+            {
+              "alias": "total",
+              "role": "field",
+              "column": "total",
+              "type": {
+                "rust": "f64",
+                "sql": "REAL",
+                "accepts": [
+                  "REAL"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -63,6 +63,8 @@ enum FieldSpec {
     Json {
         column: String,
     },
+    /// A value that SQL computes, not a column of the table: `#[view(computed)]`.
+    Computed,
     Embed {
         prefix: String,
         ty: Type,
@@ -384,6 +386,9 @@ fn parse_variants(data: &DataEnum, strategy: Strategy) -> syn::Result<Vec<Varian
             (Strategy::TablePerVariant, _, Some(table)) => Some((table, key.unwrap_or_else(|| "id".to_string()))),
         };
 
+        if let Some(field) = fields.iter().find(|f| matches!(f.spec, FieldSpec::Computed)) {
+            return Err(syn::Error::new(field.span, "a computed field belongs to a view, not to a variant"));
+        }
         if strategy == Strategy::Tag {
             for field in &fields {
                 if matches!(field.spec, FieldSpec::Child(_) | FieldSpec::ToOne { .. }) {
@@ -438,6 +443,7 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
     let mut json = false;
     let mut version = false;
     let mut generated = false;
+    let mut computed = false;
 
     let set = |spec: &mut Option<FieldSpec>, value: FieldSpec, span: Span| -> syn::Result<()> {
         if spec.is_some() {
@@ -458,6 +464,8 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
                 version = true;
             } else if meta.path.is_ident("generated") {
                 generated = true;
+            } else if meta.path.is_ident("computed") {
+                computed = true;
             } else if meta.path.is_ident("child") {
                 let child = parse_child(&meta, &ty)?;
                 set(&mut spec, FieldSpec::Child(Box::new(child)), span)?;
@@ -521,11 +529,35 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
                 set(&mut spec, FieldSpec::Embed { prefix, ty: ty.clone() }, span)?;
             } else {
                 return Err(meta.error(
-                    "unknown view attribute, expected `column`, `json`, `version`, `generated`, `child`, `to_one` or `embed`",
+                    "unknown view attribute, expected `column`, `json`, `version`, `generated`, `computed`, `child`, \
+                     `to_one` or `embed`",
                 ));
             }
             Ok(())
         })?;
+    }
+
+    if computed {
+        if spec.is_some() || column.is_some() || json || version || generated {
+            return Err(syn::Error::new(
+                span,
+                "`computed` is a value that SQL selects by the field's name; it takes no `column`, `json`, `version`, \
+                 `generated`, `child`, `to_one` or `embed`",
+            ));
+        }
+        if matches!(member, Member::Unnamed) {
+            return Err(syn::Error::new(span, "a computed field needs a name, the alias SQL selects it as"));
+        }
+        return Ok(ViewField {
+            vis: field.vis.clone(),
+            member,
+            name,
+            span,
+            ty,
+            spec: FieldSpec::Computed,
+            version,
+            generated,
+        });
     }
 
     let spec = match (spec, column, json) {
@@ -763,6 +795,10 @@ fn field_shape(field: &ViewField) -> TokenStream2 {
             let ty = value_type(&field.ty, true);
             quote! { __mabat::__private::FieldKind::Column { column: #column, ty: #ty } }
         }
+        FieldSpec::Computed => {
+            let ty = value_type(&field.ty, false);
+            quote! { __mabat::__private::FieldKind::Computed { ty: #ty } }
+        }
         FieldSpec::Embed { prefix, ty } => quote! {
             __mabat::__private::FieldKind::Embedded {
                 column_prefix: #prefix,
@@ -869,7 +905,7 @@ fn decode_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStrea
     let name = &field.name;
     let alias = scope.alias(name);
     match &field.spec {
-        FieldSpec::Column { .. } => match generic_argument(ty, "Option") {
+        FieldSpec::Column { .. } | FieldSpec::Computed => match generic_argument(ty, "Option") {
             Some(inner) => quote! { __mabat::__private::optional_column::<#inner, __Backend>(row, node, #alias)? },
             None => quote! { __mabat::__private::column::<#ty, __Backend>(row, node, #alias)? },
         },
@@ -931,7 +967,7 @@ fn json_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStream2
         }}
     };
     match &field.spec {
-        FieldSpec::Column { .. } => {
+        FieldSpec::Column { .. } | FieldSpec::Computed => {
             let inner = generic_argument(ty, "Option").unwrap_or(ty);
             let value = probe(inner, alias);
             quote! { #value? }
@@ -1005,6 +1041,8 @@ fn write_value(field: &ViewField, index: usize, value: TokenStream2, scope: Scop
     };
     let borrow = |ty: &Type, value: TokenStream2| quote! { ::core::borrow::Borrow::<#ty>::borrow(#value) };
     match &field.spec {
+        // Not a column of the table: never written
+        FieldSpec::Computed => quote! {},
         FieldSpec::Column { column: name } => {
             let ty = &field.ty;
             let column = column(name);
@@ -1135,6 +1173,7 @@ fn change_value(field: &ViewField, index: usize) -> TokenStream2 {
     };
     let write = write_value(field, index, after.clone(), Scope::Row);
     match &field.spec {
+        FieldSpec::Computed => quote! {},
         FieldSpec::Column { .. } | FieldSpec::Json { .. } => {
             let changed = changed(&field.ty);
             quote! { if #changed { #write } }
@@ -1286,7 +1325,7 @@ fn describe_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStr
     let optional = generic_argument(ty, "Option");
     let is_optional = optional.is_some();
     match &field.spec {
-        FieldSpec::Column { .. } => quote! { description.column::<#ty>(#alias, #is_optional); },
+        FieldSpec::Column { .. } | FieldSpec::Computed => quote! { description.column::<#ty>(#alias, #is_optional); },
         FieldSpec::Json { .. } => {
             let inner = optional.unwrap_or(ty);
             quote! { description.column::<__mabat::__private::Json<#inner>>(#alias, #is_optional); }
@@ -1664,7 +1703,7 @@ fn no_generated_key(fields: &[ViewField]) -> syn::Result<()> {
 fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) -> syn::Result<TokenStream2> {
     no_generated_key(fields)?;
     for field in fields {
-        if matches!(field.spec, FieldSpec::Child(_) | FieldSpec::ToOne { .. }) {
+        if matches!(field.spec, FieldSpec::Child(_) | FieldSpec::ToOne { .. } | FieldSpec::Computed) {
             return Err(syn::Error::new(
                 field.span,
                 "an embedded struct can only contain columns and other embedded structs",
