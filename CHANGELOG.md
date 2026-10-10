@@ -79,6 +79,9 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **The MPA specification.** `docs/mpa.md`, the Mabat Persistence Architecture, states Mabat's contract as
   numbered rules; `docs/mpa.json` indexes its capabilities, attributes, functions, errors and diagnostics, and
   `llms.txt` points AI tools to both. A test keeps the index in step with the derive and the errors.
+- **For AI tools.** `llms.txt`, whose capabilities and unsupported features are generated from the specification's
+  index, served with `llms-full.txt` (README, guides and specification in one file) by the documentation site; the
+  `mabat` crate carries `llms.txt`, `MPA.md` and `mpa.json`.
 - **Benchmarks.** `benches/orm-comparison` loads the same nested data with Mabat, hand-written SQLx, SeaORM and
   diesel-async at 1, 100 and 10,000 roots with criterion; the results are in the performance guide.
 - **Reports.** `Load::sql` runs SQL as the root query, for aggregates, joins and other rows that are not a table,

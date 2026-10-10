@@ -9,3 +9,6 @@ src/content/docs/changelog.md
 src/content/docs/architecture/
 # Copied by scripts/sync.mjs from docs/architecture/overview
 public/architecture/
+# Written by scripts/sync.mjs for AI tools
+public/llms.txt
+public/llms-full.txt

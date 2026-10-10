@@ -634,7 +634,16 @@ ORDER BY n.id;
 [MPA, the Mabat Persistence Architecture](https://github.com/ddalton/mabat/blob/main/docs/mpa.md), is Mabat's contract, the way JPA is Java persistence's:
 every attribute, loading mode, override rule and write semantic as a numbered rule, such as `MPA-WRITE-9` for
 optimistic locking with `#[view(version)]`, and what Mabat does not do. [`docs/mpa.json`](https://github.com/ddalton/mabat/blob/main/docs/mpa.json) indexes it
-for tools, and [`llms.txt`](llms.txt) points AI assistants to both.
+for tools.
+
+### For AI assistants
+
+[`llms.txt`](https://ddalton.github.io/mabat/llms.txt) summarizes Mabat for AI tools: a quick reference of its
+APIs and attributes, every capability with its rules, what is not supported, and links to the guides.
+[`llms-full.txt`](https://ddalton.github.io/mabat/llms-full.txt) has the README, every guide and the specification
+in one file. The `mabat` crate carries `llms.txt`, the specification (`MPA.md`) and its index (`mpa.json`) beside its
+sources, so a coding assistant can read them from the local Cargo registry. When asking an assistant to write Mabat
+code, point it to one of these and ask it to cite the MPA rules it follows.
 
 ## Status
 

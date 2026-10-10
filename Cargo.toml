@@ -9,7 +9,7 @@ license = "MIT"
 repository = "https://github.com/ddalton/mabat"
 authors = ["Dilip Dalton"]
 rust-version = "1.94"
-homepage = "https://github.com/ddalton/mabat"
+homepage = "https://ddalton.github.io/mabat/"
 
 [workspace.dependencies]
 mabat-core = { path = "crates/mabat-core", version = "0.1.0" }

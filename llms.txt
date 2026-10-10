@@ -1,27 +1,97 @@
 # Mabat
 
-> Typed aggregate reads and writes for Rust on PostgreSQL, MySQL and SQLite. Views are Rust structs deriving `mabat::View`; each is loaded with one batched query per relationship, its queries can be replaced by checked SQL override files, it can be served as JSON or as a generated GraphQL schema, and it can be saved and deleted as an aggregate, with optimistic locking. The contract is the MPA (Mabat Persistence Architecture) specification.
+> An aggregate mapper for Rust: declare the shape of a domain aggregate as Rust types deriving `mabat::View`, and Mabat loads and saves it with batched, checkable SQL on PostgreSQL, MySQL and SQLite, built on SQLx 0.9. A view loads with one query for its root rows and one batched query per collection or reference, never one per row. Any query can be replaced by a DBA's SQL override file, checked against the view and the database at startup, and views can be checked against a schema snapshot at build time. Views come out as typed values, JSON, a graph with typed references, or a generated GraphQL schema, and save as whole aggregates.
 
-When writing or reviewing code that uses Mabat, follow the rules of the MPA specification and cite their ids (such as `MPA-WRITE-9` for `#[view(version)]`). Do not use what its section 12 lists as not supported, such as a unit of work, lazy loading or saving only what changed in a graph.
+Mabat's contract is the MPA (Mabat Persistence Architecture) specification: numbered rules such as `MPA-LOAD-1` or `MPA-WRITE-9`. When writing or reviewing code that uses Mabat, follow its rules and cite their ids, prefer the APIs below to hand-written SQL for nested reads and aggregate writes, and do not use what it lists as not supported.
+
+## Quick reference
+
+- Declare a view: `#[derive(mabat::View)] #[view(table = "task", key = "id")] struct TaskView { id: i64, name: String, … }`. Field attributes: `column = "c"`, `json`, `embed(prefix = "p_")`, `child(fk, order_by, through, target, index, key, depth, recursive)`, `to_one(fk, depth, recursive)`, `version`, `generated`, `computed`. Struct attributes: `table`, `key`, `embedded`, `databases`; enums: `tag`, `strategy`, `tag_value`, `lenient`.
+- Field types: columns, `Option<T>`, embedded structs (generic over types allowed), enums with data, `Vec<T>` and maps of child views, `T`/`Box<T>`/`Arc<T>` references, `Ref<T>`/`Vec<Ref<T>>` for graphs.
+- Load: `mabat::load::<TaskView>()` with `.by_key(k)`, `.by_keys(ks)`, `.filter(mabat::filter::col("c").eq(v) & …)`, `.order_by("c")`, `.order_by_desc`, `.limit`, `.offset`, `.select(Selection::parse("a b { c }")?)`, `.nested("path", Nested::new()…)`, `.sql("…")` with `.bind("name", v)` for reports, `.batch_size(n)`; run with `.all(conn)`, `.one`, `.optional`, `.count`, `.json`, `.graph`, `.graph_json`, `.stream`, `.json_stream`.
+- Connections: `&mut sqlx::PgConnection` (or MySQL, SQLite), a `sqlx::Transaction`, a pooled connection, or `mabat::Pooled::snapshot(&pool, n)` / `Pooled::read_committed(&pool, n)` for concurrent child queries.
+- Overrides: `let mabat = mabat::Mabat::builder().register::<TaskView>().overrides_dir("mabat/overrides").build(&mut conn).await?;` then `mabat.load::<TaskView>()`. Override files are `TaskView.sql` (`-- mabat: query children`) or `TaskView.toml`; they select the view's aliases, `$parent` and `$ref.<field>`, and take `:keys`.
+- Save: `mabat::save(&mut value, conn)`, `save_changes(&before, &mut after, conn)`, `save_all(&mut values, conn)`, `delete::<V, _>(key, conn)`, `save_graph(&mut graph, conn)`, `save_graph_changes`.
+- GraphQL: `mabat_graphql::schema(&pool).list::<V>("tasks").by_key::<V>("task").finish()?` (async-graphql dynamic schema).
+- Checks: `mabat check` and `mabat explain` (the `mabat-cli` crate) against a manifest; `mabat schema --check` for drift; `mabat_check::build("mabat/views.json", "mabat/schema.json").run()` in `build.rs` fails `cargo build` when views no longer match the schema.
+- Tracing: spans `mabat.load`, `mabat.query`, `mabat.statement` at `debug`; `RUST_LOG=mabat=debug`.
+
+## Capabilities
+
+<!-- generated from docs/mpa.json by scripts/mpa-index.py: do not edit -->
+- **typed-views**: Declare the shape of nested data with Rust structs deriving View. API: `#[derive(View)]`, `#[view(table, key)]`. Rules: MPA-CORE-1, MPA-VIEW-1
+- **batched-loading**: Load a view with one batched query per relationship, never one per row. API: `mabat::load`. Rules: MPA-PLAN-1
+- **multiple-databases**: PostgreSQL, MySQL 8+ and SQLite, chosen by features and by the connection. API: `features: postgres, mysql, sqlite`, `#[view(databases)]`. Rules: MPA-DB-1, MPA-DB-2
+- **embedded-values**: Structs stored in columns of the containing view, generic or not. API: `#[view(embedded)]`, `#[view(embed(prefix))]`, `mabat::GenericColumn`. Rules: MPA-VIEW-3, MPA-VIEW-4, MPA-VIEW-7
+- **enums-with-data**: Rust enums with data, stored in columns or in a table per variant, decoded strictly. API: `#[view(tag, strategy, lenient)]`, `#[view(tag_value)]`. Rules: MPA-SUM-1, MPA-SUM-2, MPA-SUM-3, MPA-SUM-4
+- **json-columns**: Columns decoded and written as JSON with serde. API: `#[view(json)]`. Rules: MPA-VIEW-6
+- **to-one-references**: References to other views by foreign key, owned, boxed, shared or into a graph. API: `#[view(to_one(fk))]`, `Box<T>`. Rules: MPA-VIEW-8
+- **collections**: To-many collections, ordered, placed by index, or as maps. API: `#[view(child(fk, order_by, index, key))]`. Rules: MPA-VIEW-9, MPA-VIEW-10
+- **many-to-many**: Collections through a link table. API: `#[view(child(through, target))]`. Rules: MPA-VIEW-9
+- **recursive-views**: Trees and chains of parents by depth-limited levels or one WITH RECURSIVE query. API: `#[view(child(depth))]`, `#[view(child(recursive = "cte"))]`, `#[view(to_one(depth))]`, `#[view(to_one(recursive = "cte"))]`. Rules: MPA-PLAN-4, MPA-LOAD-12, MPA-VIEW-8
+- **shared-values**: Arc<T> values decoded once per entity and shared. API: `Arc<T>`. Rules: MPA-LOAD-13
+- **graphs**: Cyclic data as a Graph of entities with typed references. API: `Ref<T>`, `Load::graph`, `Graph`. Rules: MPA-LOAD-14
+- **filters-and-paging**: Filters, ordering, paging and counting of the root rows. API: `mabat::filter::col`, `Load::filter`, `Load::order_by`, `Load::limit`, `Load::offset`, `Load::count`. Rules: MPA-LOAD-4, MPA-LOAD-5, MPA-LOAD-6
+- **nested-arguments**: Filter, order and page the elements of a collection per parent, in one query. API: `Load::nested`, `Nested`. Rules: MPA-LOAD-9, MPA-LOAD-10
+- **streaming**: Load many values a batch at a time, as a stream, holding one batch in memory. API: `Load::stream`, `Load::json_stream`, `Load::batch_size`. Rules: MPA-LOAD-15, MPA-LOAD-16, MPA-LOAD-17, MPA-LOAD-18
+- **concurrent-loads**: Run the queries of each level concurrently on a pool, optionally in one snapshot. API: `Pooled::snapshot`, `Pooled::read_committed`. Rules: MPA-LOAD-11
+- **sql-overrides**: Replace any query of a view with tuned SQL from a file, checked at startup. API: `Mabat::builder`, `overrides_dir`, `overrides_sql`, `-- mabat: query <name>`. Rules: MPA-OVR-1, MPA-OVR-2, MPA-OVR-3, MPA-OVR-4, MPA-OVR-5
+- **shadow-mode**: Run an override next to the generated query and log differences. API: `shadow`, `Mabat::shadow_stats`. Rules: MPA-OVR-6
+- **override-reload**: Reload override files without restarting. API: `Mabat::reload`. Rules: MPA-OVR-7
+- **schema-snapshots**: A snapshot of the database's schema, its drift, and views checked against it without a database. API: `mabat schema`, `mabat::schema::snapshot`, `mabat check --snapshot`, `Manifest::check_snapshot`, `mabat_check::build`. Rules: MPA-SCH-1, MPA-SCH-2, MPA-SCH-3, MPA-SCH-4, MPA-SCH-5, MPA-SCH-6, MPA-SCH-7
+- **dba-tooling**: A manifest of the views and the mabat command line tool: check, explain, scaffold. API: `Builder::manifest`, `mabat check`, `mabat explain`, `mabat scaffold`. Rules: MPA-OVR-8
+- **report-queries**: Reports: root SQL with named parameters and computed fields. API: `Load::sql`, `Load::bind`, `#[view(computed)]`. Rules: MPA-LOAD-19, MPA-VIEW-13, MPA-OVR-3
+- **tracing**: tracing spans for each operation, query and statement, with names, rows and times. API: `tracing`, `RUST_LOG=mabat=debug`. Rules: MPA-DB-6
+- **json-loading**: Load views as JSON, whole or a selection of their fields. API: `Load::json`, `Load::select`, `Selection::parse`, `Load::graph_json`. Rules: MPA-JSON-1, MPA-JSON-3, MPA-JSON-4, MPA-JSON-5, MPA-JSON-7
+- **graphql**: A GraphQL schema generated from views, each root field one load. API: `mabat_graphql::schema`. Rules: MPA-GQL-1, MPA-GQL-2, MPA-GQL-3, MPA-GQL-4
+- **save-aggregates**: Save a value and everything it owns, creating or replacing rows by key. API: `mabat::save`. Rules: MPA-WRITE-1, MPA-WRITE-3, MPA-WRITE-4, MPA-WRITE-5, MPA-WRITE-6
+- **save-changes**: Save only what changed between two values of an aggregate. API: `mabat::save_changes`. Rules: MPA-WRITE-8
+- **optimistic-locking**: Version columns that make stale writes fail. API: `#[view(version)]`, `Error::Conflict`. Rules: MPA-WRITE-9, MPA-WRITE-10
+- **save-many**: Save many values with statements per table and level, not per row. API: `mabat::save_all`. Rules: MPA-WRITE-19
+- **save-graphs**: Save every entity of a graph, ordered by its references, cycles included. API: `mabat::save_graph`, `Graph::new`, `Graph::insert`. Rules: MPA-WRITE-14, MPA-WRITE-15, MPA-WRITE-16, MPA-WRITE-17, MPA-WRITE-18
+- **save-graph-changes**: Save only the entities of a graph that were inserted or handed out by get_mut. API: `mabat::save_graph_changes`, `Graph::is_changed`. Rules: MPA-WRITE-20
+- **generated-keys**: Keys generated by the database on insert, written back into the value. API: `#[view(generated)]`, `mabat::save`. Rules: MPA-WRITE-13, MPA-WRITE-10
+- **delete-aggregates**: Delete a value and everything it owns. API: `mabat::delete`. Rules: MPA-WRITE-7
+<!-- end of generated capabilities -->
+
+## Not supported
+
+<!-- generated from docs/mpa.json by scripts/mpa-index.py: do not edit -->
+- **MPA-NOT-3** A unit of work that collects writes and flushes them later (MPA-WRITE-1).
+- **MPA-NOT-4** Lazy loading: everything a view declares is loaded by the load, or selected (section 8).
+- **MPA-NOT-5** Writes through overrides, and override SQL for writes.
+- **MPA-NOT-6** Filtering by columns of embedded structs in `filter`, `nested` or GraphQL `where`.
+- **MPA-NOT-7** Arguments on map collections in GraphQL, and GraphQL mutations.
+- **MPA-NOT-8** Pipelining queries on one connection.
+- **MPA-NOT-9** Schema generation or migrations: views describe existing tables.
+<!-- end of generated not supported -->
 
 ## Specification
 
-- [MPA specification](docs/mpa.md): every attribute, loading mode, override rule, JSON and GraphQL behaviour, write semantics, error and diagnostic, as numbered rules
-- [MPA index](docs/mpa.json): the same as JSON, with capabilities, attributes, functions, errors and diagnostics mapped to their rules
+- [MPA specification](https://ddalton.github.io/mabat/spec/mpa/): every attribute, loading mode, override rule, JSON and GraphQL behaviour, write semantics, error and diagnostic, as numbered rules ([Markdown source](https://github.com/ddalton/mabat/blob/main/docs/mpa.md))
+- [MPA index](https://github.com/ddalton/mabat/blob/main/docs/mpa.json): the same as JSON, with capabilities, attributes, functions, errors and diagnostics mapped to their rules
+- [Everything in one file](https://ddalton.github.io/mabat/llms-full.txt): this file, the README, every guide and the specification
 
 ## Guides
 
-- [README](README.md): overview, examples of every feature, installation and development
-- [Design document](docs/design.md): goals, the reasoning behind the architecture, and what was built for each milestone
-- [Changelog](CHANGELOG.md): what each version adds
+- [Getting started](https://ddalton.github.io/mabat/start/getting-started/): a first view, loaded
+- [Declaring views](https://ddalton.github.io/mabat/guides/views/): every attribute
+- [Enums with data](https://ddalton.github.io/mabat/guides/enums/), [Collections and recursion](https://ddalton.github.io/mabat/guides/collections/), [Shared values and graphs](https://ddalton.github.io/mabat/guides/graphs/)
+- [Loading](https://ddalton.github.io/mabat/guides/loading/): filters, order, paging, nested arguments, streaming, reports
+- [Tuning with overrides](https://ddalton.github.io/mabat/guides/overrides/) and [the mabat CLI](https://ddalton.github.io/mabat/guides/cli/)
+- [JSON and selections](https://ddalton.github.io/mabat/guides/json/), [GraphQL](https://ddalton.github.io/mabat/guides/graphql/)
+- [Saving aggregates](https://ddalton.github.io/mabat/guides/writing/), [Databases and concurrency](https://ddalton.github.io/mabat/guides/databases/), [Performance](https://ddalton.github.io/mabat/guides/performance/)
+- [Design document](https://ddalton.github.io/mabat/design/): the reasoning behind the architecture
 
 ## Crates
 
-- [mabat](crates/mabat): the crate applications use: `#[derive(View)]`, loading, overrides, JSON, writes
-- [mabat-graphql](crates/mabat-graphql): a GraphQL schema generated from views, with async-graphql
-- [mabat-cli](crates/mabat-cli): the `mabat` tool that checks, explains and scaffolds override SQL from a manifest
+- [mabat](https://docs.rs/mabat): the crate applications use: `#[derive(View)]`, loading, overrides, JSON, writes
+- [mabat-graphql](https://docs.rs/mabat-graphql): a GraphQL schema generated from views, with async-graphql
+- [mabat-cli](https://crates.io/crates/mabat-cli): the `mabat` tool that checks, explains and scaffolds override SQL, and snapshots schemas
+- [mabat-check](https://docs.rs/mabat-check): checks views against a schema snapshot without a database, for build scripts
 
 ## Optional
 
-- [GraphQL example server](crates/mabat-graphql/examples/chinook.rs): the Chinook music store with GraphiQL
-- [End-to-end tests](crates/mabat-e2e/tests): Pagila and Chinook on every database, examples of every feature in use
+- [Chinook example service](https://github.com/ddalton/mabat/tree/main/crates/mabat-example-chinook): REST, GraphQL, streaming, writes, a report and an override on a sample music store
+- [End-to-end tests](https://github.com/ddalton/mabat/tree/main/crates/mabat-e2e/tests): Pagila and Chinook on every database, examples of every feature in use
+- [Changelog](https://ddalton.github.io/mabat/changelog/)
