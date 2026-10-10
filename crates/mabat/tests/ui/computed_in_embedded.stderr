@@ -1,0 +1,5 @@
+error: an embedded struct can only contain columns and other embedded structs
+ --> tests/ui/computed_in_embedded.rs:5:5
+  |
+5 |     total: i64,
+  |     ^^^^^

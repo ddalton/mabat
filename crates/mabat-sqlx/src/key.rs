@@ -92,6 +92,17 @@ pub enum KeyList {
 }
 
 impl KeyList {
+    /// The keys as values bound one by one, for MySQL and SQLite when they are bound among other
+    /// values.
+    pub(crate) fn into_bound(self) -> Vec<crate::filter::Bound> {
+        use crate::filter::{Bound, Value};
+        match self {
+            KeyList::Int(keys) => keys.into_iter().map(|key| Bound::One(Value::I64(key))).collect(),
+            KeyList::Text(keys) => keys.into_iter().map(|key| Bound::One(Value::Text(key))).collect(),
+            KeyList::Uuid(keys) => keys.into_iter().map(|key| Bound::One(Value::Uuid(key))).collect(),
+        }
+    }
+
     /// Group keys into an array. All keys need to be of the same type.
     pub(crate) fn new(keys: Vec<Key>) -> Result<KeyList, MixedKeys> {
         let mut iter = keys.into_iter();

@@ -1,0 +1,480 @@
+{
+  "format": 1,
+  "backend": "SQLite",
+  "tables": [
+    {
+      "name": "album",
+      "columns": [
+        {
+          "name": "album_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "declared": "VARCHAR(160)",
+          "nullable": false
+        },
+        {
+          "name": "artist_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "album_id"
+      ]
+    },
+    {
+      "name": "artist",
+      "columns": [
+        {
+          "name": "artist_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "declared": "VARCHAR(120)",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "artist_id"
+      ]
+    },
+    {
+      "name": "customer",
+      "columns": [
+        {
+          "name": "customer_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "first_name",
+          "type": "TEXT",
+          "declared": "VARCHAR(40)",
+          "nullable": false
+        },
+        {
+          "name": "last_name",
+          "type": "TEXT",
+          "declared": "VARCHAR(20)",
+          "nullable": false
+        },
+        {
+          "name": "company",
+          "type": "TEXT",
+          "declared": "VARCHAR(80)",
+          "nullable": true
+        },
+        {
+          "name": "address",
+          "type": "TEXT",
+          "declared": "VARCHAR(70)",
+          "nullable": true
+        },
+        {
+          "name": "city",
+          "type": "TEXT",
+          "declared": "VARCHAR(40)",
+          "nullable": true
+        },
+        {
+          "name": "state",
+          "type": "TEXT",
+          "declared": "VARCHAR(40)",
+          "nullable": true
+        },
+        {
+          "name": "country",
+          "type": "TEXT",
+          "declared": "VARCHAR(40)",
+          "nullable": true
+        },
+        {
+          "name": "postal_code",
+          "type": "TEXT",
+          "declared": "VARCHAR(10)",
+          "nullable": true
+        },
+        {
+          "name": "phone",
+          "type": "TEXT",
+          "declared": "VARCHAR(24)",
+          "nullable": true
+        },
+        {
+          "name": "fax",
+          "type": "TEXT",
+          "declared": "VARCHAR(24)",
+          "nullable": true
+        },
+        {
+          "name": "email",
+          "type": "TEXT",
+          "declared": "VARCHAR(60)",
+          "nullable": false
+        },
+        {
+          "name": "support_rep_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "customer_id"
+      ]
+    },
+    {
+      "name": "employee",
+      "columns": [
+        {
+          "name": "employee_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "last_name",
+          "type": "TEXT",
+          "declared": "VARCHAR(20)",
+          "nullable": false
+        },
+        {
+          "name": "first_name",
+          "type": "TEXT",
+          "declared": "VARCHAR(20)",
+          "nullable": false
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "declared": "VARCHAR(30)",
+          "nullable": true
+        },
+        {
+          "name": "reports_to",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": true
+        },
+        {
+          "name": "birth_date",
+          "type": "DATETIME",
+          "declared": "TIMESTAMP",
+          "nullable": true
+        },
+        {
+          "name": "hire_date",
+          "type": "DATETIME",
+          "declared": "TIMESTAMP",
+          "nullable": true
+        },
+        {
+          "name": "address",
+          "type": "TEXT",
+          "declared": "VARCHAR(70)",
+          "nullable": true
+        },
+        {
+          "name": "city",
+          "type": "TEXT",
+          "declared": "VARCHAR(40)",
+          "nullable": true
+        },
+        {
+          "name": "state",
+          "type": "TEXT",
+          "declared": "VARCHAR(40)",
+          "nullable": true
+        },
+        {
+          "name": "country",
+          "type": "TEXT",
+          "declared": "VARCHAR(40)",
+          "nullable": true
+        },
+        {
+          "name": "postal_code",
+          "type": "TEXT",
+          "declared": "VARCHAR(10)",
+          "nullable": true
+        },
+        {
+          "name": "phone",
+          "type": "TEXT",
+          "declared": "VARCHAR(24)",
+          "nullable": true
+        },
+        {
+          "name": "fax",
+          "type": "TEXT",
+          "declared": "VARCHAR(24)",
+          "nullable": true
+        },
+        {
+          "name": "email",
+          "type": "TEXT",
+          "declared": "VARCHAR(60)",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "employee_id"
+      ]
+    },
+    {
+      "name": "genre",
+      "columns": [
+        {
+          "name": "genre_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "declared": "VARCHAR(120)",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "genre_id"
+      ]
+    },
+    {
+      "name": "invoice",
+      "columns": [
+        {
+          "name": "invoice_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "customer_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "invoice_date",
+          "type": "DATETIME",
+          "declared": "TIMESTAMP",
+          "nullable": false
+        },
+        {
+          "name": "billing_address",
+          "type": "TEXT",
+          "declared": "VARCHAR(70)",
+          "nullable": true
+        },
+        {
+          "name": "billing_city",
+          "type": "TEXT",
+          "declared": "VARCHAR(40)",
+          "nullable": true
+        },
+        {
+          "name": "billing_state",
+          "type": "TEXT",
+          "declared": "VARCHAR(40)",
+          "nullable": true
+        },
+        {
+          "name": "billing_country",
+          "type": "TEXT",
+          "declared": "VARCHAR(40)",
+          "nullable": true
+        },
+        {
+          "name": "billing_postal_code",
+          "type": "TEXT",
+          "declared": "VARCHAR(10)",
+          "nullable": true
+        },
+        {
+          "name": "total",
+          "type": "REAL",
+          "declared": "REAL",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "invoice_id"
+      ]
+    },
+    {
+      "name": "invoice_line",
+      "columns": [
+        {
+          "name": "invoice_line_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "invoice_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "track_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "unit_price",
+          "type": "REAL",
+          "declared": "REAL",
+          "nullable": false
+        },
+        {
+          "name": "quantity",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "invoice_line_id"
+      ]
+    },
+    {
+      "name": "media_type",
+      "columns": [
+        {
+          "name": "media_type_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "declared": "VARCHAR(120)",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "media_type_id"
+      ]
+    },
+    {
+      "name": "playlist",
+      "columns": [
+        {
+          "name": "playlist_id",
+          "type": "INTEGER",
+          "declared": "INTEGER",
+          "nullable": false,
+          "generated": true
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "declared": "VARCHAR(120)",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "playlist_id"
+      ]
+    },
+    {
+      "name": "playlist_track",
+      "columns": [
+        {
+          "name": "playlist_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "track_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "playlist_id",
+        "track_id"
+      ]
+    },
+    {
+      "name": "track",
+      "columns": [
+        {
+          "name": "track_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "declared": "VARCHAR(200)",
+          "nullable": false
+        },
+        {
+          "name": "album_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": true
+        },
+        {
+          "name": "media_type_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "genre_id",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": true
+        },
+        {
+          "name": "composer",
+          "type": "TEXT",
+          "declared": "VARCHAR(220)",
+          "nullable": true
+        },
+        {
+          "name": "milliseconds",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": false
+        },
+        {
+          "name": "bytes",
+          "type": "INTEGER",
+          "declared": "INT",
+          "nullable": true
+        },
+        {
+          "name": "unit_price",
+          "type": "REAL",
+          "declared": "REAL",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "track_id"
+      ]
+    }
+  ]
+}

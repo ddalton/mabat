@@ -1,0 +1,23 @@
+[package]
+name = "mabat-orm-comparison"
+description = "Loading the same nested data with Mabat, SQLx, SeaORM and Diesel, measured with criterion"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# A workspace of its own: SeaORM and Diesel are compiled only to run this benchmark
+[workspace]
+
+[dependencies]
+criterion = { version = "0.8", features = ["async_tokio"] }
+diesel = { version = "2.3", default-features = false, features = ["postgres_backend"] }
+diesel-async = { version = "0.9", features = ["postgres"] }
+mabat = { path = "../../crates/mabat", features = ["postgres"] }
+sea-orm = { version = "2.0", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[bench]]
+name = "load"
+harness = false

@@ -47,7 +47,9 @@ pub enum Error {
     #[error("a reference into the graph points to a {view} that was not loaded")]
     UnloadedReference { view: &'static str },
 
-    #[error("{view} has references into a graph (`Ref<T>`); load it with `.graph(..)`")]
+    #[error(
+        "{view} has references into a graph (`Ref<T>`); load it with `.graph(..)`, or as JSON with `.graph_json(..)` or a selection"
+    )]
     GraphRequired { view: &'static str },
 
     /// Optimistic locking: the row was changed or deleted since the value was loaded.
@@ -109,4 +111,9 @@ pub enum Error {
         "{view}: cannot order or filter by `{column}`: the root query is overridden and the view does not select it"
     )]
     ColumnNotSelected { view: &'static str, column: String },
+
+    /// The named parameters of the root query's SQL and the values bound with
+    /// [`Load::bind`](crate::Load::bind) do not match.
+    #[error("{view}: {message}")]
+    Params { view: &'static str, message: String },
 }

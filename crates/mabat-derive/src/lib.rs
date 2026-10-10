@@ -3,7 +3,7 @@
 //! Use it through the `mabat` crate, which documents the attributes.
 
 use proc_macro::TokenStream;
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
 use quote::{format_ident, quote};
 use syn::ext::IdentExt;
 use syn::spanned::Spanned;
@@ -63,6 +63,8 @@ enum FieldSpec {
     Json {
         column: String,
     },
+    /// A value that SQL computes, not a column of the table: `#[view(computed)]`.
+    Computed,
     Embed {
         prefix: String,
         ty: Type,
@@ -246,16 +248,22 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 }
 
 fn expand_items(input: DeriveInput) -> syn::Result<TokenStream2> {
-    if !input.generics.params.is_empty() {
-        return Err(syn::Error::new(input.generics.span(), "a view cannot have generic parameters"));
-    }
     let (target, databases) = parse_target(&input)?;
+    // Only embedded structs, which have no table of their own, may be generic over types
+    let generic = !input.generics.params.is_empty();
+    let types_only = input.generics.params.iter().all(|p| matches!(p, syn::GenericParam::Type(_)));
+    if generic && !(matches!(target, Target::Embedded) && types_only) {
+        return Err(syn::Error::new(
+            input.generics.span(),
+            "a view cannot have generic parameters; an embedded struct (`#[view(embedded)]`) can have type parameters",
+        ));
+    }
     match (&input.data, target) {
         (Data::Struct(data), Target::View { table, key }) => {
             expand_view(&input.ident, &table, &key, &struct_fields(&input.ident, &data.fields)?, databases)
         }
         (Data::Struct(data), Target::Embedded) => {
-            expand_embedded(&input.ident, &struct_fields(&input.ident, &data.fields)?, databases)
+            expand_embedded(&input.ident, &input.generics, &struct_fields(&input.ident, &data.fields)?, databases)
         }
         (Data::Enum(data), Target::Sum { tag, strategy, lenient }) => {
             let variants = parse_variants(data, strategy)?;
@@ -384,6 +392,9 @@ fn parse_variants(data: &DataEnum, strategy: Strategy) -> syn::Result<Vec<Varian
             (Strategy::TablePerVariant, _, Some(table)) => Some((table, key.unwrap_or_else(|| "id".to_string()))),
         };
 
+        if let Some(field) = fields.iter().find(|f| matches!(f.spec, FieldSpec::Computed)) {
+            return Err(syn::Error::new(field.span, "a computed field belongs to a view, not to a variant"));
+        }
         if strategy == Strategy::Tag {
             for field in &fields {
                 if matches!(field.spec, FieldSpec::Child(_) | FieldSpec::ToOne { .. }) {
@@ -438,6 +449,7 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
     let mut json = false;
     let mut version = false;
     let mut generated = false;
+    let mut computed = false;
 
     let set = |spec: &mut Option<FieldSpec>, value: FieldSpec, span: Span| -> syn::Result<()> {
         if spec.is_some() {
@@ -458,6 +470,8 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
                 version = true;
             } else if meta.path.is_ident("generated") {
                 generated = true;
+            } else if meta.path.is_ident("computed") {
+                computed = true;
             } else if meta.path.is_ident("child") {
                 let child = parse_child(&meta, &ty)?;
                 set(&mut spec, FieldSpec::Child(Box::new(child)), span)?;
@@ -521,11 +535,35 @@ fn parse_field(field: &syn::Field, position: usize) -> syn::Result<ViewField> {
                 set(&mut spec, FieldSpec::Embed { prefix, ty: ty.clone() }, span)?;
             } else {
                 return Err(meta.error(
-                    "unknown view attribute, expected `column`, `json`, `version`, `generated`, `child`, `to_one` or `embed`",
+                    "unknown view attribute, expected `column`, `json`, `version`, `generated`, `computed`, `child`, \
+                     `to_one` or `embed`",
                 ));
             }
             Ok(())
         })?;
+    }
+
+    if computed {
+        if spec.is_some() || column.is_some() || json || version || generated {
+            return Err(syn::Error::new(
+                span,
+                "`computed` is a value that SQL selects by the field's name; it takes no `column`, `json`, `version`, \
+                 `generated`, `child`, `to_one` or `embed`",
+            ));
+        }
+        if matches!(member, Member::Unnamed) {
+            return Err(syn::Error::new(span, "a computed field needs a name, the alias SQL selects it as"));
+        }
+        return Ok(ViewField {
+            vis: field.vis.clone(),
+            member,
+            name,
+            span,
+            ty,
+            spec: FieldSpec::Computed,
+            version,
+            generated,
+        });
     }
 
     let spec = match (spec, column, json) {
@@ -763,6 +801,10 @@ fn field_shape(field: &ViewField) -> TokenStream2 {
             let ty = value_type(&field.ty, true);
             quote! { __mabat::__private::FieldKind::Column { column: #column, ty: #ty } }
         }
+        FieldSpec::Computed => {
+            let ty = value_type(&field.ty, false);
+            quote! { __mabat::__private::FieldKind::Computed { ty: #ty } }
+        }
         FieldSpec::Embed { prefix, ty } => quote! {
             __mabat::__private::FieldKind::Embedded {
                 column_prefix: #prefix,
@@ -869,7 +911,7 @@ fn decode_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStrea
     let name = &field.name;
     let alias = scope.alias(name);
     match &field.spec {
-        FieldSpec::Column { .. } => match generic_argument(ty, "Option") {
+        FieldSpec::Column { .. } | FieldSpec::Computed => match generic_argument(ty, "Option") {
             Some(inner) => quote! { __mabat::__private::optional_column::<#inner, __Backend>(row, node, #alias)? },
             None => quote! { __mabat::__private::column::<#ty, __Backend>(row, node, #alias)? },
         },
@@ -931,7 +973,7 @@ fn json_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStream2
         }}
     };
     match &field.spec {
-        FieldSpec::Column { .. } => {
+        FieldSpec::Column { .. } | FieldSpec::Computed => {
             let inner = generic_argument(ty, "Option").unwrap_or(ty);
             let value = probe(inner, alias);
             quote! { #value? }
@@ -1005,6 +1047,8 @@ fn write_value(field: &ViewField, index: usize, value: TokenStream2, scope: Scop
     };
     let borrow = |ty: &Type, value: TokenStream2| quote! { ::core::borrow::Borrow::<#ty>::borrow(#value) };
     match &field.spec {
+        // Not a column of the table: never written
+        FieldSpec::Computed => quote! {},
         FieldSpec::Column { column: name } => {
             let ty = &field.ty;
             let column = column(name);
@@ -1135,6 +1179,7 @@ fn change_value(field: &ViewField, index: usize) -> TokenStream2 {
     };
     let write = write_value(field, index, after.clone(), Scope::Row);
     match &field.spec {
+        FieldSpec::Computed => quote! {},
         FieldSpec::Column { .. } | FieldSpec::Json { .. } => {
             let changed = changed(&field.ty);
             quote! { if #changed { #write } }
@@ -1286,7 +1331,7 @@ fn describe_value(field: &ViewField, index: usize, scope: Scope<'_>) -> TokenStr
     let optional = generic_argument(ty, "Option");
     let is_optional = optional.is_some();
     match &field.spec {
-        FieldSpec::Column { .. } => quote! { description.column::<#ty>(#alias, #is_optional); },
+        FieldSpec::Column { .. } | FieldSpec::Computed => quote! { description.column::<#ty>(#alias, #is_optional); },
         FieldSpec::Json { .. } => {
             let inner = optional.unwrap_or(ty);
             quote! { description.column::<__mabat::__private::Json<#inner>>(#alias, #is_optional); }
@@ -1661,10 +1706,27 @@ fn no_generated_key(fields: &[ViewField]) -> syn::Result<()> {
     }
 }
 
-fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) -> syn::Result<TokenStream2> {
+/// Whether a type mentions one of the type parameters.
+fn mentions(ty: &Type, params: &[Ident]) -> bool {
+    fn walk(tokens: TokenStream2, params: &[Ident]) -> bool {
+        tokens.into_iter().any(|token| match token {
+            TokenTree::Ident(ident) => params.contains(&ident),
+            TokenTree::Group(group) => walk(group.stream(), params),
+            _ => false,
+        })
+    }
+    walk(quote! { #ty }, params)
+}
+
+fn expand_embedded(
+    ident: &Ident,
+    generics: &syn::Generics,
+    fields: &[ViewField],
+    databases: Databases,
+) -> syn::Result<TokenStream2> {
     no_generated_key(fields)?;
     for field in fields {
-        if matches!(field.spec, FieldSpec::Child(_) | FieldSpec::ToOne { .. }) {
+        if matches!(field.spec, FieldSpec::Child(_) | FieldSpec::ToOne { .. } | FieldSpec::Computed) {
             return Err(syn::Error::new(
                 field.span,
                 "an embedded struct can only contain columns and other embedded structs",
@@ -1674,7 +1736,71 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) ->
 
     let view_name = ident.to_string();
     let count = fields.len();
-    let shapes = fields.iter().map(field_shape);
+    let params: Vec<Ident> = generics.type_params().map(|p| p.ident.clone()).collect();
+    let generic = |field: &ViewField| mentions(&field.ty, &params);
+    if let Some(field) = fields.iter().find(|f| matches!(f.spec, FieldSpec::Json { .. }) && generic(f)) {
+        return Err(syn::Error::new(field.span, "a `json` field cannot have a type parameter's type"));
+    }
+    // A field typed by a type parameter finds its value type when the struct is instantiated
+    let shapes: Vec<TokenStream2> = fields
+        .iter()
+        .map(|field| match &field.spec {
+            FieldSpec::Column { column } if generic(field) => {
+                let name = &field.name;
+                let ty = &field.ty;
+                quote! {
+                    __mabat::__private::Field {
+                        name: #name,
+                        kind: __mabat::__private::FieldKind::Column {
+                            column: #column,
+                            ty: __mabat::__private::ValueType::of::<#ty>(),
+                        },
+                    }
+                }
+            }
+            _ => field_shape(field),
+        })
+        .collect();
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let predicates = |extra: Vec<TokenStream2>| -> TokenStream2 {
+        let existing: Vec<TokenStream2> =
+            where_clause.map(|w| w.predicates.iter().map(|p| quote! { #p }).collect()).unwrap_or_default();
+        let all: Vec<TokenStream2> = existing.into_iter().chain(extra).collect();
+        if all.is_empty() {
+            quote! {}
+        } else {
+            quote! { where #(#all),* }
+        }
+    };
+    let statics: Vec<TokenStream2> =
+        params.iter().map(|p| quote! { #p: ::core::marker::Send + ::core::marker::Sync + 'static }).collect();
+    let shape_where = predicates(
+        statics
+            .iter()
+            .cloned()
+            .chain(fields.iter().filter(|f| generic(f) && matches!(f.spec, FieldSpec::Embed { .. })).map(|f| {
+                let ty = &f.ty;
+                quote! { #ty: __mabat::Embedded }
+            }))
+            .collect(),
+    );
+    let backend_where = |backend: &TokenStream2| {
+        predicates(
+            statics
+                .iter()
+                .cloned()
+                .chain(fields.iter().filter(|f| generic(f)).map(|f| {
+                    let ty = &f.ty;
+                    match f.spec {
+                        FieldSpec::Embed { .. } => quote! {
+                            #ty: __mabat::EmbeddedDecoder<#backend> + __mabat::EmbeddedEncoder<#backend>
+                        },
+                        _ => quote! { #ty: __mabat::GenericColumn<#backend> },
+                    }
+                }))
+                .collect(),
+        )
+    };
     let scope = Scope::Prefixed("");
     let value = construct(quote! { Self }, Style::Named, fields, scope);
     let describers = fields.iter().enumerate().map(|(index, field)| describe_value(field, index, scope));
@@ -1700,8 +1826,9 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) ->
         ::core::result::Result::Ok(())
     };
     let decoders = per_backend(databases, |backend| {
+        let backend_where = backend_where(backend);
         quote! {
-            impl __mabat::EmbeddedDecoder<#backend> for #ident {
+            impl #impl_generics __mabat::EmbeddedDecoder<#backend> for #ident #ty_generics #backend_where {
                 #[allow(unused_variables)]
                 fn decode_embedded(
                     row: &<#backend as __mabat::__private::Database>::Row,
@@ -1738,7 +1865,7 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) ->
                 }
             }
 
-            impl __mabat::EmbeddedEncoder<#backend> for #ident {
+            impl #impl_generics __mabat::EmbeddedEncoder<#backend> for #ident #ty_generics #backend_where {
                 #[allow(unused_variables, unreachable_code)]
                 fn write_embedded(
                     &self,
@@ -1754,15 +1881,30 @@ fn expand_embedded(ident: &Ident, fields: &[ViewField], databases: Databases) ->
         }
     });
 
+    // Rust has no generic statics: a generic struct's shape is built once per instantiation
+    let shape = if params.is_empty() {
+        quote! {
+            static FIELDS: [__mabat::__private::Field; #count] = [#(#shapes),*];
+            static SHAPE: __mabat::__private::EmbeddedShape = __mabat::__private::EmbeddedShape {
+                name: #view_name,
+                kind: __mabat::__private::EmbeddedKind::Product { fields: &FIELDS },
+            };
+            &SHAPE
+        }
+    } else {
+        quote! {
+            __mabat::__private::generic_shape::<Self>(|| __mabat::__private::EmbeddedShape {
+                name: __mabat::__private::generic_name::<Self>(),
+                kind: __mabat::__private::EmbeddedKind::Product {
+                    fields: __mabat::__private::leak_fields(::std::vec![#(#shapes),*]),
+                },
+            })
+        }
+    };
     Ok(quote! {
-        impl __mabat::Embedded for #ident {
+        impl #impl_generics __mabat::Embedded for #ident #ty_generics #shape_where {
             fn shape() -> &'static __mabat::__private::EmbeddedShape {
-                static FIELDS: [__mabat::__private::Field; #count] = [#(#shapes),*];
-                static SHAPE: __mabat::__private::EmbeddedShape = __mabat::__private::EmbeddedShape {
-                    name: #view_name,
-                    kind: __mabat::__private::EmbeddedKind::Product { fields: &FIELDS },
-                };
-                &SHAPE
+                #shape
             }
         }
 

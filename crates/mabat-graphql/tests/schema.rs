@@ -288,3 +288,45 @@ async fn print_sdl() {
     let (_pool, schema) = setup().await;
     println!("{}", schema.sdl());
 }
+
+#[derive(View, Debug)]
+#[view(embedded)]
+struct Range<T> {
+    start: T,
+    end: T,
+}
+
+#[derive(View, Debug)]
+#[view(table = "booking")]
+struct Booking {
+    id: i64,
+    #[view(embed(prefix = "stay_"))]
+    stay: Range<chrono::NaiveDate>,
+    #[view(embed(prefix = "guests_"))]
+    guests: Range<i32>,
+}
+
+/// Each instantiation of a generic embedded struct is a GraphQL type of its own.
+#[tokio::test]
+async fn generic_embedded_structs() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    pool.execute(
+        "CREATE TABLE booking (id INTEGER PRIMARY KEY, stay_start TEXT NOT NULL, stay_end TEXT NOT NULL,
+                               guests_start INTEGER NOT NULL, guests_end INTEGER NOT NULL);
+         INSERT INTO booking VALUES (1, '2026-10-09', '2026-10-12', 1, 3);",
+    )
+    .await
+    .unwrap();
+    let schema = mabat_graphql::schema(&pool).list::<Booking>("bookings").finish().unwrap();
+    let sdl = schema.sdl();
+    assert!(sdl.contains("type RangeNaiveDate {") && sdl.contains("type Rangei32 {"), "{sdl}");
+    let data = query(&schema, "{ bookings { stay { end } guests { end } } }").await;
+    assert_eq!(data, json!({ "bookings": [{ "stay": { "end": "2026-10-12" }, "guests": { "end": 3 } }] }));
+}

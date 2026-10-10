@@ -11,6 +11,8 @@ All notable changes to Mabat are listed here. The format follows
 The first release, with milestones 1 to 5 of the [design](docs/design.md), the DBA tooling, MySQL and SQLite.
 
 - **Views (M1).**
+  - Embedded structs may be generic over types (`Range<T>`), each instantiation a shape of its own; fields typed
+    by a parameter implement `mabat::GenericColumn`.
   - `#[derive(View)]` on structs: columns, `Option` columns, embedded structs with column prefixes,
     to-many collections and to-one references.
   - Loading with one root query plus one batched `WHERE fk = ANY($1)` query per relationship.
@@ -67,9 +69,24 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **JSON and selections (M7).** `Load::json` loads views as JSON, and `Load::select` with a `Selection`
   (built in code or parsed from GraphQL-like text) loads only the selected fields: only their columns are
   selected and only their child queries run. Recursive and graph views load as trees as deep as the selection.
+  The key column keeps the key field's name even when the field is not selected, so overridden queries load
+  selections too.
+  `Load::graph_json` writes a whole graph as JSON that keeps identity: each entity once with an `$id`
+  (`"Employee:2"`), and `{"$ref": id}` everywhere else.
+- **An example application.** `crates/mabat-example-chinook`: a web service on the Chinook music store with REST
+  and GraphQL from the same views, NDJSON streaming, playlists saved with generated keys, a DBA's override, and a
+  build script that checks the views against a schema snapshot.
 - **The MPA specification.** `docs/mpa.md`, the Mabat Persistence Architecture, states Mabat's contract as
   numbered rules; `docs/mpa.json` indexes its capabilities, attributes, functions, errors and diagnostics, and
   `llms.txt` points AI tools to both. A test keeps the index in step with the derive and the errors.
+- **Benchmarks.** `benches/orm-comparison` loads the same nested data with Mabat, hand-written SQLx, SeaORM and
+  diesel-async at 1, 100 and 10,000 roots with criterion; the results are in the performance guide.
+- **Reports.** `Load::sql` runs SQL as the root query, for aggregates, joins and other rows that are not a table,
+  with named parameters (`:name`) bound by `Load::bind`; a root override may take named parameters too.
+  `#[view(computed)]` fields hold values the SQL computes; the generated query does not select them, override
+  checks require them, and loads may order and filter by them. The view's collections and references load as
+  usual. `Error::Params` reports a parameter without a value, a value without a parameter, or a computed field
+  without SQL.
 - **Tracing.** `tracing` spans at the `debug` level: `mabat.load` and the other operations with their view,
   `mabat.query` for each query of a load (view, query name, path, override, keys, rows), and `mabat.statement`
   for each statement (database, SQL, rows, `elapsed_ms`). Bound values are never traced.

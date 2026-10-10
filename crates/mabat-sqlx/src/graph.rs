@@ -291,6 +291,11 @@ impl Identity {
         Ref { index, graph: self.graph_id, _type: PhantomData }
     }
 
+    /// The keys of the elements of a graph collection of a parent, in list order.
+    pub(crate) fn edge_keys(&self, shape: &'static ViewShape, field_index: usize, parent: &Key) -> Vec<Key> {
+        self.state().edges.get(&(shape_id(shape), field_index, parent.clone())).cloned().unwrap_or_default()
+    }
+
     /// References to the elements of a graph collection of a parent.
     pub(crate) fn references<T: View>(
         &self,
@@ -351,11 +356,28 @@ fn finish<T: View>(
 pub struct GraphBuilder {
     identity: Arc<Identity>,
     arenas: HashMap<usize, Building>,
+    /// For a graph written as JSON: the object of each entity, by its `$id`, instead of arenas.
+    json: Option<HashMap<String, serde_json::Value>>,
 }
 
 impl GraphBuilder {
     pub(crate) fn new(identity: Arc<Identity>) -> GraphBuilder {
-        GraphBuilder { identity, arenas: HashMap::new() }
+        GraphBuilder { identity, arenas: HashMap::new(), json: None }
+    }
+
+    /// A builder that collects the entities as JSON objects, see [`crate::Load::graph_json`].
+    pub(crate) fn json(identity: Arc<Identity>) -> GraphBuilder {
+        GraphBuilder { identity, arenas: HashMap::new(), json: Some(HashMap::new()) }
+    }
+
+    /// The JSON objects of the entities, when the builder collects them.
+    pub(crate) fn json_objects(&mut self) -> Option<&mut HashMap<String, serde_json::Value>> {
+        self.json.as_mut()
+    }
+
+    /// The JSON objects of the entities, by `$id`.
+    pub(crate) fn into_json(self) -> HashMap<String, serde_json::Value> {
+        self.json.unwrap_or_default()
     }
 
     /// Decode the entity with the key with `decode`, unless it is decoded already.

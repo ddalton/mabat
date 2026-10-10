@@ -21,7 +21,7 @@ use crate::report::{Diagnostic, Report, Severity};
 use crate::{Error, Load, View, ViewDecoder};
 
 /// A checked override, used instead of the generated SQL of its query.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ActiveOverride {
     pub(crate) sql: Arc<str>,
     /// `true` if the override takes the keys as `$1`. Always `true` except for a root
@@ -30,6 +30,19 @@ pub(crate) struct ActiveOverride {
     pub(crate) shadow: bool,
     pub(crate) origin: Origin,
     pub(crate) stats: Arc<ShadowStats>,
+}
+
+impl ActiveOverride {
+    /// The root SQL of a load ([`crate::Load::sql`]), which is not checked beforehand.
+    pub(crate) fn of_load(sql: String) -> ActiveOverride {
+        ActiveOverride {
+            keys_param: mabat_core::sql::takes_keys(&sql),
+            sql: sql.into(),
+            shadow: false,
+            origin: Origin { file: "Load::sql".to_string(), line: 1 },
+            stats: Arc::new(ShadowStats::default()),
+        }
+    }
 }
 
 /// The checked overrides of a view, by query name.
