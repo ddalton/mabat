@@ -7,6 +7,7 @@ mod check;
 mod describe;
 mod error;
 pub mod filter;
+mod generic;
 mod graph;
 mod graph_write;
 mod json;
@@ -33,6 +34,7 @@ pub use backend::{Backend, Conn};
 use check::Checked;
 pub use describe::Description;
 pub use error::Error;
+pub use generic::GenericColumn;
 pub use graph::{Graph, Ref};
 pub use key::Key;
 pub use node::Node;
@@ -702,6 +704,7 @@ impl Prepared {
 pub mod __private {
     pub use crate::Key;
     pub use crate::describe::{DescribeFn, Description};
+    pub use crate::generic::{generic_name, generic_shape, leak_fields};
     pub use crate::graph::GraphBuilder;
     pub use crate::graph_write::GraphTypes;
     pub use crate::json::{

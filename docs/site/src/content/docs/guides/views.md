@@ -48,6 +48,32 @@ struct Address {
 The same table can have as many views as the use cases that read it: a list view with three columns and a detail
 view with every relationship.
 
+An embedded struct may be generic over types, for values that recur with different types: each use is a shape of
+its own ([MPA-VIEW-4](../../spec/mpa/#mpa-view-4)).
+
+```rust
+#[derive(View)]
+#[view(embedded)]
+struct Range<T> {
+    start: T,
+    end: T,
+}
+
+#[derive(View)]
+#[view(table = "booking")]
+struct Booking {
+    id: i64,
+    #[view(embed(prefix = "stay_"))]
+    stay: Range<NaiveDate>,      // stay_start, stay_end
+    #[view(embed(prefix = "guests_"))]
+    guests: Range<i32>,          // guests_start, guests_end
+}
+```
+
+A field typed by a parameter is a column or another embedded struct, and its type implements
+`mabat::GenericColumn`: decoded and encoded by the database, `Serialize` for JSON (chrono needs its `serde` feature),
+`Clone` and `PartialEq`. Views themselves are not generic: a table has fixed column types.
+
 ## Fields
 
 - **Columns** are named like the field, unless `column` names them. `Option<T>` is nullable; a NULL in a

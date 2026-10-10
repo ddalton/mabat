@@ -1096,9 +1096,10 @@ specification.
 5. ~~Should the GraphQL integration also generate the GraphQL schema from views, or only resolve against an
    existing schema?~~ It generates the schema.
 6. ~~Are writes (M8) in scope for the first release?~~ Yes: aggregates, changes, many values and graphs are saved.
-7. Should views be generic? Generic embedded structs and JSON payloads (`Range<T>`, `Event<P>`) would cover most
-   needs; generic views over a table are rare, as a table has fixed column types, and would need shapes built at
-   run time, identity by `TypeId` and a name per instantiation.
+7. ~~Should views be generic?~~ Embedded structs can be (`Range<T>`): each instantiation builds its shape the first
+   time, kept by `TypeId` and named after it (`Range<NaiveDate>`), with the value types of its parameter-typed
+   fields found from their type names at run time (`ValueType::of`). Views stay concrete, as a table has fixed
+   column types. Generic JSON payloads (`Event<P>`) remain open: `json` fields cannot use a type parameter.
 8. Should graphs serialize as JSON with `$id`/`$ref` (section 7.3), keeping identity, rather than only unrolling
    with a selection?
 9. Should views read from sources other than SQL, such as in-memory data or borrowed (`&'a T`) views? SQLite in
