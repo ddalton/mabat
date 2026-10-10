@@ -11,6 +11,8 @@ All notable changes to Mabat are listed here. The format follows
 The first release, with milestones 1 to 5 of the [design](docs/design.md), the DBA tooling, MySQL and SQLite.
 
 - **Views (M1).**
+  - Embedded structs may be generic over types (`Range<T>`), each instantiation a shape of its own; fields typed
+    by a parameter implement `mabat::GenericColumn`.
   - `#[derive(View)]` on structs: columns, `Option` columns, embedded structs with column prefixes,
     to-many collections and to-one references.
   - Loading with one root query plus one batched `WHERE fk = ANY($1)` query per relationship.

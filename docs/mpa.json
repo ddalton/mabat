@@ -50,13 +50,15 @@
     },
     {
       "id": "embedded-values",
-      "summary": "Structs stored in columns of the containing view",
+      "summary": "Structs stored in columns of the containing view, generic or not",
       "api": [
         "#[view(embedded)]",
-        "#[view(embed(prefix))]"
+        "#[view(embed(prefix))]",
+        "mabat::GenericColumn"
       ],
       "rules": [
         "MPA-VIEW-3",
+        "MPA-VIEW-4",
         "MPA-VIEW-7"
       ]
     },
@@ -442,9 +444,10 @@
       "name": "embedded",
       "on": "struct",
       "syntax": "#[view(embedded)]",
-      "summary": "A struct stored in columns of the containing view",
+      "summary": "A struct stored in columns of the containing view, generic over types or not",
       "rules": [
-        "MPA-VIEW-3"
+        "MPA-VIEW-3",
+        "MPA-VIEW-4"
       ]
     },
     {
@@ -1299,7 +1302,7 @@
     {
       "id": "MPA-VIEW-4",
       "section": "3.1 Container attributes",
-      "text": "A view MUST NOT have generic parameters."
+      "text": "A view MUST NOT have generic parameters. An embedded struct MAY have type parameters (`struct Range<T> { start: T, end: T }`), and each instantiation (`Range<NaiveDate>`, `Range<i32>`) is a shape of its own, named after it and built the first time it is used. A field whose type uses a type parameter MUST be a column or an embedded struct, not `json`, and its type MUST implement `mabat::GenericColumn` on each database: decoded, encoded, `Serialize`, `Clone`, `PartialEq`, `Send`, `Sync` and `'static`. Lifetimes and const parameters are compile errors."
     },
     {
       "id": "MPA-VIEW-5",

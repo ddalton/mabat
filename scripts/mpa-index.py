@@ -32,7 +32,7 @@ capabilities = [
     ("typed-views", "Declare the shape of nested data with Rust structs deriving View", ["#[derive(View)]", "#[view(table, key)]"], ["MPA-CORE-1", "MPA-VIEW-1"]),
     ("batched-loading", "Load a view with one batched query per relationship, never one per row", ["mabat::load"], ["MPA-PLAN-1"]),
     ("multiple-databases", "PostgreSQL, MySQL 8+ and SQLite, chosen by features and by the connection", ["features: postgres, mysql, sqlite", "#[view(databases)]"], ["MPA-DB-1", "MPA-DB-2"]),
-    ("embedded-values", "Structs stored in columns of the containing view", ["#[view(embedded)]", "#[view(embed(prefix))]"], ["MPA-VIEW-3", "MPA-VIEW-7"]),
+    ("embedded-values", "Structs stored in columns of the containing view, generic or not", ["#[view(embedded)]", "#[view(embed(prefix))]", "mabat::GenericColumn"], ["MPA-VIEW-3", "MPA-VIEW-4", "MPA-VIEW-7"]),
     ("enums-with-data", "Rust enums with data, stored in columns or in a table per variant, decoded strictly", ["#[view(tag, strategy, lenient)]", "#[view(tag_value)]"], ["MPA-SUM-1", "MPA-SUM-2", "MPA-SUM-3", "MPA-SUM-4"]),
     ("json-columns", "Columns decoded and written as JSON with serde", ["#[view(json)]"], ["MPA-VIEW-6"]),
     ("to-one-references", "References to other views by foreign key, owned, boxed, shared or into a graph", ["#[view(to_one(fk))]", "Box<T>"], ["MPA-VIEW-8"]),
@@ -66,7 +66,7 @@ capabilities = [
 attributes = [
     ("table", "struct, variant", '#[view(table = "t")]', "The table of a view, or of a variant", ["MPA-VIEW-1", "MPA-SUM-3"]),
     ("key", "struct, variant", '#[view(key = "c")]', "The key column, id by default", ["MPA-VIEW-2", "MPA-SUM-3"]),
-    ("embedded", "struct", "#[view(embedded)]", "A struct stored in columns of the containing view", ["MPA-VIEW-3"]),
+    ("embedded", "struct", "#[view(embedded)]", "A struct stored in columns of the containing view, generic over types or not", ["MPA-VIEW-3", "MPA-VIEW-4"]),
     ("databases", "struct, enum", '#[view(databases = "postgres, mysql")]', "Limit the databases a view is decoded and encoded on", ["MPA-DB-2"]),
     ("tag", "enum", '#[view(tag = "c")]', "The column naming the variant", ["MPA-SUM-1"]),
     ("strategy", "enum", '#[view(strategy = "tag" | "table_per_variant")]', "Where the variants' data is stored", ["MPA-SUM-2", "MPA-SUM-3"]),
