@@ -47,7 +47,9 @@ pub enum Error {
     #[error("a reference into the graph points to a {view} that was not loaded")]
     UnloadedReference { view: &'static str },
 
-    #[error("{view} has references into a graph (`Ref<T>`); load it with `.graph(..)`")]
+    #[error(
+        "{view} has references into a graph (`Ref<T>`); load it with `.graph(..)`, or as JSON with `.graph_json(..)` or a selection"
+    )]
     GraphRequired { view: &'static str },
 
     /// Optimistic locking: the row was changed or deleted since the value was loaded.

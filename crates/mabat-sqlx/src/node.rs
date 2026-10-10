@@ -558,8 +558,17 @@ pub fn graph_store<T: ViewDecoder<B>, B: Backend>(node: &Node<B>, graph: &mut Gr
         if node.fresh.as_ref().is_some_and(|fresh| !fresh[i]) {
             continue;
         }
-        if let Some(key) = node.key(row, KEY_ALIAS)? {
-            graph.store::<T>(key, || T::decode(row, node))?;
+        let Some(key) = node.key(row, KEY_ALIAS)? else { continue };
+        match graph.json_objects() {
+            Some(objects) => {
+                let id = crate::json::entity_id(T::shape().name, &key);
+                let mut object = T::decode_json(row, node)?;
+                if let serde_json::Value::Object(fields) = &mut object {
+                    fields.insert(crate::json::ID.to_string(), serde_json::Value::String(id.clone()));
+                }
+                objects.insert(id, object);
+            }
+            None => graph.store::<T>(key, || T::decode(row, node))?,
         }
     }
     Ok(())
@@ -584,6 +593,20 @@ pub fn graph_visit<C: ViewDecoder<B>, B: Backend>(
 }
 
 impl<B: Backend> Node<B> {
+    /// Whether the field is a reference into the graph that the load builds, which JSON writes
+    /// as `$ref`.
+    pub(crate) fn graph_edge(&self, field_index: usize) -> bool {
+        self.identity.graph && self.shape.fields[field_index].kind.is_graph_edge()
+    }
+
+    /// The keys of the entities of a graph collection of the row, in list order.
+    pub(crate) fn edge_keys(&self, row: &B::Row, field_index: usize) -> Result<Vec<Key>, Error> {
+        Ok(match self.key(row, KEY_ALIAS)? {
+            Some(parent) => self.identity.edge_keys(self.shape, field_index, &parent),
+            None => Vec::new(),
+        })
+    }
+
     /// The keys of the rows, in row order.
     pub(crate) fn row_keys(&self) -> Result<Vec<Key>, Error> {
         let keys = self.rows.iter().map(|row| self.key(row, KEY_ALIAS)).collect::<Result<Vec<_>, _>>()?;

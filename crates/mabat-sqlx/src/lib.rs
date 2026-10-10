@@ -590,6 +590,31 @@ impl<T: View> Load<T> {
         builder.finish(node.row_keys()?)
     }
 
+    /// Load the matching values and every entity they reference, as [`Load::graph`] does, as
+    /// JSON that keeps their identity: each entity is written once, as an object with an `$id`
+    /// such as `"Employee:2"`, and everywhere else as `{"$ref": "Employee:2"}`. An entity is
+    /// written in full where it is first reached from the roots, depth first, so cycles and
+    /// shared entities need no selection. The value is an array of the roots.
+    ///
+    /// ```ignore
+    /// let json = mabat::load::<Employee>().by_key(3).graph_json(&mut conn).await?;
+    /// // [{"$id": "Employee:3", "name": "Jane", "manager": {"$id": "Employee:2", …,
+    /// //   "reports": [{"$ref": "Employee:3"}, …]}, …}]
+    /// ```
+    pub async fn graph_json<C: Conn>(self, conn: &mut C) -> Result<serde_json::Value, Error>
+    where
+        T: ViewDecoder<C::Backend>,
+    {
+        self.typed()?;
+        let identity = graph::Identity::new(true);
+        let Some(load) = self.prepare::<C::Backend>()? else { return Ok(serde_json::Value::Array(Vec::new())) };
+        let node = load.run::<C::Backend>(conn.source(), identity.clone()).await?;
+        let mut builder = graph::GraphBuilder::json(identity);
+        T::decode_graph(&node, &mut builder, true)?;
+        let roots: Vec<String> = node.row_keys()?.iter().map(|key| json::entity_id(T::shape().name, key)).collect();
+        Ok(json::inline_graph(&roots, &builder.into_json()))
+    }
+
     /// Load the matching values as JSON objects, with the fields of [`Load::select`], or all
     /// fields without a selection.
     ///

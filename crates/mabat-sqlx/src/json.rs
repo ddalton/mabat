@@ -5,6 +5,7 @@
 //! column as the JSON it holds, collections as arrays, maps as objects, references as
 //! objects or `null`, and enums as objects with a `__typename` field naming the variant.
 
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
 use mabat_core::{KEY_ALIAS, MAP_KEY_ALIAS};
@@ -12,6 +13,7 @@ use serde_json::{Map, Value};
 use sqlx::{Decode, Type};
 
 use crate::backend::Backend;
+use crate::key::Key;
 use crate::node::{Node, optional_column};
 use crate::{Error, ViewDecoder};
 
@@ -78,6 +80,10 @@ pub fn json_children<C: ViewDecoder<B>, B: Backend>(
     node: &Node<B>,
     field_index: usize,
 ) -> Result<Value, Error> {
+    if node.graph_edge(field_index) {
+        let keys = node.edge_keys(row, field_index)?;
+        return Ok(Value::Array(keys.iter().map(|key| reference(C::shape().name, key)).collect()));
+    }
     let elements = node.child_rows(row, field_index, KEY_ALIAS)?;
     elements.into_iter().map(|(row, child)| C::decode_json(row, child)).collect::<Result<_, _>>().map(Value::Array)
 }
@@ -113,6 +119,13 @@ pub fn json_to_one<C: ViewDecoder<B>, B: Backend>(
     ref_alias: &str,
     optional: bool,
 ) -> Result<Value, Error> {
+    if node.graph_edge(field_index) {
+        return Ok(match node.key(row, ref_alias)? {
+            Some(key) => reference(C::shape().name, &key),
+            None if optional => Value::Null,
+            None => return Err(node.missing_reference(field_index, ref_alias)),
+        });
+    }
     match node.referenced(row, field_index, ref_alias)? {
         Some((_, (row, child))) => C::decode_json(row, child),
         None if optional => Ok(Value::Null),
@@ -138,4 +151,52 @@ pub fn json_merge(mut to: Value, from: Value) -> Value {
         to.extend(from);
     }
     to
+}
+
+/// The member naming an entity of a graph written as JSON, see [`crate::Load::graph_json`].
+pub(crate) const ID: &str = "$id";
+/// The member of an object that stands for an entity written elsewhere.
+pub(crate) const REF: &str = "$ref";
+
+/// The `$id` of an entity: its view and key, such as `Employee:2`.
+pub(crate) fn entity_id(view: &str, key: &Key) -> String {
+    match key {
+        Key::Int(key) => format!("{view}:{key}"),
+        Key::Text(key) => format!("{view}:{key}"),
+        Key::Uuid(key) => format!("{view}:{key}"),
+    }
+}
+
+/// A reference to an entity: `{"$ref": "Employee:2"}`.
+fn reference(view: &str, key: &Key) -> Value {
+    let mut object = Map::new();
+    object.insert(REF.to_string(), Value::String(entity_id(view, key)));
+    Value::Object(object)
+}
+
+/// The roots of a graph as JSON, each entity written once: the first time it is reached from the
+/// roots, depth first, as its object with its `$id`, and everywhere else as `{"$ref": id}`.
+pub(crate) fn inline_graph(roots: &[String], objects: &HashMap<String, Value>) -> Value {
+    fn expand(value: &Value, objects: &HashMap<String, Value>, written: &mut HashSet<String>) -> Value {
+        match value {
+            Value::Object(fields) if fields.len() == 1 => match fields.get(REF) {
+                Some(Value::String(id)) if objects.contains_key(id) && written.insert(id.clone()) => {
+                    expand(&objects[id], objects, written)
+                }
+                _ => value.clone(),
+            },
+            Value::Object(fields) => Value::Object(
+                fields.iter().map(|(name, value)| (name.clone(), expand(value, objects, written))).collect(),
+            ),
+            Value::Array(values) => Value::Array(values.iter().map(|value| expand(value, objects, written)).collect()),
+            _ => value.clone(),
+        }
+    }
+    let mut written = HashSet::new();
+    let roots = roots.iter().map(|id| {
+        let mut object = Map::new();
+        object.insert(REF.to_string(), Value::String(id.clone()));
+        expand(&Value::Object(object), objects, &mut written)
+    });
+    Value::Array(roots.collect())
 }
