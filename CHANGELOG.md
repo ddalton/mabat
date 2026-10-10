@@ -71,6 +71,8 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
   selected and only their child queries run. Recursive and graph views load as trees as deep as the selection.
   The key column keeps the key field's name even when the field is not selected, so overridden queries load
   selections too.
+  `Load::graph_json` writes a whole graph as JSON that keeps identity: each entity once with an `$id`
+  (`"Employee:2"`), and `{"$ref": id}` everywhere else.
 - **An example application.** `crates/mabat-example-chinook`: a web service on the Chinook music store with REST
   and GraphQL from the same views, NDJSON streaming, playlists saved with generated keys, a DBA's override, and a
   build script that checks the views against a schema snapshot.

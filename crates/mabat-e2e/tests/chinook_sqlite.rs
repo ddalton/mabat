@@ -282,6 +282,56 @@ FROM track t
 WHERE t.track_id IN (:keys)
 "#;
 
+/// The `$id` of every object of a graph written as JSON, and the target of every `$ref`.
+fn ids_and_refs(value: &serde_json::Value, ids: &mut Vec<String>, refs: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            if let Some(serde_json::Value::String(id)) = fields.get("$id") {
+                ids.push(id.clone());
+            }
+            if let Some(serde_json::Value::String(id)) = fields.get("$ref") {
+                refs.push(id.clone());
+            }
+            fields.values().for_each(|v| ids_and_refs(v, ids, refs));
+        }
+        serde_json::Value::Array(values) => values.iter().for_each(|v| ids_and_refs(v, ids, refs)),
+        _ => {}
+    }
+}
+
+#[tokio::test]
+async fn a_graph_as_json_keeps_identity() {
+    let mut conn = chinook().await;
+    let graph = mabat::load::<Employee>().by_key(3_i32).graph(&mut conn).await.unwrap();
+    let json = mabat::load::<Employee>().by_key(3_i32).graph_json(&mut conn).await.unwrap();
+
+    // Every entity of the graph is written once, and every reference points to one of them
+    let (mut ids, mut refs) = (Vec::new(), Vec::new());
+    ids_and_refs(&json, &mut ids, &mut refs);
+    let entities = graph.count::<Employee>() + graph.count::<Customer>() + graph.count::<Invoice>();
+    assert_eq!(ids.len(), entities);
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), entities, "each entity once");
+    assert!(refs.iter().all(|r| ids.contains(r)), "{refs:?}");
+
+    // Jane, her manager written in full where first reached, and Jane again as a reference from him
+    let jane = &json[0];
+    assert_eq!(jane["$id"], "Employee:3");
+    assert_eq!(jane["first_name"], "Jane");
+    let manager = &jane["manager"];
+    assert_eq!(manager["$id"], "Employee:2");
+    assert!(manager["reports"].as_array().unwrap().contains(&serde_json::json!({ "$ref": "Employee:3" })));
+    // A customer's invoices refer back to the customer
+    let customer = &jane["customers"][0];
+    let invoice = &customer["invoices"][0];
+    assert_eq!(invoice["customer"], serde_json::json!({ "$ref": customer["$id"] }));
+
+    // Without it, a graph view as JSON needs a selection
+    let error = mabat::load::<Employee>().by_key(3_i32).json(&mut conn).await.unwrap_err();
+    assert!(error.to_string().contains("graph_json"), "{error}");
+}
+
 #[tokio::test]
 async fn tuned_overrides_return_the_same_invoices() {
     let mut conn = chinook().await;

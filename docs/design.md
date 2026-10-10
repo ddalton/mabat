@@ -493,8 +493,11 @@ Properties:
 - Mutation goes through `&mut Graph` (`g.get_mut(r)`), which also records changed entities for writes
   (section 14).
 - `Graph` is `Send + Sync` and can be shared with `Arc<Graph>` across tasks.
-- JSON serialization writes `$id`/`$ref`, or unrolls the graph to a chosen depth (section 13). (As built: a
-  graph view is written as JSON by unrolling it with a selection; `$id`/`$ref` was not built.)
+- JSON serialization writes `$id`/`$ref`, or unrolls the graph to a chosen depth (section 13). (As built, later:
+  `Load::graph_json` loads the graph as `graph` does, with the graph builder collecting each entity's JSON object
+  by `$id` (`View:key`) instead of typed arenas; `Ref` fields write `$ref` from the keys the identity map already
+  records. The roots are then written depth first, each entity in full where it is first reached and `$ref`
+  elsewhere.)
 
 Loading a graph uses the same planner. Each entity type is loaded with batched queries, and every `Ref` is
 resolved through the identity map, so cycles cost nothing extra.
@@ -1060,7 +1063,7 @@ database.
 | M2 | Sum types (**done**) | `tag`, `table_per_variant`, `json`; nested sums; strict decoding | Every strategy tested with generated SQL |
 | M3 | Overrides (**done**) | Override files, startup validation, `mabat check`, shadow mode | Mutation-style checks pass |
 | M4 | Collections and recursion (**done**) | Ordered lists, maps, many-to-many, recursive views with depth or CTE | Order tests with unsorted rows |
-| M5 | Shared and graph (**done**; `$id`/`$ref` JSON not built, graphs unroll with a selection) | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
+| M5 | Shared and graph (**done**; `$id`/`$ref` JSON later, as `graph_json`) | `Arc` sharing, `Graph`/`Ref`, generated navigation, `$id`/`$ref` JSON | Cyclic model tests; no `Rc`/`RefCell` in the API |
 | M6 | More databases, concurrency (**done**; no pipelining) | MySQL and SQLite; pipelining; pooled snapshot concurrency | Same suite on all three |
 | M7 | GraphQL (**done**) | Sub-shapes from look-ahead; field arguments | Example server |
 | M8 | Writes (**done**) | Aggregate insert and update; graph save with SCC ordering | Round-trip property tests (done as end-to-end round trips; no `proptest`) |
@@ -1110,7 +1113,7 @@ specification.
    time, kept by `TypeId` and named after it (`Range<NaiveDate>`), with the value types of its parameter-typed
    fields found from their type names at run time (`ValueType::of`). Views stay concrete, as a table has fixed
    column types. Generic JSON payloads (`Event<P>`) remain open: `json` fields cannot use a type parameter.
-8. Should graphs serialize as JSON with `$id`/`$ref` (section 7.3), keeping identity, rather than only unrolling
-   with a selection?
+8. ~~Should graphs serialize as JSON with `$id`/`$ref` (section 7.3), keeping identity, rather than only unrolling
+   with a selection?~~ Yes: `Load::graph_json`.
 9. Should views read from sources other than SQL, such as in-memory data or borrowed (`&'a T`) views? SQLite in
    memory covers in-memory data today; borrowed views would need lifetimes on views, which the derive refuses.

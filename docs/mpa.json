@@ -301,13 +301,15 @@
       "api": [
         "Load::json",
         "Load::select",
-        "Selection::parse"
+        "Selection::parse",
+        "Load::graph_json"
       ],
       "rules": [
         "MPA-JSON-1",
         "MPA-JSON-3",
         "MPA-JSON-4",
-        "MPA-JSON-5"
+        "MPA-JSON-5",
+        "MPA-JSON-7"
       ]
     },
     {
@@ -733,6 +735,13 @@
       "summary": "Load as JSON",
       "rules": [
         "MPA-JSON-1"
+      ]
+    },
+    {
+      "api": "Load::graph_json",
+      "summary": "Load a graph as JSON, each entity once with $id and $ref",
+      "rules": [
+        "MPA-JSON-7"
       ]
     },
     {
@@ -1552,12 +1561,17 @@
     {
       "id": "MPA-JSON-5",
       "section": "8. JSON and selections",
-      "text": "A selection has a finite depth, so recursive and graph views load as trees as deep as it asks. A graph view loaded as JSON without a selection fails with `Error::GraphRequired`."
+      "text": "A selection has a finite depth, so recursive and graph views load as trees as deep as it asks. A graph view loaded with `json` without a selection fails with `Error::GraphRequired`; `graph_json` writes it whole (MPA-JSON-7)."
     },
     {
       "id": "MPA-JSON-6",
       "section": "8. JSON and selections",
       "text": "A selection is loaded with `json`; typed terminals with a selection fail with `Error::SelectionWithoutJson`. Overrides apply to selections."
+    },
+    {
+      "id": "MPA-JSON-7",
+      "section": "8. JSON and selections",
+      "text": "`graph_json(conn)` loads as `graph` does (MPA-LOAD-14) and returns the roots as a JSON array that keeps identity: each entity is written once, as an object whose `$id` is its view and key (`\"Employee:2\"`), where it is first reached from the roots, depth first; everywhere else it is `{\"$ref\": \"Employee:2\"}`. `Ref<T>` fields are references, `Vec<Ref<T>>` arrays of them; owned values are written as `json` writes them. A selection fails with `Error::SelectionWithoutJson`."
     },
     {
       "id": "MPA-GQL-1",

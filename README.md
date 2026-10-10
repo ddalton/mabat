@@ -370,7 +370,8 @@ let tasks: Vec<serde_json::Value> = mabat::load::<TaskView>().select(selection).
 Columns are written with the `Serialize` implementation of their Rust type, enums as objects whose `__typename`
 names the variant. A collection or reference selected by name alone loads the columns of its view. A selection
 has a finite depth, so recursive views and graph views load as trees as deep as it asks. Overrides apply as for
-typed loads.
+typed loads. `graph_json` writes a whole graph instead, each entity once with an `$id` and `{"$ref": id}`
+everywhere else, so cycles and shared entities keep their identity.
 
 ## GraphQL
 

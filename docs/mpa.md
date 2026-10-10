@@ -322,9 +322,15 @@ let tasks = mabat::load::<TaskView>()
 - **MPA-JSON-4** A view selected without fields loads its columns and embedded values, not its collections or
   references. Embedded structs and enums are loaded whole. Unknown fields fail with `PlanError::Selection`.
 - **MPA-JSON-5** A selection has a finite depth, so recursive and graph views load as trees as deep as it asks.
-  A graph view loaded as JSON without a selection fails with `Error::GraphRequired`.
+  A graph view loaded with `json` without a selection fails with `Error::GraphRequired`; `graph_json` writes it
+  whole (MPA-JSON-7).
 - **MPA-JSON-6** A selection is loaded with `json`; typed terminals with a selection fail with
   `Error::SelectionWithoutJson`. Overrides apply to selections.
+- **MPA-JSON-7** `graph_json(conn)` loads as `graph` does (MPA-LOAD-14) and returns the roots as a JSON array that
+  keeps identity: each entity is written once, as an object whose `$id` is its view and key (`"Employee:2"`), where
+  it is first reached from the roots, depth first; everywhere else it is `{"$ref": "Employee:2"}`. `Ref<T>` fields
+  are references, `Vec<Ref<T>>` arrays of them; owned values are written as `json` writes them. A selection fails
+  with `Error::SelectionWithoutJson`.
 
 ## 9. GraphQL
 
