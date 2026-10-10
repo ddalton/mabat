@@ -657,8 +657,20 @@ for tools, and [`llms.txt`](llms.txt) points AI assistants to both.
 | Checking views against a schema snapshot, from the CLI or a build script | Done |
 | Streaming loads a batch at a time (`stream`, `json_stream`) | Done |
 
-Loading 1,000 tasks with 10 subtasks each takes about 8% longer than hand-written SQLx code running the same two
-queries (`crates/mabat/examples/parity.rs`).
+## Performance
+
+Loading tasks with 10 subtasks each, the same way with each library (two batched queries, on one PostgreSQL
+connection; median, Apple M1, local PostgreSQL 16):
+
+| Tasks | SQLx, by hand | Mabat | SeaORM 2.0 | diesel-async 0.9 |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 86.6 µs | 98.9 µs | 191.9 µs | 101.1 µs |
+| 100 | 897 µs | 964 µs | 957 µs | 594 µs |
+| 10,000 | 74.3 ms | 80.6 ms | 79.3 ms | 47.0 ms |
+
+Mabat is within 7–14% of hand-written SQLx and about as fast as SeaORM; diesel-async is faster for many rows because
+its driver, tokio-postgres, is faster than SQLx. The [performance guide](https://ddalton.github.io/mabat/guides/performance/)
+has the details, and [`benches/orm-comparison`](benches/orm-comparison) runs it.
 
 ## Installation
 

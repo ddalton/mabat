@@ -50,6 +50,7 @@ export default defineConfig({
             { label: 'GraphQL', slug: 'guides/graphql' },
             { label: 'Saving aggregates', slug: 'guides/writing' },
             { label: 'Databases and concurrency', slug: 'guides/databases' },
+            { label: 'Performance', slug: 'guides/performance' },
           ],
         },
         {

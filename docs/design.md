@@ -1046,7 +1046,9 @@ database.
 > - **The parity benchmark** is the `parity` example: about 3% over hand-written SQLx since positional decoding.
 > - **Mutation-style checks** are in `crates/mabat/tests/overrides.rs`: broken overrides generated from each test
 >   view's plan must fail validation.
-> - **Not built:** property tests (`proptest`) and `criterion` benchmarks at 1, 100 and 10,000 roots.
+> - **Benchmarks** (later): `benches/orm-comparison` measures the same load with Mabat, hand-written SQLx, SeaORM and
+>   diesel-async at 1, 100 and 10,000 roots with criterion; the results are in the performance guide.
+> - **Not built:** property tests (`proptest`).
 >
 > The end-to-end tests found two bugs that the hand-written test schemas had missed:
 >
