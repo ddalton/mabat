@@ -6,6 +6,8 @@ All notable changes to Mabat are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-10
+
 ### Added
 
 The first release, with milestones 1 to 5 of the [design](docs/design.md), the DBA tooling, MySQL and SQLite.

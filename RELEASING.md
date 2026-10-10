@@ -12,7 +12,7 @@
 
    CI also builds with the minimum Rust version, 1.94, and runs the dry run.
 4. **Publish.** `cargo publish --workspace` publishes the crates in dependency order: mabat-core,
-   mabat-derive, mabat-sqlx, mabat, then mabat-cli. Then tag the release (`git tag v0.1.0`) and
+   mabat-check, mabat-derive, mabat-sqlx, mabat, then mabat-graphql and mabat-cli. Then tag the release (`git tag v0.1.0`) and
    push the tag.
 
 The derive macro finds the `mabat` crate under whatever name an application depends on it; `FACADE` in
