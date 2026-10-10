@@ -821,6 +821,11 @@ have finished. Roots are processed in batches of a configurable size.
 > transaction). A `Pooled` stream keeps the key list: a cursor would need one of the pool's connections for the
 > whole stream. MySQL has cursors only in stored procedures, and SQLite has none.
 
+> **Tracing (as built, later):** every statement goes through a handful of `Backend` methods, which run it in a
+> `mabat.statement` span (database, SQL, rows, `elapsed_ms`); `node::load` wraps each query in a `mabat.query`
+> span named as overrides name it, and each public operation has a span of its own, so a statement's context is
+> its parents. All at `debug`; bound values are never recorded, as they may be personal data.
+
 ## 12. Errors
 
 All errors are `mabat::Error`, using `thiserror`, and carry the view, path and SQL involved.

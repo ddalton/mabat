@@ -19,11 +19,14 @@ mod registry;
 mod report;
 pub mod schema;
 mod stream;
+mod trace;
 mod write;
 mod write_batch;
 
 use std::marker::PhantomData;
 use std::sync::Arc;
+
+use tracing::Instrument;
 
 use mabat_core::sql::RootOptions;
 use mabat_core::{EmbeddedShape, OrderBy, QueryPlan, ViewShape};
@@ -149,7 +152,8 @@ where
     no_graph_refs(&row)?;
     let mut conn = conn.source().single().await?;
     let mut tx = conn.begin().await.map_err(Error::Connection)?;
-    let written = write::save_row::<C::Backend>(&mut tx, row, None).await?;
+    let span = tracing::debug_span!("mabat.save", view = T::shape().name);
+    let written = write::save_row::<C::Backend>(&mut tx, row, None).instrument(span).await?;
     tx.commit().await.map_err(Error::Connection)?;
     value.written(&written)
 }
@@ -180,7 +184,8 @@ where
     no_graph_refs(&row)?;
     let mut conn = conn.source().single().await?;
     let mut tx = conn.begin().await.map_err(Error::Connection)?;
-    let written = write::save_row::<C::Backend>(&mut tx, row, None).await?;
+    let span = tracing::debug_span!("mabat.save_changes", view = T::shape().name);
+    let written = write::save_row::<C::Backend>(&mut tx, row, None).instrument(span).await?;
     tx.commit().await.map_err(Error::Connection)?;
     after.written(&written)
 }
@@ -209,7 +214,8 @@ where
     }
     let mut conn = conn.source().single().await?;
     let mut tx = conn.begin().await.map_err(Error::Connection)?;
-    let written = write_batch::save::<C::Backend>(&mut tx, rows).await?;
+    let span = tracing::debug_span!("mabat.save_all", view = T::shape().name, values = rows.len());
+    let written = write_batch::save::<C::Backend>(&mut tx, rows).instrument(span).await?;
     tx.commit().await.map_err(Error::Connection)?;
     for (value, written) in values.iter_mut().zip(&written) {
         value.written(written)?;
@@ -275,7 +281,8 @@ where
     let mut conn = conn.source().single().await?;
     let mut tx = conn.begin().await.map_err(Error::Connection)?;
     let (arenas, changed) = graph.parts_mut();
-    graph_write::save::<C::Backend, R>(&mut tx, arenas, changes.then_some(&*changed)).await?;
+    let span = tracing::debug_span!("mabat.save_graph", view = R::shape().name, changes);
+    graph_write::save::<C::Backend, R>(&mut tx, arenas, changes.then_some(&*changed)).instrument(span).await?;
     tx.commit().await.map_err(Error::Connection)?;
     changed.clear();
     Ok(())
@@ -292,7 +299,8 @@ where
     use sqlx::Connection;
     let mut conn = conn.source().single().await?;
     let mut tx = conn.begin().await.map_err(Error::Connection)?;
-    let deleted = write::delete_tree::<C::Backend>(&mut tx, T::shape(), vec![key.into()]).await?;
+    let span = tracing::debug_span!("mabat.delete", view = T::shape().name);
+    let deleted = write::delete_tree::<C::Backend>(&mut tx, T::shape(), vec![key.into()]).instrument(span).await?;
     tx.commit().await.map_err(Error::Connection)?;
     Ok(deleted > 0)
 }
@@ -628,7 +636,10 @@ impl<T: View> Load<T> {
         let Some(load) = self.prepare::<C::Backend>()? else { return Ok(0) };
         let overrides = load.overrides.as_ref().map(|c| &c.overrides);
         let mut conn = conn.source().single().await?;
-        node::count::<C::Backend>(&mut conn, &load.plan, &load.options, load.keys, overrides, load.values).await
+        let span = tracing::debug_span!("mabat.count", view = load.plan.shape.name);
+        node::count::<C::Backend>(&mut conn, &load.plan, &load.options, load.keys, overrides, load.values)
+            .instrument(span)
+            .await
     }
 
     /// Load exactly one value: [`Error::NotFound`] if there is none, [`Error::TooManyRows`]
@@ -693,7 +704,15 @@ impl Prepared {
         for (name, options, values) in &self.nested {
             args.nest(name.clone(), options.clone(), values.clone());
         }
-        node::load::<B>(runner, &self.plan, &args, keys, overrides, String::new(), Vec::new(), identity, entities).await
+        let span = tracing::debug_span!(
+            "mabat.load",
+            view = self.plan.shape.name,
+            keys = keys.as_ref().map(key::KeyList::len),
+            graph = entities,
+        );
+        node::load::<B>(runner, &self.plan, &args, keys, overrides, String::new(), Vec::new(), identity, entities)
+            .instrument(span)
+            .await
     }
 }
 

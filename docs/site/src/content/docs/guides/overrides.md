@@ -76,3 +76,20 @@ generated queries in place of invalid overrides. The codes are listed on the
   change never replaces a working query ([MPA-OVR-7](../../spec/mpa/#mpa-ovr-7)).
 
 Writes never use overrides ([MPA-NOT-5](../../spec/mpa/#mpa-not-5)).
+
+## Finding the query to tune
+
+Mabat traces each load with [`tracing`](https://docs.rs/tracing) at the `debug` level: a span for the load, one
+for each of its queries, with the query's name, whether an override ran and the rows it returned, and one for each
+statement, with its SQL and time ([MPA-DB-6](../../spec/mpa/#mpa-db-6)). With `tracing-subscriber` and
+`RUST_LOG=mabat=debug`:
+
+```text
+DEBUG mabat.load{view="Project" keys=1}:mabat.query{view="Task" query="tasks" overridden=true keys=1}:
+      mabat.statement{db.system.name="SQLite" db.query.text="SELECT t.id AS \"id\", …" elapsed_ms=0.173 rows=2}:
+      statement ran rows=2 elapsed_ms=0.173
+```
+
+The query name is the name an override file uses, so the slow query of a trace is the one to override. With
+`tracing-opentelemetry`, the spans are part of the application's traces; their `db.*` fields follow
+OpenTelemetry's names. Bound values are never traced.

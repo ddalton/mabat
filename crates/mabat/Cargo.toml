@@ -32,6 +32,8 @@ serde_json.workspace = true
 sqlx.workspace = true
 tokio = { workspace = true, features = ["time"] }
 trybuild.workspace = true
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 uuid = { workspace = true, features = ["serde", "v4"] }
 
 # The tests and the example run on PostgreSQL, except the SQLite tests

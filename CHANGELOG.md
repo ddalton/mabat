@@ -70,6 +70,9 @@ The first release, with milestones 1 to 5 of the [design](docs/design.md), the D
 - **The MPA specification.** `docs/mpa.md`, the Mabat Persistence Architecture, states Mabat's contract as
   numbered rules; `docs/mpa.json` indexes its capabilities, attributes, functions, errors and diagnostics, and
   `llms.txt` points AI tools to both. A test keeps the index in step with the derive and the errors.
+- **Tracing.** `tracing` spans at the `debug` level: `mabat.load` and the other operations with their view,
+  `mabat.query` for each query of a load (view, query name, path, override, keys, rows), and `mabat.statement`
+  for each statement (database, SQL, rows, `elapsed_ms`). Bound values are never traced.
 - **Streaming.** `Load::stream` loads values a batch at a time as a `futures::Stream`, holding one batch
   in memory: one query reads the keys of every match, with the filter, order and page, then each batch of
   `batch_size` keys (1,000 by default) is loaded with its collections and references, yielding the values in the
