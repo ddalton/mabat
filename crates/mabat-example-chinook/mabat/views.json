@@ -1,0 +1,1138 @@
+{
+  "format": 2,
+  "backend": "SQLite",
+  "views": [
+    {
+      "name": "Discography",
+      "queries": [
+        {
+          "name": "$root",
+          "view": "Discography",
+          "link": {
+            "kind": "root"
+          },
+          "table": "artist",
+          "key_column": "artist_id",
+          "key_alias": "artist_id",
+          "sql": "SELECT t0.\"artist_id\" AS \"artist_id\",\n       t0.\"name\" AS \"name\"\nFROM \"artist\" AS t0",
+          "columns": [
+            {
+              "alias": "artist_id",
+              "role": "field",
+              "column": "artist_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "name",
+              "role": "field",
+              "column": "name",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "albums",
+          "view": "Album",
+          "parent": 0,
+          "link": {
+            "kind": "child",
+            "fk": "artist_id"
+          },
+          "table": "album",
+          "key_column": "album_id",
+          "key_alias": "album_id",
+          "sql": "SELECT t0.\"artist_id\" AS \"$parent\",\n       t0.\"album_id\" AS \"album_id\",\n       t0.\"title\" AS \"title\"\nFROM \"album\" AS t0\nWHERE t0.\"artist_id\" IN (:keys)\nORDER BY t0.\"title\", t0.\"album_id\"",
+          "columns": [
+            {
+              "alias": "$parent",
+              "role": "parent",
+              "column": "artist_id"
+            },
+            {
+              "alias": "album_id",
+              "role": "field",
+              "column": "album_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "title",
+              "role": "field",
+              "column": "title",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "albums.tracks",
+          "view": "Track",
+          "parent": 1,
+          "link": {
+            "kind": "child",
+            "fk": "album_id"
+          },
+          "table": "track",
+          "key_column": "track_id",
+          "key_alias": "track_id",
+          "sql": "SELECT t0.\"album_id\" AS \"$parent\",\n       t0.\"track_id\" AS \"track_id\",\n       t0.\"name\" AS \"name\",\n       t0.\"composer\" AS \"composer\",\n       t0.\"milliseconds\" AS \"milliseconds\",\n       t0.\"unit_price\" AS \"unit_price\",\n       t0.\"genre_id\" AS \"$ref.genre\"\nFROM \"track\" AS t0\nWHERE t0.\"album_id\" IN (:keys)\nORDER BY t0.\"track_id\"",
+          "columns": [
+            {
+              "alias": "$parent",
+              "role": "parent",
+              "column": "album_id"
+            },
+            {
+              "alias": "track_id",
+              "role": "field",
+              "column": "track_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "name",
+              "role": "field",
+              "column": "name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "composer",
+              "role": "field",
+              "column": "composer",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "milliseconds",
+              "role": "field",
+              "column": "milliseconds",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "unit_price",
+              "role": "field",
+              "column": "unit_price",
+              "type": {
+                "rust": "f64",
+                "sql": "REAL",
+                "accepts": [
+                  "REAL"
+                ]
+              }
+            },
+            {
+              "alias": "$ref.genre",
+              "role": "reference",
+              "column": "genre_id"
+            }
+          ]
+        },
+        {
+          "name": "albums.tracks.genre",
+          "view": "Genre",
+          "parent": 2,
+          "link": {
+            "kind": "to_one",
+            "ref_alias": "$ref.genre"
+          },
+          "table": "genre",
+          "key_column": "genre_id",
+          "key_alias": "genre_id",
+          "sql": "SELECT t0.\"genre_id\" AS \"genre_id\",\n       t0.\"name\" AS \"name\"\nFROM \"genre\" AS t0\nWHERE t0.\"genre_id\" IN (:keys)\nORDER BY t0.\"genre_id\"",
+          "columns": [
+            {
+              "alias": "genre_id",
+              "role": "field",
+              "column": "genre_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "name",
+              "role": "field",
+              "column": "name",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Track",
+      "queries": [
+        {
+          "name": "$root",
+          "view": "Track",
+          "link": {
+            "kind": "root"
+          },
+          "table": "track",
+          "key_column": "track_id",
+          "key_alias": "track_id",
+          "sql": "SELECT t0.\"track_id\" AS \"track_id\",\n       t0.\"name\" AS \"name\",\n       t0.\"composer\" AS \"composer\",\n       t0.\"milliseconds\" AS \"milliseconds\",\n       t0.\"unit_price\" AS \"unit_price\",\n       t0.\"genre_id\" AS \"$ref.genre\"\nFROM \"track\" AS t0",
+          "columns": [
+            {
+              "alias": "track_id",
+              "role": "field",
+              "column": "track_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "name",
+              "role": "field",
+              "column": "name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "composer",
+              "role": "field",
+              "column": "composer",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "milliseconds",
+              "role": "field",
+              "column": "milliseconds",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "unit_price",
+              "role": "field",
+              "column": "unit_price",
+              "type": {
+                "rust": "f64",
+                "sql": "REAL",
+                "accepts": [
+                  "REAL"
+                ]
+              }
+            },
+            {
+              "alias": "$ref.genre",
+              "role": "reference",
+              "column": "genre_id"
+            }
+          ]
+        },
+        {
+          "name": "genre",
+          "view": "Genre",
+          "parent": 0,
+          "link": {
+            "kind": "to_one",
+            "ref_alias": "$ref.genre"
+          },
+          "table": "genre",
+          "key_column": "genre_id",
+          "key_alias": "genre_id",
+          "sql": "SELECT t0.\"genre_id\" AS \"genre_id\",\n       t0.\"name\" AS \"name\"\nFROM \"genre\" AS t0\nWHERE t0.\"genre_id\" IN (:keys)\nORDER BY t0.\"genre_id\"",
+          "columns": [
+            {
+              "alias": "genre_id",
+              "role": "field",
+              "column": "genre_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "name",
+              "role": "field",
+              "column": "name",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "CustomerAccount",
+      "queries": [
+        {
+          "name": "$root",
+          "view": "CustomerAccount",
+          "link": {
+            "kind": "root"
+          },
+          "table": "customer",
+          "key_column": "customer_id",
+          "key_alias": "customer_id",
+          "sql": "SELECT t0.\"customer_id\" AS \"customer_id\",\n       t0.\"first_name\" AS \"first_name\",\n       t0.\"last_name\" AS \"last_name\",\n       t0.\"email\" AS \"email\",\n       t0.\"country\" AS \"country\",\n       t0.\"support_rep_id\" AS \"$ref.support_rep\"\nFROM \"customer\" AS t0",
+          "columns": [
+            {
+              "alias": "customer_id",
+              "role": "field",
+              "column": "customer_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "first_name",
+              "role": "field",
+              "column": "first_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "last_name",
+              "role": "field",
+              "column": "last_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "email",
+              "role": "field",
+              "column": "email",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "country",
+              "role": "field",
+              "column": "country",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "$ref.support_rep",
+              "role": "reference",
+              "column": "support_rep_id"
+            }
+          ]
+        },
+        {
+          "name": "support_rep",
+          "view": "Colleague",
+          "parent": 0,
+          "link": {
+            "kind": "to_one",
+            "ref_alias": "$ref.support_rep"
+          },
+          "table": "employee",
+          "key_column": "employee_id",
+          "key_alias": "employee_id",
+          "sql": "SELECT t0.\"employee_id\" AS \"employee_id\",\n       t0.\"first_name\" AS \"first_name\",\n       t0.\"last_name\" AS \"last_name\",\n       t0.\"title\" AS \"title\"\nFROM \"employee\" AS t0\nWHERE t0.\"employee_id\" IN (:keys)\nORDER BY t0.\"employee_id\"",
+          "columns": [
+            {
+              "alias": "employee_id",
+              "role": "field",
+              "column": "employee_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "first_name",
+              "role": "field",
+              "column": "first_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "last_name",
+              "role": "field",
+              "column": "last_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "title",
+              "role": "field",
+              "column": "title",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "invoices",
+          "view": "Invoice",
+          "parent": 0,
+          "link": {
+            "kind": "child",
+            "fk": "customer_id"
+          },
+          "table": "invoice",
+          "key_column": "invoice_id",
+          "key_alias": "invoice_id",
+          "sql": "SELECT t0.\"customer_id\" AS \"$parent\",\n       t0.\"invoice_id\" AS \"invoice_id\",\n       t0.\"invoice_date\" AS \"invoice_date\",\n       t0.\"total\" AS \"total\",\n       t0.\"billing_address\" AS \"billing.address\",\n       t0.\"billing_city\" AS \"billing.city\",\n       t0.\"billing_country\" AS \"billing.country\"\nFROM \"invoice\" AS t0\nWHERE t0.\"customer_id\" IN (:keys)\nORDER BY t0.\"invoice_date\" DESC, t0.\"invoice_id\"",
+          "columns": [
+            {
+              "alias": "$parent",
+              "role": "parent",
+              "column": "customer_id"
+            },
+            {
+              "alias": "invoice_id",
+              "role": "field",
+              "column": "invoice_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "invoice_date",
+              "role": "field",
+              "column": "invoice_date",
+              "type": {
+                "rust": "NaiveDateTime",
+                "sql": "DATETIME",
+                "accepts": [
+                  "INTEGER",
+                  "REAL",
+                  "TEXT",
+                  "DATETIME"
+                ]
+              }
+            },
+            {
+              "alias": "total",
+              "role": "field",
+              "column": "total",
+              "type": {
+                "rust": "f64",
+                "sql": "REAL",
+                "accepts": [
+                  "REAL"
+                ]
+              }
+            },
+            {
+              "alias": "billing.address",
+              "role": "field",
+              "column": "billing_address",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "billing.city",
+              "role": "field",
+              "column": "billing_city",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "billing.country",
+              "role": "field",
+              "column": "billing_country",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "invoices.lines",
+          "view": "InvoiceLine",
+          "parent": 2,
+          "link": {
+            "kind": "child",
+            "fk": "invoice_id"
+          },
+          "table": "invoice_line",
+          "key_column": "invoice_line_id",
+          "key_alias": "invoice_line_id",
+          "sql": "SELECT t0.\"invoice_id\" AS \"$parent\",\n       t0.\"invoice_line_id\" AS \"invoice_line_id\",\n       t0.\"unit_price\" AS \"unit_price\",\n       t0.\"quantity\" AS \"quantity\",\n       t0.\"track_id\" AS \"$ref.track\"\nFROM \"invoice_line\" AS t0\nWHERE t0.\"invoice_id\" IN (:keys)\nORDER BY t0.\"invoice_line_id\"",
+          "columns": [
+            {
+              "alias": "$parent",
+              "role": "parent",
+              "column": "invoice_id"
+            },
+            {
+              "alias": "invoice_line_id",
+              "role": "field",
+              "column": "invoice_line_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "unit_price",
+              "role": "field",
+              "column": "unit_price",
+              "type": {
+                "rust": "f64",
+                "sql": "REAL",
+                "accepts": [
+                  "REAL"
+                ]
+              }
+            },
+            {
+              "alias": "quantity",
+              "role": "field",
+              "column": "quantity",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "$ref.track",
+              "role": "reference",
+              "column": "track_id"
+            }
+          ]
+        },
+        {
+          "name": "invoices.lines.track",
+          "view": "TrackName",
+          "parent": 3,
+          "link": {
+            "kind": "to_one",
+            "ref_alias": "$ref.track"
+          },
+          "table": "track",
+          "key_column": "track_id",
+          "key_alias": "track_id",
+          "sql": "SELECT t0.\"track_id\" AS \"track_id\",\n       t0.\"name\" AS \"name\",\n       t0.\"milliseconds\" AS \"milliseconds\"\nFROM \"track\" AS t0\nWHERE t0.\"track_id\" IN (:keys)\nORDER BY t0.\"track_id\"",
+          "columns": [
+            {
+              "alias": "track_id",
+              "role": "field",
+              "column": "track_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "name",
+              "role": "field",
+              "column": "name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "milliseconds",
+              "role": "field",
+              "column": "milliseconds",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ManagerChain",
+      "queries": [
+        {
+          "name": "$root",
+          "view": "ManagerChain",
+          "link": {
+            "kind": "root"
+          },
+          "table": "employee",
+          "key_column": "employee_id",
+          "key_alias": "employee_id",
+          "sql": "SELECT t0.\"employee_id\" AS \"employee_id\",\n       t0.\"first_name\" AS \"first_name\",\n       t0.\"last_name\" AS \"last_name\",\n       t0.\"title\" AS \"title\",\n       t0.\"reports_to\" AS \"$ref.manager\"\nFROM \"employee\" AS t0",
+          "columns": [
+            {
+              "alias": "employee_id",
+              "role": "field",
+              "column": "employee_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "first_name",
+              "role": "field",
+              "column": "first_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "last_name",
+              "role": "field",
+              "column": "last_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "title",
+              "role": "field",
+              "column": "title",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "$ref.manager",
+              "role": "reference",
+              "column": "reports_to"
+            }
+          ]
+        },
+        {
+          "name": "manager",
+          "view": "ManagerChain",
+          "parent": 0,
+          "link": {
+            "kind": "to_one",
+            "ref_alias": "$ref.manager"
+          },
+          "table": "employee",
+          "key_column": "employee_id",
+          "key_alias": "employee_id",
+          "sql": "WITH RECURSIVE \"$tree\" AS (\nSELECT t0.\"employee_id\" AS \"k\", t0.\"reports_to\" AS \"n\", ',' || t0.\"employee_id\" || ',' AS \"path\", 1 AS \"depth\" FROM \"employee\" AS t0 WHERE t0.\"employee_id\" IN (:keys)\nUNION ALL\nSELECT t0.\"employee_id\", t0.\"reports_to\", r.\"path\" || t0.\"employee_id\" || ',', r.\"depth\" + 1 FROM \"employee\" AS t0 JOIN \"$tree\" AS r ON t0.\"employee_id\" = r.\"n\" WHERE instr(r.\"path\", ',' || t0.\"employee_id\" || ',') = 0\n)\nSELECT t0.\"employee_id\" AS \"employee_id\",\n       t0.\"first_name\" AS \"first_name\",\n       t0.\"last_name\" AS \"last_name\",\n       t0.\"title\" AS \"title\",\n       t0.\"reports_to\" AS \"$ref.manager\"\nFROM (SELECT DISTINCT \"k\" FROM \"$tree\") AS r JOIN \"employee\" AS t0 ON t0.\"employee_id\" = r.\"k\"\nORDER BY t0.\"employee_id\"",
+          "columns": [
+            {
+              "alias": "employee_id",
+              "role": "field",
+              "column": "employee_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "first_name",
+              "role": "field",
+              "column": "first_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "last_name",
+              "role": "field",
+              "column": "last_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "title",
+              "role": "field",
+              "column": "title",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "$ref.manager",
+              "role": "reference",
+              "column": "reports_to"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "OrgChart",
+      "queries": [
+        {
+          "name": "$root",
+          "view": "OrgChart",
+          "link": {
+            "kind": "root"
+          },
+          "table": "employee",
+          "key_column": "employee_id",
+          "key_alias": "employee_id",
+          "sql": "SELECT t0.\"employee_id\" AS \"employee_id\",\n       t0.\"first_name\" AS \"first_name\",\n       t0.\"last_name\" AS \"last_name\",\n       t0.\"title\" AS \"title\"\nFROM \"employee\" AS t0",
+          "columns": [
+            {
+              "alias": "employee_id",
+              "role": "field",
+              "column": "employee_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "first_name",
+              "role": "field",
+              "column": "first_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "last_name",
+              "role": "field",
+              "column": "last_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "title",
+              "role": "field",
+              "column": "title",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "reports",
+          "view": "OrgChart",
+          "parent": 0,
+          "link": {
+            "kind": "child",
+            "fk": "reports_to"
+          },
+          "table": "employee",
+          "key_column": "employee_id",
+          "key_alias": "employee_id",
+          "sql": "WITH RECURSIVE \"$tree\" AS (\nSELECT t0.\"employee_id\" AS \"k\", ',' || t0.\"employee_id\" || ',' AS \"path\", 1 AS \"depth\" FROM \"employee\" AS t0 WHERE t0.\"reports_to\" IN (:keys)\nUNION ALL\nSELECT t0.\"employee_id\", r.\"path\" || t0.\"employee_id\" || ',', r.\"depth\" + 1 FROM \"employee\" AS t0 JOIN \"$tree\" AS r ON t0.\"reports_to\" = r.\"k\" WHERE instr(r.\"path\", ',' || t0.\"employee_id\" || ',') = 0\n)\nSELECT t0.\"reports_to\" AS \"$parent\",\n       t0.\"employee_id\" AS \"employee_id\",\n       t0.\"first_name\" AS \"first_name\",\n       t0.\"last_name\" AS \"last_name\",\n       t0.\"title\" AS \"title\"\nFROM (SELECT DISTINCT \"k\" FROM \"$tree\") AS r JOIN \"employee\" AS t0 ON t0.\"employee_id\" = r.\"k\"\nORDER BY t0.\"employee_id\"",
+          "columns": [
+            {
+              "alias": "$parent",
+              "role": "parent",
+              "column": "reports_to"
+            },
+            {
+              "alias": "employee_id",
+              "role": "field",
+              "column": "employee_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "first_name",
+              "role": "field",
+              "column": "first_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "last_name",
+              "role": "field",
+              "column": "last_name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "title",
+              "role": "field",
+              "column": "title",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Playlist",
+      "queries": [
+        {
+          "name": "$root",
+          "view": "Playlist",
+          "link": {
+            "kind": "root"
+          },
+          "table": "playlist",
+          "key_column": "playlist_id",
+          "generated": true,
+          "key_alias": "playlist_id",
+          "sql": "SELECT t0.\"playlist_id\" AS \"playlist_id\",\n       t0.\"name\" AS \"name\"\nFROM \"playlist\" AS t0",
+          "columns": [
+            {
+              "alias": "playlist_id",
+              "role": "field",
+              "column": "playlist_id",
+              "optional": true,
+              "type": {
+                "rust": "Option<i32>",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "name",
+              "role": "field",
+              "column": "name",
+              "optional": true,
+              "type": {
+                "rust": "Option<String>",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "tracks",
+          "view": "TrackName",
+          "parent": 0,
+          "link": {
+            "kind": "child",
+            "fk": "playlist_id",
+            "through": {
+              "table": "playlist_track",
+              "target": "track_id"
+            }
+          },
+          "table": "track",
+          "key_column": "track_id",
+          "key_alias": "track_id",
+          "sql": "SELECT j.\"playlist_id\" AS \"$parent\",\n       t0.\"track_id\" AS \"track_id\",\n       t0.\"name\" AS \"name\",\n       t0.\"milliseconds\" AS \"milliseconds\"\nFROM \"track\" AS t0 JOIN \"playlist_track\" AS j ON j.\"track_id\" = t0.\"track_id\"\nWHERE j.\"playlist_id\" IN (:keys)\nORDER BY t0.\"track_id\"",
+          "columns": [
+            {
+              "alias": "$parent",
+              "role": "parent",
+              "column": "playlist_id",
+              "link_table": true
+            },
+            {
+              "alias": "track_id",
+              "role": "field",
+              "column": "track_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "name",
+              "role": "field",
+              "column": "name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "milliseconds",
+              "role": "field",
+              "column": "milliseconds",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TrackName",
+      "queries": [
+        {
+          "name": "$root",
+          "view": "TrackName",
+          "link": {
+            "kind": "root"
+          },
+          "table": "track",
+          "key_column": "track_id",
+          "key_alias": "track_id",
+          "sql": "SELECT t0.\"track_id\" AS \"track_id\",\n       t0.\"name\" AS \"name\",\n       t0.\"milliseconds\" AS \"milliseconds\"\nFROM \"track\" AS t0",
+          "columns": [
+            {
+              "alias": "track_id",
+              "role": "field",
+              "column": "track_id",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            },
+            {
+              "alias": "name",
+              "role": "field",
+              "column": "name",
+              "type": {
+                "rust": "String",
+                "sql": "TEXT",
+                "accepts": [
+                  "TEXT"
+                ]
+              }
+            },
+            {
+              "alias": "milliseconds",
+              "role": "field",
+              "column": "milliseconds",
+              "type": {
+                "rust": "i32",
+                "sql": "INTEGER",
+                "accepts": [
+                  "INTEGER"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

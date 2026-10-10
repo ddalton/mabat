@@ -1,0 +1,31 @@
+[package]
+name = "mabat-example-chinook"
+description = "An example web service on the Chinook music store, with Mabat: REST, GraphQL, streaming, writes and DBA overrides"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-graphql = { version = "7.2.1", default-features = false, features = ["dynamic-schema", "graphiql"] }
+axum = "0.8"
+chrono = { workspace = true, features = ["serde"] }
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+mabat = { workspace = true, features = ["sqlite"] }
+mabat-e2e.workspace = true
+mabat-graphql = { workspace = true, features = ["sqlite"] }
+serde = { workspace = true, features = ["rc"] }
+serde_json.workspace = true
+sqlx = { workspace = true, features = ["sqlite"] }
+tokio = { workspace = true, features = ["net", "sync"] }
+
+[build-dependencies]
+mabat-check.workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"
+mabat-check.workspace = true
+tower = { version = "0.5", features = ["util"] }
